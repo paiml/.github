@@ -1,5 +1,5 @@
 ## Pragmatic AI Labs 👋
-
+* 🚀 Support our mission to transform AI education! [Join the Pragmatic AI Labs community for exclusive hands-on learning](https://ds500.paiml.com/subscribe.html)
 * [✨Pragmatic AI Labs](ds500.paiml.com) [builds courses on edX](https://insight.paiml.com/d69)
 * [ 💬 Join our Discord community](https://insight.paiml.com/iw2)
 
