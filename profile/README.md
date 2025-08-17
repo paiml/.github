@@ -1,4 +1,4 @@
-## 🎓 Pragmatic AI Labs | Join 1M+ ML Engineers
+## 🎓 Pragmatic AI Labs | Join 2M+ ML Engineers
 
 * 🚀 [Master Production ML Systems](https://paiml.com) - MLOps, AWS & Cloud Computing
 * 📺 [Watch Our Courses on edX](https://insight.paiml.com/d69)
