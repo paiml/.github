@@ -165,7 +165,8 @@ jobs:
               CHECKS="dead-code,satd,security" ;;
             realizar|entrenar|aprender|alimentar)
               # ML repos: attention/layer/quantization/dataset variants are inherently complex and duplicated
-              CHECKS="dead-code,satd,security" ;;
+              # SATD skipped: design annotations (// Defect: GH-420, // Design:) are legitimate, not tech debt
+              CHECKS="dead-code,security" ;;
             depyler)
               # Transpiler: AST code generation is inherently complex and repetitive
               CHECKS="dead-code,satd,security" ;;
