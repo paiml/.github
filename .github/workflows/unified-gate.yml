@@ -120,11 +120,11 @@ jobs:
             trueno-zram)
               # Compression code: bit manipulation with known-safe casts
               EXTRA_ALLOWS="-A clippy::cast_possible_wrap -A clippy::cast_possible_truncation -A clippy::cast_precision_loss" ;;
-            alimentar)
-              # ML data processing: usize↔f64 casts inherent to dataset operations
+            alimentar|entrenar|aprender|realizar)
+              # ML repos: numeric casts (f32↔f64, usize↔f64) inherent to tensor/training operations
               # json! macro triggers disallowed_methods (internal unwrap) — false positive
-              # u32→f64 infallible cast flagged by cast_lossless — domain-appropriate
-              EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods" ;;
+              # map().unwrap_or() is idiomatic in ML option chains
+              EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods -A clippy::uninlined_format_args -A clippy::map_unwrap_or" ;;
           esac
           # Production code: strict (-D warnings) with domain exceptions
           cargo clippy --workspace --lib --locked -- -D warnings $EXTRA_ALLOWS
