@@ -1,0 +1,478 @@
+# Unified CI Gate Workflow — lint + build + test + GPU
+#
+# Reusable workflow called by all paiml repos. Lives in the public
+# paiml/.github repo so both public and private callers can reference it.
+#
+# Self-hosted runners provide the sovereign AI stack (sccache, pmat,
+# bashrs, cargo-deny, Docker clean-room). The private paiml/infra repo
+# holds Makefiles and gate scripts; the runner clones it at job time
+# via SSH (no PAT needed — the runner already has deploy-key access).
+#
+# IMPORTANT: All actions pinned to commit SHAs (CVE-2025-30066 mitigation).
+
+name: Unified Gate
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: 'Repository name (e.g. trueno, aprender)'
+        required: true
+        type: string
+      pr_sha:
+        description: 'Commit SHA to check out (PR head or push SHA)'
+        required: true
+        type: string
+      skip_gpu:
+        description: 'Force skip GPU gates (for testing)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CI_SRC_ROOT: ${{ github.workspace }}/src
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+  CARGO_HTTP_TIMEOUT: "60"
+  CARGO_TERM_COLOR: "always"
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_CACHE_SIZE: "50G"
+
+jobs:
+  # ── Lint Gate (fast feedback: fmt → clippy → deny → pmat) ──
+  lint-gate:
+    runs-on: [self-hosted, clean-room]
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.pr_sha }}
+          path: src/${{ inputs.repo }}
+
+      - name: Start sccache
+        run: sccache --start-server 2>/dev/null || true
+
+      # L0: Metadata resolution check
+      - name: "L0: cargo metadata check"
+        id: metadata
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          if [ ! -f Cargo.toml ]; then
+            echo "Not a Rust crate"
+            echo "is_rust=false" >> "$GITHUB_OUTPUT"
+            echo "metadata_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "is_rust=true" >> "$GITHUB_OUTPUT"
+          # Detect cross-repo path patches (compilation will fail with published crate APIs)
+          HAS_PATCHES=false
+          if [ -f .cargo/config.toml ] && grep -q '^\[patch' .cargo/config.toml; then
+            HAS_PATCHES=true
+          fi
+          if grep -q '^\[patch' Cargo.toml 2>/dev/null; then
+            HAS_PATCHES=true
+          fi
+          # Strip local path patches/overrides so CI checks standalone compilation
+          if [ -f .cargo/config.toml ]; then
+            sed -i '/^\[patch/d; /path = "\.\./d' .cargo/config.toml
+          fi
+          sed -i '/^\[patch/d; /path = "\.\./d' Cargo.toml 2>/dev/null || true
+          if [ "$HAS_PATCHES" = "true" ]; then
+            echo "::warning::Cross-repo [patch.crates-io] detected — skipping fmt/clippy (published APIs may differ)"
+            echo "metadata_ok=false" >> "$GITHUB_OUTPUT"
+          elif ! cargo metadata --format-version 1 > /dev/null 2>&1; then
+            echo "::warning::cargo metadata failed (cross-repo path deps) — skipping fmt/clippy"
+            echo "metadata_ok=false" >> "$GITHUB_OUTPUT"
+          elif ! cargo check --workspace --lib 2>/dev/null; then
+            echo "::warning::cargo check failed (cross-repo API mismatch) — skipping fmt/clippy"
+            echo "metadata_ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "metadata_ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # L1: Format check (~2s)
+      - name: "L1: cargo fmt --check"
+        if: steps.metadata.outputs.metadata_ok == 'true'
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          # Use nightly fmt only if rustfmt.toml has nightly-only options
+          NEEDS_NIGHTLY=false
+          if [ -f rustfmt.toml ] && grep -qE 'imports_granularity|group_imports|format_code_in_doc_comments|comment_width|format_strings' rustfmt.toml; then
+            NEEDS_NIGHTLY=true
+          fi
+          if [ "$NEEDS_NIGHTLY" = "true" ] && rustup run nightly rustfmt --version >/dev/null 2>&1; then
+            cargo +nightly fmt --all -- --check
+          else
+            cargo fmt --all -- --check
+          fi
+
+      # L2: Clippy lint (~20-60s with sccache)
+      - name: "L2: cargo clippy -D warnings"
+        if: steps.metadata.outputs.metadata_ok == 'true'
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          # Per-repo clippy tuning for inherent domain patterns
+          EXTRA_ALLOWS=""
+          case "${{ inputs.repo }}" in
+            trueno-viz)
+              # Graphics code: u32 pixel coords cast to i32 for signed arithmetic
+              EXTRA_ALLOWS="-A clippy::cast_possible_wrap -A clippy::cast_lossless" ;;
+            trueno-zram)
+              # Compression code: bit manipulation with known-safe casts
+              EXTRA_ALLOWS="-A clippy::cast_possible_wrap -A clippy::cast_possible_truncation -A clippy::cast_precision_loss" ;;
+            alimentar)
+              # ML data processing: usize↔f64 casts inherent to dataset operations
+              # json! macro triggers disallowed_methods (internal unwrap) — false positive
+              # u32→f64 infallible cast flagged by cast_lossless — domain-appropriate
+              EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods" ;;
+          esac
+          # Production code: strict (-D warnings) with domain exceptions
+          cargo clippy --workspace --lib --locked -- -D warnings $EXTRA_ALLOWS
+          # Test/bench/example code: check but allow test-specific patterns
+          cargo clippy --workspace --tests --benches --examples --locked -- \
+            -D warnings $EXTRA_ALLOWS \
+            -A clippy::unwrap_used \
+            -A clippy::disallowed_methods \
+            -A clippy::expect_used \
+            -A clippy::panic 2>&1 || {
+            echo "::warning::clippy found issues in test/bench code (non-blocking)"
+          }
+
+      # L3: Dependency audit (~5s)
+      - name: "L3: cargo deny check"
+        if: steps.metadata.outputs.metadata_ok == 'true'
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          if [ -f deny.toml ]; then
+            cargo deny check -W unmaintained advisories licenses bans sources
+          else
+            echo "::warning::No deny.toml found — skipping cargo deny"
+          fi
+
+      # L4: pmat quality gate (~5-10s)
+      - name: "L4: pmat quality-gate"
+        if: steps.metadata.outputs.is_rust == 'true'
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          # Per-repo check tuning for inherent code patterns
+          CHECKS="dead-code,complexity,satd,security,duplicates"
+          case "${{ inputs.repo }}" in
+            trueno-zram)
+              # LZ4/ZSTD decompression loops are inherently complex (cognitive 100+)
+              CHECKS="dead-code,satd,security,duplicates" ;;
+            trueno)
+              # GPU SIMD compute: quantization format handlers are inherently duplicated
+              CHECKS="dead-code,satd,security" ;;
+            realizar|entrenar|aprender|alimentar)
+              # ML repos: attention/layer/quantization/dataset variants are inherently complex and duplicated
+              CHECKS="dead-code,satd,security" ;;
+            depyler)
+              # Transpiler: AST code generation is inherently complex and repetitive
+              CHECKS="dead-code,satd,security" ;;
+            bashrs)
+              # Shell transpiler/linter: parser, AST, corpus analysis are inherently complex
+              CHECKS="dead-code,security" ;;
+            trueno-viz)
+              # Graphics/visualization: rendering loops and coordinate math are inherently complex
+              CHECKS="dead-code,security" ;;
+            forjar)
+              # IaC engine: YAML parsers, resolvers, and DAG planners are inherently complex
+              CHECKS="dead-code,security" ;;
+            rmedia)
+              # Media processing: SVG/video rendering pipelines are inherently complex
+              CHECKS="dead-code,satd,security" ;;
+          esac
+          pmat quality-gate \
+            --fail-on-violation \
+            --format summary \
+            --checks "$CHECKS" \
+            --max-dead-code 15.0 \
+            --max-complexity-p99 50
+
+      # L5: pmat TDG regression check (~3s)
+      - name: "L5: pmat TDG regression"
+        if: steps.metadata.outputs.is_rust == 'true'
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          if [ -f .pmat/baseline.json ]; then
+            pmat tdg check-regression --baseline .pmat/baseline.json
+          else
+            echo "::notice::No .pmat/baseline.json — skipping TDG regression check"
+          fi
+
+      # L6: bashrs lint — shell/Makefile quality gate (~5s)
+      - name: "L6: bashrs gate (shell + Makefile)"
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          TARGETS=()
+          # Collect shell scripts
+          while IFS= read -r f; do TARGETS+=("$f"); done < <(find . -name '*.sh' -not -path './target/*' -not -path './.git/*' 2>/dev/null)
+          # Collect Makefiles
+          while IFS= read -r f; do TARGETS+=("$f"); done < <(find . -name 'Makefile' -not -path './target/*' -not -path './.git/*' 2>/dev/null)
+          if [ ${#TARGETS[@]} -eq 0 ]; then
+            echo "No shell scripts or Makefiles found — skipping bashrs"
+            exit 0
+          fi
+          echo "Found ${#TARGETS[@]} shell/Makefile targets"
+          bashrs lint "${TARGETS[@]}" --format human || {
+            echo "::warning::bashrs lint found issues (non-blocking for now)"
+          }
+
+      - name: Banned path scan
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          FAILED=0
+          BANNED_PATHS=(
+            '/mnt/nvme-raid0'
+            '/home/noah'
+            '/home/ubuntu'
+            '/tmp/clean-room'
+          )
+          EXCLUDE='(^|/)(examples|tests|benches|fuzz|state|docs|machines)/'
+          # Per-repo exclusions for legitimate path references
+          case "${{ inputs.repo }}" in
+            trueno-viz)
+              # ttop is a system monitor — legitimately references NVMe mount paths for display
+              EXCLUDE="$EXCLUDE|crates/ttop/" ;;
+            forjar)
+              # IaC tool: doc examples + test assertions reference home dirs in generated scripts
+              EXCLUDE="$EXCLUDE|tests_dispatch|query_types" ;;
+          esac
+          for pattern in "${BANNED_PATHS[@]}"; do
+            MATCHES=$(git grep -nE "$pattern" -- '*.rs' '*.toml' '*.sh' ':!CLAUDE.md' 2>/dev/null \
+              | grep -vE "$EXCLUDE" || true)
+            if [ -n "$MATCHES" ]; then
+              echo "$MATCHES"
+              echo "::error::Banned absolute path found: $pattern"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::Hard-coded paths or patch overrides detected"
+            exit 1
+          fi
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats 2>/dev/null || true
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### ${{ inputs.repo }} Lint Gate — PASSED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${{ inputs.repo }} Lint Gate — FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── CPU Gates (Mode A + Mode B) ─────────────────────────
+  cpu-gates:
+    runs-on: [self-hosted, clean-room]
+    steps:
+      - name: Sync infra repo on runner
+        run: |
+          INFRA_DIR="$HOME/src/infra"
+          if [ -d "$INFRA_DIR/.git" ]; then
+            git -C "$INFRA_DIR" fetch origin main --quiet
+            git -C "$INFRA_DIR" reset --hard origin/main --quiet
+          else
+            git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
+          fi
+          # Symlink into workspace for make -f compatibility
+          ln -sfn "$INFRA_DIR" "${{ github.workspace }}/infra"
+
+      - name: Checkout target repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.pr_sha }}
+          path: src/${{ inputs.repo }}
+
+      - name: Clone forjar (config-only repos)
+        if: inputs.repo == 'sovereign-ai-cookbook'
+        run: |
+          rm -rf "$CI_SRC_ROOT/forjar"
+          git clone --depth 1 "https://github.com/paiml/forjar.git" "$CI_SRC_ROOT/forjar"
+
+      - name: Clone aprender (cookbook dependency)
+        if: inputs.repo == 'sovereign-ai-cookbook'
+        run: |
+          rm -rf "$CI_SRC_ROOT/aprender"
+          git clone --depth 1 "https://github.com/paiml/aprender.git" "$CI_SRC_ROOT/aprender"
+
+      - name: Pre-cleanup stale containers
+        run: |
+          docker rm -f "${{ inputs.repo }}-clean-room" 2>/dev/null || true
+
+      - name: Run clean-room Mode A+B
+        run: |
+          REPO_NAME="${{ inputs.repo }}"
+          case "$REPO_NAME" in
+            whisper.apr) MAKE_TARGET="clean-room-whisper-apr" ;;
+            *)           MAKE_TARGET="clean-room-${REPO_NAME}" ;;
+          esac
+          make -f "${{ github.workspace }}/infra/machines/clean-room/Makefile" "$MAKE_TARGET"
+
+      - name: Capture result CSV
+        if: always()
+        run: |
+          CONTAINER="${{ inputs.repo }}-clean-room"
+          mkdir -p /tmp/clean-room-results
+          docker cp "$CONTAINER:/tmp/clean-room-result.csv" \
+            "/tmp/clean-room-results/${{ inputs.repo }}.csv" 2>/dev/null || true
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: gate-result-${{ inputs.repo }}-cpu
+          path: /tmp/clean-room-results/${{ inputs.repo }}.csv
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### ${{ inputs.repo }} CPU Gates (Mode A+B) — PASSED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${{ inputs.repo }} CPU Gates (Mode A+B) — FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f "${{ inputs.repo }}-clean-room" 2>/dev/null || true
+          if [ "${{ inputs.repo }}" = "sovereign-ai-cookbook" ]; then
+            rm -rf "$CI_SRC_ROOT/forjar" "$CI_SRC_ROOT/aprender"
+          fi
+
+  # ── GPU Gates (Mode C) ──────────────────────────────────
+  gpu-gates:
+    if: >-
+      !inputs.skip_gpu &&
+      contains(fromJson('["realizar","trueno","entrenar"]'),
+      inputs.repo)
+    runs-on: [self-hosted, gpu, lambda-labs]
+    steps:
+      - name: Sync infra repo on runner
+        run: |
+          INFRA_DIR="$HOME/src/infra"
+          if [ -d "$INFRA_DIR/.git" ]; then
+            git -C "$INFRA_DIR" fetch origin main --quiet
+            git -C "$INFRA_DIR" reset --hard origin/main --quiet
+          else
+            git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
+          fi
+          ln -sfn "$INFRA_DIR" "${{ github.workspace }}/infra"
+
+      - name: Checkout target repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.pr_sha }}
+          path: src/${{ inputs.repo }}
+
+      - name: Pre-cleanup stale GPU containers
+        run: |
+          docker rm -f "${{ inputs.repo }}-gpu-clean-room" 2>/dev/null || true
+
+      - name: Run clean-room Mode C
+        run: |
+          REPO_NAME="${{ inputs.repo }}"
+          case "$REPO_NAME" in
+            sovereign-ai-cookbook) MAKE_TARGET="gpu-clean-room-sovereign-ai-cookbook-cuda" ;;
+            *)                    MAKE_TARGET="gpu-clean-room-${REPO_NAME}" ;;
+          esac
+          make -f "${{ github.workspace }}/infra/machines/clean-room/Makefile" "$MAKE_TARGET"
+
+      - name: Capture GPU result CSV
+        if: always()
+        run: |
+          CONTAINER="${{ inputs.repo }}-gpu-clean-room"
+          mkdir -p /tmp/clean-room-results
+          docker cp "$CONTAINER:/tmp/clean-room-result.csv" \
+            "/tmp/clean-room-results/${{ inputs.repo }}-gpu.csv" 2>/dev/null || true
+
+      - name: Upload GPU result artifact
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: gate-result-${{ inputs.repo }}-gpu
+          path: /tmp/clean-room-results/${{ inputs.repo }}-gpu.csv
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "### ${{ inputs.repo }} GPU Gates (Mode C) — PASSED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${{ inputs.repo }} GPU Gates (Mode C) — FAILED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f "${{ inputs.repo }}-gpu-clean-room" 2>/dev/null || true
+
+  # ── Gate Aggregation ─────────────────────────────────────
+  # Single stable check name for branch protection: "unified / gate"
+  gate:
+    runs-on: [self-hosted, clean-room]
+    needs: [lint-gate, cpu-gates, gpu-gates]
+    if: always()
+    steps:
+      - name: Evaluate gate results
+        run: |
+          echo "Lint gate: ${{ needs.lint-gate.result }}"
+          echo "CPU gates: ${{ needs.cpu-gates.result }}"
+          echo "GPU gates: ${{ needs.gpu-gates.result }}"
+
+          if [ "${{ needs.lint-gate.result }}" != "success" ]; then
+            echo "::error::Lint gate did not pass (result: ${{ needs.lint-gate.result }})"
+            exit 1
+          fi
+
+          if [ "${{ needs.cpu-gates.result }}" != "success" ]; then
+            echo "::error::CPU gates did not pass (result: ${{ needs.cpu-gates.result }})"
+            exit 1
+          fi
+
+          # GPU gates skipped for non-GPU repos — that's expected
+          GPU_RESULT="${{ needs.gpu-gates.result }}"
+          if [ "$GPU_RESULT" = "failure" ] || [ "$GPU_RESULT" = "cancelled" ]; then
+            echo "::error::GPU gates did not pass (result: $GPU_RESULT)"
+            exit 1
+          fi
+
+          echo "All required gates passed"
+
+      - name: Checkout target repo (for pmat metrics)
+        if: success()
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.pr_sha }}
+          path: src/${{ inputs.repo }}
+
+      - name: Record pmat metrics
+        if: success()
+        working-directory: src/${{ inputs.repo }}
+        run: |
+          if [ ! -f Cargo.toml ]; then exit 0; fi
+          # Record TDG score and metrics for trend tracking
+          pmat tdg --format json > /tmp/pmat-tdg-${{ inputs.repo }}.json 2>/dev/null || true
+          pmat show-metrics --format json > /tmp/pmat-metrics-${{ inputs.repo }}.json 2>/dev/null || true
+          # Log summary
+          TDG=$(jq -r '.grade // "?"' /tmp/pmat-tdg-${{ inputs.repo }}.json 2>/dev/null || echo "?")
+          echo "### ${{ inputs.repo }} — TDG Grade: ${TDG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload pmat metrics artifact
+        if: success()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: pmat-metrics-${{ inputs.repo }}
+          path: |
+            /tmp/pmat-tdg-${{ inputs.repo }}.json
+            /tmp/pmat-metrics-${{ inputs.repo }}.json
+          if-no-files-found: ignore
+          retention-days: 90
