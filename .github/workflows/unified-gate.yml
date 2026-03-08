@@ -125,6 +125,9 @@ jobs:
               # json! macro triggers disallowed_methods (internal unwrap) — false positive
               # map().unwrap_or() is idiomatic in ML option chains
               EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods -A clippy::uninlined_format_args -A clippy::map_unwrap_or" ;;
+            paiml-mcp-agent-toolkit)
+              # Code analysis tool: format macros in CLI output, complex AST types
+              EXTRA_ALLOWS="-A clippy::print_literal -A clippy::useless_format -A clippy::type_complexity -A clippy::unnecessary_cast -A clippy::manual_strip -A clippy::manual_div_ceil -A clippy::collapsible_if -A clippy::vec_init_then_push -A clippy::useless_vec -A clippy::wildcard_in_or_patterns" ;;
           esac
           # Production code: strict (-D warnings) with domain exceptions
           cargo clippy --workspace --lib --locked -- -D warnings $EXTRA_ALLOWS
@@ -310,8 +313,9 @@ jobs:
         run: |
           REPO_NAME="${{ inputs.repo }}"
           case "$REPO_NAME" in
-            whisper.apr) MAKE_TARGET="clean-room-whisper-apr" ;;
-            *)           MAKE_TARGET="clean-room-${REPO_NAME}" ;;
+            whisper.apr)              MAKE_TARGET="clean-room-whisper-apr" ;;
+            paiml-mcp-agent-toolkit)  MAKE_TARGET="clean-room-pmat" ;;
+            *)                        MAKE_TARGET="clean-room-${REPO_NAME}" ;;
           esac
           make -f "${{ github.workspace }}/infra/machines/clean-room/Makefile" "$MAKE_TARGET"
 
