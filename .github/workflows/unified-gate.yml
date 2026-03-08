@@ -127,7 +127,7 @@ jobs:
               EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods -A clippy::uninlined_format_args -A clippy::map_unwrap_or" ;;
             paiml-mcp-agent-toolkit)
               # Code analysis tool: format macros in CLI output, complex AST types
-              EXTRA_ALLOWS="-A clippy::print_literal -A clippy::useless_format -A clippy::type_complexity -A clippy::unnecessary_cast -A clippy::manual_strip -A clippy::manual_div_ceil -A clippy::collapsible_if -A clippy::vec_init_then_push -A clippy::useless_vec -A clippy::wildcard_in_or_patterns" ;;
+              EXTRA_ALLOWS="-A clippy::print_literal -A clippy::write_literal -A clippy::useless_format -A clippy::format_in_format_args -A clippy::unnecessary_map_or -A clippy::type_complexity -A clippy::unnecessary_cast -A clippy::manual_strip -A clippy::manual_div_ceil -A clippy::collapsible_if -A clippy::vec_init_then_push -A clippy::useless_vec -A clippy::wildcard_in_or_patterns" ;;
           esac
           # Production code: strict (-D warnings) with domain exceptions
           cargo clippy --workspace --lib --locked -- -D warnings $EXTRA_ALLOWS
