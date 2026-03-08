@@ -254,6 +254,9 @@ jobs:
             forjar)
               # IaC tool: doc examples + test assertions reference home dirs in generated scripts
               EXCLUDE="$EXCLUDE|tests_dispatch|query_types" ;;
+            paiml-mcp-agent-toolkit)
+              # Code analysis tool: pmat.toml config and build scripts reference local paths
+              EXCLUDE="$EXCLUDE|pmat\\.toml|scripts/" ;;
           esac
           for pattern in "${BANNED_PATHS[@]}"; do
             MATCHES=$(git grep -nE "$pattern" -- '*.rs' '*.toml' '*.sh' ':!CLAUDE.md' 2>/dev/null \
