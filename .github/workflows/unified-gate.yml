@@ -292,12 +292,21 @@ jobs:
       - name: Sync infra repo on runner
         run: |
           INFRA_DIR="$HOME/src/infra"
+          # Serialize concurrent syncs from multiple runners on the same host
+          exec 9>/tmp/infra-sync.lock
+          flock -w 30 9 || { echo "::warning::Could not acquire infra sync lock"; }
           if [ -d "$INFRA_DIR/.git" ]; then
-            git -C "$INFRA_DIR" fetch origin main --quiet
-            git -C "$INFRA_DIR" reset --hard origin/main --quiet
+            git -C "$INFRA_DIR" fetch origin main 2>&1 || {
+              echo "::warning::git fetch failed, retrying..."
+              sleep 2
+              git -C "$INFRA_DIR" fetch origin main 2>&1
+            }
+            git -C "$INFRA_DIR" reset --hard origin/main 2>&1
           else
             git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
           fi
+          exec 9>&-
+          echo "infra synced to: $(git -C "$INFRA_DIR" log --oneline -1)"
           # Symlink into workspace for make -f compatibility
           ln -sfn "$INFRA_DIR" "${{ github.workspace }}/infra"
 
@@ -378,12 +387,20 @@ jobs:
       - name: Sync infra repo on runner
         run: |
           INFRA_DIR="$HOME/src/infra"
+          exec 9>/tmp/infra-sync.lock
+          flock -w 30 9 || { echo "::warning::Could not acquire infra sync lock"; }
           if [ -d "$INFRA_DIR/.git" ]; then
-            git -C "$INFRA_DIR" fetch origin main --quiet
-            git -C "$INFRA_DIR" reset --hard origin/main --quiet
+            git -C "$INFRA_DIR" fetch origin main 2>&1 || {
+              echo "::warning::git fetch failed, retrying..."
+              sleep 2
+              git -C "$INFRA_DIR" fetch origin main 2>&1
+            }
+            git -C "$INFRA_DIR" reset --hard origin/main 2>&1
           else
             git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
           fi
+          exec 9>&-
+          echo "infra synced to: $(git -C "$INFRA_DIR" log --oneline -1)"
           ln -sfn "$INFRA_DIR" "${{ github.workspace }}/infra"
 
       - name: Checkout target repo
