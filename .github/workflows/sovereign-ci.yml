@@ -1,0 +1,128 @@
+# Sovereign CI — reusable per-repo test/lint/coverage/security workflow
+#
+# All sovereign stack repos call this instead of defining their own CI jobs.
+# Change once here → applies to all 31 repos instantly.
+#
+# Usage in each repo's ci.yml:
+#   jobs:
+#     ci:
+#       uses: paiml/.github/.github/workflows/sovereign-ci.yml@main
+#       with:
+#         repo: ${{ github.event.repository.name }}
+#       secrets: inherit
+
+name: Sovereign CI
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: 'Repository name'
+        required: true
+        type: string
+      test_args:
+        description: 'Extra args for cargo test (e.g. --features cli)'
+        required: false
+        default: ''
+        type: string
+      clippy_args:
+        description: 'Extra args for clippy (e.g. -p my-crate)'
+        required: false
+        default: '--all-targets'
+        type: string
+      skip_coverage:
+        description: 'Skip coverage job'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: "always"
+
+jobs:
+  test:
+    name: test
+    runs-on: [self-hosted, clean-room]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run tests
+        run: cargo test --lib ${{ inputs.test_args }}
+
+  lint:
+    name: lint
+    runs-on: [self-hosted, clean-room]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Clippy
+        run: cargo clippy ${{ inputs.clippy_args }} -- -D warnings
+
+  coverage:
+    name: coverage
+    if: ${{ !inputs.skip_coverage }}
+    runs-on: [self-hosted, clean-room]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install llvm-cov
+        run: cargo install cargo-llvm-cov --locked || true
+      - name: Run coverage
+        run: cargo llvm-cov test --lib --lcov --output-path lcov.info ${{ inputs.test_args }}
+      - uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+        continue-on-error: true
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked || true
+      - name: Audit
+        run: cargo audit
+
+  gate:
+    name: gate
+    runs-on: [self-hosted, clean-room]
+    if: always()
+    needs: [test, lint, coverage, security]
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "::error::Test failed"
+            exit 1
+          fi
+          if [ "${{ needs.lint.result }}" = "failure" ]; then
+            echo "::error::Lint failed"
+            exit 1
+          fi
+          echo "All critical jobs passed"
