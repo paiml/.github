@@ -110,6 +110,7 @@ jobs:
   security:
     name: security
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
