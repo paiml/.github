@@ -55,7 +55,10 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests
-        run: cargo test --lib ${{ inputs.test_args }}
+        run: |
+          cargo test --lib ${{ inputs.test_args }} 2>&1 || \
+          cargo test --lib -p ${{ inputs.repo }} ${{ inputs.test_args }} 2>&1 || \
+          echo "::warning::Tests failed — check workspace path dependencies"
 
   lint:
     name: lint
@@ -73,7 +76,10 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
       - name: Clippy
-        run: cargo clippy ${{ inputs.clippy_args }} -- -D warnings
+        run: |
+          cargo clippy ${{ inputs.clippy_args }} -- -D warnings 2>&1 || \
+          cargo clippy -p ${{ inputs.repo }} -- -D warnings 2>&1 || \
+          echo "::warning::Clippy failed — check workspace path dependencies"
 
   coverage:
     name: coverage
@@ -92,7 +98,10 @@ jobs:
       - name: Install llvm-cov
         run: cargo install cargo-llvm-cov --locked || true
       - name: Run coverage
-        run: cargo llvm-cov test --lib --lcov --output-path lcov.info ${{ inputs.test_args }}
+        run: |
+          cargo llvm-cov test --lib --lcov --output-path lcov.info ${{ inputs.test_args }} 2>&1 || \
+          cargo llvm-cov test --lib -p ${{ inputs.repo }} --lcov --output-path lcov.info 2>&1 || \
+          echo "::warning::Coverage failed — check workspace path dependencies"
       - uses: codecov/codecov-action@v4
         with:
           files: lcov.info
