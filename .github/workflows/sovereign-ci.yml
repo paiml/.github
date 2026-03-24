@@ -1,7 +1,9 @@
 # Sovereign CI — reusable per-repo test/lint/coverage/security workflow
 #
 # All sovereign stack repos call this instead of defining their own CI jobs.
-# Change once here → applies to all 31 repos instantly.
+# Change once here → applies to all 38 repos instantly.
+#
+# Spec: infra/docs/specifications/components/infra-score.md
 #
 # Usage in each repo's ci.yml:
 #   jobs:
@@ -44,6 +46,7 @@ jobs:
   test:
     name: test
     runs-on: [self-hosted, clean-room]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,11 +66,12 @@ jobs:
   lint:
     name: lint
     runs-on: [self-hosted, clean-room]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: actions/cache@v4
         with:
           path: |
@@ -75,6 +79,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+      - name: Format check
+        run: cargo fmt --all -- --check 2>&1 || echo "::warning::Format issues found"
+        continue-on-error: true
       - name: Clippy
         run: |
           cargo clippy ${{ inputs.clippy_args }} -- -D warnings 2>&1 || \
@@ -85,6 +92,7 @@ jobs:
     name: coverage
     if: ${{ !inputs.skip_coverage }}
     runs-on: [self-hosted, clean-room]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -110,6 +118,7 @@ jobs:
   security:
     name: security
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +131,7 @@ jobs:
   gate:
     name: gate
     runs-on: [self-hosted, clean-room]
+    timeout-minutes: 5
     if: always()
     needs: [test, lint, coverage, security]
     steps:
