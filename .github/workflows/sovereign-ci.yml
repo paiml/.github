@@ -64,9 +64,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests
+        env:
+          TEST_ARGS: ${{ inputs.test_args }}
+          REPO_NAME: ${{ inputs.repo }}
         run: |
-          cargo test --lib ${{ inputs.test_args }} 2>&1 || \
-          cargo test --lib -p ${{ inputs.repo }} ${{ inputs.test_args }} 2>&1 || \
+          cargo test --lib $TEST_ARGS 2>&1 || \
+          cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
           echo "::warning::Tests failed — check workspace path dependencies"
 
   lint:
@@ -91,9 +94,12 @@ jobs:
         run: cargo fmt --all -- --check 2>&1 || echo "::warning::Format issues found"
         continue-on-error: true
       - name: Clippy
+        env:
+          CLIPPY_ARGS: ${{ inputs.clippy_args }}
+          REPO_NAME: ${{ inputs.repo }}
         run: |
-          cargo clippy ${{ inputs.clippy_args }} -- -D warnings 2>&1 || \
-          cargo clippy -p ${{ inputs.repo }} -- -D warnings 2>&1 || \
+          cargo clippy $CLIPPY_ARGS -- -D warnings 2>&1 || \
+          cargo clippy -p "$REPO_NAME" -- -D warnings 2>&1 || \
           echo "::warning::Clippy failed — check workspace path dependencies"
 
   coverage:
@@ -116,9 +122,12 @@ jobs:
       - name: Install llvm-cov
         run: cargo install cargo-llvm-cov --locked || true
       - name: Run coverage
+        env:
+          TEST_ARGS: ${{ inputs.test_args }}
+          REPO_NAME: ${{ inputs.repo }}
         run: |
-          cargo llvm-cov test --lib --lcov --output-path lcov.info ${{ inputs.test_args }} 2>&1 || \
-          cargo llvm-cov test --lib -p ${{ inputs.repo }} --lcov --output-path lcov.info 2>&1 || \
+          cargo llvm-cov test --lib --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
+          cargo llvm-cov test --lib -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           echo "::warning::Coverage failed — check workspace path dependencies"
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
