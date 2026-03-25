@@ -37,6 +37,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_benchmarks:
+        description: 'Run criterion benchmarks (slow, use for nightly only)'
+        required: false
+        default: false
+        type: boolean
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -132,6 +137,44 @@ jobs:
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: lcov.info
+        continue-on-error: true
+
+  bench:
+    name: bench
+    if: ${{ inputs.run_benchmarks }}
+    runs-on: [self-hosted, clean-room]
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run criterion benchmarks
+        env:
+          REPO_NAME: ${{ inputs.repo }}
+        run: |
+          if ls benches/*.rs 2>/dev/null | head -1 | grep -q '.'; then
+            cargo bench --bench '*' -- --output-format bencher 2>&1 | tee bench-results.txt || \
+            cargo bench -p "$REPO_NAME" -- --output-format bencher 2>&1 | tee bench-results.txt || \
+            echo "::warning::Benchmarks failed"
+          else
+            echo "No benches/ directory — skipping"
+          fi
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ inputs.repo }}
+          path: bench-results.txt
+          retention-days: 90
         continue-on-error: true
 
   security:
