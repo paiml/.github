@@ -106,6 +106,14 @@ jobs:
           cargo clippy $CLIPPY_ARGS -- -D warnings 2>&1 || \
           cargo clippy -p "$REPO_NAME" -- -D warnings 2>&1 || \
           echo "::warning::Clippy failed — check workspace path dependencies"
+      - name: Supply chain audit (cargo deny)
+        run: |
+          command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked
+          if [ -f deny.toml ]; then
+            cargo deny check advisories licenses sources
+          else
+            echo "::warning::No deny.toml — skipping supply chain audit"
+          fi
 
   coverage:
     name: coverage
