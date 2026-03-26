@@ -1,0 +1,82 @@
+# PR Authorization Gate — block PRs from unauthorized contributors
+#
+# Reusable workflow called by all paiml repos. Lives in the public
+# paiml/.github repo so both public and private callers can reference it.
+#
+# Policy: only org members and explicitly allowlisted external
+# contributors may open pull requests. Unauthorized PRs are closed
+# immediately with a polite comment.
+#
+# Caller workflow should trigger on pull_request_target (opened, reopened).
+
+name: PR Authorization Gate
+
+on:
+  workflow_call:
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Check PR author authorization
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const author = context.payload.pull_request.user.login;
+
+            // Bots (dependabot, actions-user, renovate) are always allowed
+            const authorType = context.payload.pull_request.user.type;
+            if (authorType === 'Bot') {
+              console.log(`${author} is a bot — allowed`);
+              return;
+            }
+
+            // Explicitly allowlisted external contributors
+            const allowlist = new Set([
+              'guyernest',  // pmcp lead developer
+            ]);
+
+            if (allowlist.has(author)) {
+              console.log(`${author} is on the external contributor allowlist — allowed`);
+              return;
+            }
+
+            // Check org membership
+            try {
+              await github.rest.orgs.checkMembershipForUser({
+                org: 'paiml',
+                username: author,
+              });
+              console.log(`${author} is a paiml org member — allowed`);
+              return;
+            } catch (e) {
+              // 404 or 302 = not a member
+              console.log(`${author} is NOT a paiml org member (status: ${e.status})`);
+            }
+
+            // Unauthorized — close the PR
+            console.log(`Closing unauthorized PR from ${author}`);
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                `Thank you for your interest in this project, @${author}.`,
+                '',
+                'This repository only accepts pull requests from organization members and authorized contributors. Your PR has been closed automatically.',
+                '',
+                'If you believe you should have access, please open an issue to discuss your contribution first.',
+              ].join('\n'),
+            });
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              state: 'closed',
+            });
+
+            core.setFailed(`PR author ${author} is not authorized`);
