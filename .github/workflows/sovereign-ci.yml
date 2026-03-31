@@ -72,7 +72,6 @@ jobs:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests
         env:
@@ -98,7 +97,6 @@ jobs:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
       - name: Format check
         run: cargo fmt --all -- --check 2>&1 || echo "::warning::Format issues found"
@@ -135,7 +133,6 @@ jobs:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
           key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
       - name: Run coverage
         env:
@@ -167,7 +164,6 @@ jobs:
           path: |
             /usr/local/cargo/registry
             /usr/local/cargo/git
-            target
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
       - name: Run criterion benchmarks
         env:
