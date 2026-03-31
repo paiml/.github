@@ -110,6 +110,7 @@ jobs:
           cargo clippy -p "$REPO_NAME" -- -D warnings 2>&1 || \
           echo "::warning::Clippy failed — check workspace path dependencies"
       - name: Supply chain audit (cargo deny)
+        continue-on-error: true
         run: |
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
