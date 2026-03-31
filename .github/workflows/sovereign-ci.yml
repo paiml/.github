@@ -3,6 +3,10 @@
 # All sovereign stack repos call this instead of defining their own CI jobs.
 # Change once here → applies to all 38 repos instantly.
 #
+# Self-hosted runners: Rust toolchain provisioned by forjar (infra/machines/intel/forjar.yaml).
+# DO NOT install Rust in CI — use what forjar provides. This prevents rustup race conditions
+# when parallel jobs share the same machine.
+#
 # Spec: infra/docs/specifications/components/infra-score.md
 #
 # Usage in each repo's ci.yml:
@@ -60,12 +64,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - name: Set Rust env
+      - name: Verify Rust toolchain
         run: |
-          echo "RUSTUP_HOME=${{ runner.temp }}/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=${{ runner.temp }}/.cargo" >> $GITHUB_ENV
-          echo "${{ runner.temp }}/.cargo/bin" >> $GITHUB_PATH
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+          rustc --version
+          cargo --version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -90,14 +92,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - name: Set Rust env
+      - name: Verify Rust toolchain
         run: |
-          echo "RUSTUP_HOME=${{ runner.temp }}/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=${{ runner.temp }}/.cargo" >> $GITHUB_ENV
-          echo "${{ runner.temp }}/.cargo/bin" >> $GITHUB_PATH
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-        with:
-          components: clippy, rustfmt
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -118,7 +117,6 @@ jobs:
           echo "::warning::Clippy failed — check workspace path dependencies"
       - name: Supply chain audit (cargo deny)
         run: |
-          command -v cargo-deny >/dev/null 2>&1 || cargo install cargo-deny --locked
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
           else
@@ -134,12 +132,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - name: Set Rust env
+      - name: Verify Rust toolchain
         run: |
-          echo "RUSTUP_HOME=${{ runner.temp }}/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=${{ runner.temp }}/.cargo" >> $GITHUB_ENV
-          echo "${{ runner.temp }}/.cargo/bin" >> $GITHUB_PATH
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+          rustc --version
+          cargo llvm-cov --version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -147,8 +143,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
-      - name: Install llvm-cov
-        run: cargo install cargo-llvm-cov --locked || true
       - name: Run coverage
         env:
           TEST_ARGS: ${{ inputs.test_args }}
@@ -172,12 +166,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - name: Set Rust env
-        run: |
-          echo "RUSTUP_HOME=${{ runner.temp }}/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=${{ runner.temp }}/.cargo" >> $GITHUB_ENV
-          echo "${{ runner.temp }}/.cargo/bin" >> $GITHUB_PATH
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - name: Verify Rust toolchain
+        run: rustc --version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -214,11 +204,6 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - name: Set Rust env
-        run: |
-          echo "RUSTUP_HOME=${{ runner.temp }}/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=${{ runner.temp }}/.cargo" >> $GITHUB_ENV
-          echo "${{ runner.temp }}/.cargo/bin" >> $GITHUB_PATH
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
