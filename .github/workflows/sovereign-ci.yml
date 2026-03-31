@@ -5,7 +5,8 @@
 #
 # Self-hosted jobs run inside the sovereign-ci container (built by forjar).
 # Each job gets an isolated filesystem — no shared ~/.rustup/, no race conditions.
-# Image: sovereign-ci:stable (local on mac-server, built from infra/machines/intel/sovereign-ci/Dockerfile)
+# Image: localhost:5000/sovereign-ci:stable (local registry on mac-server)
+# Rebuild: cd infra && make -f machines/intel/Makefile ci-image
 #
 # Spec: infra/docs/specifications/components/infra-score.md
 #
@@ -60,7 +61,7 @@ jobs:
     name: test
     runs-on: [self-hosted, clean-room]
     container:
-      image: sovereign-ci:stable
+      image: localhost:5000/sovereign-ci:stable
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -86,7 +87,7 @@ jobs:
     name: lint
     runs-on: [self-hosted, clean-room]
     container:
-      image: sovereign-ci:stable
+      image: localhost:5000/sovereign-ci:stable
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -123,7 +124,7 @@ jobs:
     if: ${{ !inputs.skip_coverage }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: sovereign-ci:stable
+      image: localhost:5000/sovereign-ci:stable
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -154,7 +155,7 @@ jobs:
     if: ${{ inputs.run_benchmarks }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: sovereign-ci:stable
+      image: localhost:5000/sovereign-ci:stable
     timeout-minutes: 60
     continue-on-error: true
     steps:
