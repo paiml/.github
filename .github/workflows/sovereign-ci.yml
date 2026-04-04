@@ -70,15 +70,11 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
             fi
           done
-          # whisper.apr path dep uses dot notation but repo is whisper-apr
-          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
-            ln -s whisper-apr whisper.apr
-          fi
       - name: Generate contract assertions (pv codegen)
         run: |
           # Download pv if not baked into container image
