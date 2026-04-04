@@ -77,13 +77,13 @@ jobs:
           done
       - name: Generate contract assertions (pv codegen)
         run: |
-          # pv should be baked into sovereign-ci:stable container
-          # Fallback: install from crates.io if not available (slower, ~2min)
-          if ! command -v pv &>/dev/null; then
-            echo "::notice::pv not in container — installing from crates.io (rebuild container to avoid this)"
-            cargo install provable-contracts-cli --locked --quiet 2>&1 || true
+          # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
+          PV="/usr/local/cargo/bin/pv"
+          if [ ! -x "$PV" ]; then
+            # Fallback: try PATH
+            PV=$(command -v pv 2>/dev/null || true)
           fi
-          if ! command -v pv &>/dev/null; then
+          if [ -z "$PV" ] || [ ! -x "$PV" ]; then
             echo "::warning::pv not available — skipping contract generation"
             exit 0
           fi
@@ -92,11 +92,11 @@ jobs:
           # Generate for root src/ if mod generated_contracts exists
           if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
             if [ -d contracts ]; then
-              pv codegen contracts/ -o src/generated_contracts.rs || true
+              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
             fi
             # Fallback to master contract set if local contracts didn't produce output
             if [ ! -f src/generated_contracts.rs ] && [ -d "$PC_CONTRACTS" ]; then
-              pv codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
+              "$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
             fi
           fi
           # Generate for workspace members (crates/*/, */src/)
@@ -104,10 +104,10 @@ jobs:
             if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
               member_dir=$(dirname "$src_dir")
               if [ -d "$member_dir/contracts" ]; then
-                pv codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
+                "$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
               fi
               if [ ! -f "$src_dir/generated_contracts.rs" ] && [ -d "$PC_CONTRACTS" ]; then
-                pv codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
+                "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
               fi
             fi
           done
