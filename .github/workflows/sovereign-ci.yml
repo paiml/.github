@@ -80,7 +80,7 @@ jobs:
         run: |
           cargo test --lib $TEST_ARGS 2>&1 || \
           cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-          echo "::warning::Tests failed — check workspace path dependencies"
+          { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
 
   lint:
     name: lint
@@ -108,7 +108,7 @@ jobs:
         run: |
           cargo clippy $CLIPPY_ARGS -- -D warnings 2>&1 || \
           cargo clippy -p "$REPO_NAME" -- -D warnings 2>&1 || \
-          echo "::warning::Clippy failed — check workspace path dependencies"
+          { echo "::error::Clippy failed — check workspace path dependencies"; exit 1; }
       - name: Supply chain audit (cargo deny)
         continue-on-error: true
         run: |
@@ -142,7 +142,7 @@ jobs:
         run: |
           cargo llvm-cov test --lib --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
-          echo "::warning::Coverage failed — check workspace path dependencies"
+          { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: lcov.info
@@ -235,6 +235,10 @@ jobs:
           fi
           if [ "${{ needs.lint.result }}" = "failure" ]; then
             echo "::error::Lint failed"
+            exit 1
+          fi
+          if [ "${{ needs.coverage.result }}" = "failure" ]; then
+            echo "::error::Coverage failed"
             exit 1
           fi
           echo "All critical jobs passed"
