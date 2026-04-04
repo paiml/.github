@@ -77,10 +77,11 @@ jobs:
           done
       - name: Generate contract assertions (pv codegen)
         run: |
-          # Download pv if not baked into container image
+          # pv should be baked into sovereign-ci:stable container
+          # Fallback: install from crates.io if not available (slower, ~2min)
           if ! command -v pv &>/dev/null; then
-            curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
-              | tar xz -C /usr/local/bin || echo "::warning::Failed to download pv binary"
+            echo "::notice::pv not in container — installing from crates.io (rebuild container to avoid this)"
+            cargo install provable-contracts-cli --locked --quiet 2>&1 || true
           fi
           if ! command -v pv &>/dev/null; then
             echo "::warning::pv not available — skipping contract generation"
