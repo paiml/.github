@@ -84,17 +84,34 @@ jobs:
           # Download pv if not baked into container image
           if ! command -v pv &>/dev/null; then
             curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
-              | tar xz -C /usr/local/bin 2>/dev/null || true
+              | tar xz -C /usr/local/bin || echo "::warning::Failed to download pv binary"
           fi
-          # Generate debug_assert macros from YAML contracts (root)
-          if [ -d contracts ] && command -v pv &>/dev/null; then
-            pv codegen contracts/ -o src/generated_contracts.rs 2>/dev/null || true
+          if ! command -v pv &>/dev/null; then
+            echo "::warning::pv not available — skipping contract generation"
+            exit 0
           fi
-          # Generate for workspace members with their own contracts
-          for member_contracts in crates/*/contracts; do
-            if [ -d "$member_contracts" ] && command -v pv &>/dev/null; then
-              member_dir=$(dirname "$member_contracts")
-              pv codegen "$member_contracts" -o "$member_dir/src/generated_contracts.rs" 2>/dev/null || true
+          # Master contract set from provable-contracts sibling (276 contracts, 646 preconditions)
+          PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
+          # Generate for root src/ if mod generated_contracts exists
+          if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
+            if [ -d contracts ]; then
+              pv codegen contracts/ -o src/generated_contracts.rs || true
+            fi
+            # Fallback to master contract set if local contracts didn't produce output
+            if [ ! -f src/generated_contracts.rs ] && [ -d "$PC_CONTRACTS" ]; then
+              pv codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
+            fi
+          fi
+          # Generate for workspace members (crates/*/, */src/)
+          for src_dir in crates/*/src */src; do
+            if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
+              member_dir=$(dirname "$src_dir")
+              if [ -d "$member_dir/contracts" ]; then
+                pv codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
+              fi
+              if [ ! -f "$src_dir/generated_contracts.rs" ] && [ -d "$PC_CONTRACTS" ]; then
+                pv codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
+              fi
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
