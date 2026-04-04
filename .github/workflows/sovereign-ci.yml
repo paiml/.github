@@ -70,9 +70,31 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+            fi
+          done
+          # whisper.apr path dep uses dot notation but repo is whisper-apr
+          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
+            ln -s whisper-apr whisper.apr
+          fi
+      - name: Generate contract assertions (pv codegen)
+        run: |
+          # Download pv if not baked into container image
+          if ! command -v pv &>/dev/null; then
+            curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar xz -C /usr/local/bin 2>/dev/null || true
+          fi
+          # Generate debug_assert macros from YAML contracts (root)
+          if [ -d contracts ] && command -v pv &>/dev/null; then
+            pv codegen contracts/ -o src/generated_contracts.rs 2>/dev/null || true
+          fi
+          # Generate for workspace members with their own contracts
+          for member_contracts in crates/*/contracts; do
+            if [ -d "$member_contracts" ] && command -v pv &>/dev/null; then
+              member_dir=$(dirname "$member_contracts")
+              pv codegen "$member_contracts" -o "$member_dir/src/generated_contracts.rs" 2>/dev/null || true
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -103,9 +125,27 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+            fi
+          done
+          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
+            ln -s whisper-apr whisper.apr
+          fi
+      - name: Generate contract assertions (pv codegen)
+        run: |
+          if ! command -v pv &>/dev/null; then
+            curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar xz -C /usr/local/bin 2>/dev/null || true
+          fi
+          if [ -d contracts ] && command -v pv &>/dev/null; then
+            pv codegen contracts/ -o src/generated_contracts.rs 2>/dev/null || true
+          fi
+          for member_contracts in crates/*/contracts; do
+            if [ -d "$member_contracts" ] && command -v pv &>/dev/null; then
+              member_dir=$(dirname "$member_contracts")
+              pv codegen "$member_contracts" -o "$member_dir/src/generated_contracts.rs" 2>/dev/null || true
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -148,9 +188,27 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+            fi
+          done
+          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
+            ln -s whisper-apr whisper.apr
+          fi
+      - name: Generate contract assertions (pv codegen)
+        run: |
+          if ! command -v pv &>/dev/null; then
+            curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar xz -C /usr/local/bin 2>/dev/null || true
+          fi
+          if [ -d contracts ] && command -v pv &>/dev/null; then
+            pv codegen contracts/ -o src/generated_contracts.rs 2>/dev/null || true
+          fi
+          for member_contracts in crates/*/contracts; do
+            if [ -d "$member_contracts" ] && command -v pv &>/dev/null; then
+              member_dir=$(dirname "$member_contracts")
+              pv codegen "$member_contracts" -o "$member_dir/src/generated_contracts.rs" 2>/dev/null || true
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -187,9 +245,27 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+            fi
+          done
+          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
+            ln -s whisper-apr whisper.apr
+          fi
+      - name: Generate contract assertions (pv codegen)
+        run: |
+          if ! command -v pv &>/dev/null; then
+            curl -sSL "https://github.com/paiml/provable-contracts/releases/download/nightly/pv-x86_64-unknown-linux-gnu.tar.gz" \
+              | tar xz -C /usr/local/bin 2>/dev/null || true
+          fi
+          if [ -d contracts ] && command -v pv &>/dev/null; then
+            pv codegen contracts/ -o src/generated_contracts.rs 2>/dev/null || true
+          fi
+          for member_contracts in crates/*/contracts; do
+            if [ -d "$member_contracts" ] && command -v pv &>/dev/null; then
+              member_dir=$(dirname "$member_contracts")
+              pv codegen "$member_contracts" -o "$member_dir/src/generated_contracts.rs" 2>/dev/null || true
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -230,11 +306,14 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
             if [ ! -d "$repo" ]; then
               git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
             fi
           done
+          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
+            ln -s whisper-apr whisper.apr
+          fi
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
