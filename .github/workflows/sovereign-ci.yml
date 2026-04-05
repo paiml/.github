@@ -88,15 +88,17 @@ jobs:
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
-          PV="/usr/local/cargo/bin/pv"
-          if [ ! -x "$PV" ]; then
-            # Fallback: try PATH
-            PV=$(command -v pv 2>/dev/null || true)
-          fi
-          if [ -z "$PV" ] || [ ! -x "$PV" ]; then
-            echo "::warning::pv not available — skipping contract generation"
+          PV=""
+          for candidate in /usr/local/cargo/bin/pv /usr/local/bin/pv; do
+            if [ -f "$candidate" ]; then PV="$candidate"; break; fi
+          done
+          if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
+          if [ -z "$PV" ]; then
+            echo "::warning::pv not found (searched /usr/local/cargo/bin /usr/local/bin PATH)"
+            ls -la /usr/local/cargo/bin/ 2>/dev/null | head -5 || echo "  /usr/local/cargo/bin/ not found"
             exit 0
           fi
+          echo "pv found at: $PV"
           # Master contract set from provable-contracts sibling (276 contracts, 646 preconditions)
           PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
           # Generate for root src/ if mod generated_contracts exists
