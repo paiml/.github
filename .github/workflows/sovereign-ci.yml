@@ -72,7 +72,17 @@ jobs:
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
-              git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+              for attempt in 1 2 3; do
+                git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                echo "::warning::Retry $attempt for $repo clone"
+                sleep 2
+              done
+            fi
+          done
+          # Verify critical siblings
+          for repo in provable-contracts; do
+            if [ ! -d "$repo" ]; then
+              echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
       - name: Generate contract assertions (pv codegen)
