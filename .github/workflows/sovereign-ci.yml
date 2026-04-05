@@ -149,14 +149,20 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
-              git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+              for attempt in 1 2 3; do
+                git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                echo "::warning::Retry $attempt for $repo clone"
+                sleep 2
+              done
             fi
           done
-          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
-            ln -s whisper-apr whisper.apr
-          fi
+          for repo in provable-contracts; do
+            if [ ! -d "$repo" ]; then
+              echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -228,14 +234,20 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
-              git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+              for attempt in 1 2 3; do
+                git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                echo "::warning::Retry $attempt for $repo clone"
+                sleep 2
+              done
             fi
           done
-          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
-            ln -s whisper-apr whisper.apr
-          fi
+          for repo in provable-contracts; do
+            if [ ! -d "$repo" ]; then
+              echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -301,14 +313,20 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
-              git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+              for attempt in 1 2 3; do
+                git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                echo "::warning::Retry $attempt for $repo clone"
+                sleep 2
+              done
             fi
           done
-          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
-            ln -s whisper-apr whisper.apr
-          fi
+          for repo in provable-contracts; do
+            if [ ! -d "$repo" ]; then
+              echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -378,14 +396,20 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper-apr; do
+          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             if [ ! -d "$repo" ]; then
-              git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>/dev/null || true
+              for attempt in 1 2 3; do
+                git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                echo "::warning::Retry $attempt for $repo clone"
+                sleep 2
+              done
             fi
           done
-          if [ -d whisper-apr ] && [ ! -e whisper.apr ]; then
-            ln -s whisper-apr whisper.apr
-          fi
+          for repo in provable-contracts; do
+            if [ ! -d "$repo" ]; then
+              echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
