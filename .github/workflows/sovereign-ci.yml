@@ -47,6 +47,11 @@ on:
         required: false
         default: false
         type: boolean
+      extra_pkgs:
+        description: 'Extra apt packages to install in container (e.g. python3-dev libclang-dev)'
+        required: false
+        default: ''
+        type: string
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -67,6 +72,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Install extra packages
+        if: ${{ inputs.extra_pkgs != '' }}
+        run: |
+          apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
+          sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
@@ -158,6 +168,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Install extra packages
+        if: ${{ inputs.extra_pkgs != '' }}
+        run: |
+          apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
+          sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
@@ -254,6 +269,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Install extra packages
+        if: ${{ inputs.extra_pkgs != '' }}
+        run: |
+          apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
+          sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
@@ -344,6 +364,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Install extra packages
+        if: ${{ inputs.extra_pkgs != '' }}
+        run: |
+          apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
+          sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
@@ -438,6 +463,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Install extra packages
+        if: ${{ inputs.extra_pkgs != '' }}
+        run: |
+          apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
+          sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
