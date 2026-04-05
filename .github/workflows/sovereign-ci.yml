@@ -84,10 +84,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
           # Verify critical siblings
@@ -98,10 +98,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -150,10 +150,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -198,10 +198,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
           for repo in provable-contracts; do
@@ -211,10 +211,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -253,10 +253,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -313,10 +313,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
           for repo in provable-contracts; do
@@ -326,10 +326,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -368,10 +368,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -422,10 +422,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
           for repo in provable-contracts; do
@@ -435,10 +435,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -477,10 +477,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -535,10 +535,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
           for repo in provable-contracts; do
@@ -548,10 +548,10 @@ jobs:
           done
           # Fix pv codegen unused variable bug (provable-contracts#64):
           # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Prefix with underscore to suppress until pv codegen template is fixed.
+          # Insert allow attribute at top of generated files.
           for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
             if [ -f "$f" ]; then
-              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
             fi
           done
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
