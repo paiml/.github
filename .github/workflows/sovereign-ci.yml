@@ -154,6 +154,8 @@ jobs:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
         run: |
+          # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo test --lib $TEST_ARGS 2>&1 || \
           cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
           { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
