@@ -34,7 +34,12 @@ jobs:
             }
 
             // Explicitly allowlisted external contributors
+            // Allowlist: org admins (bypass private-membership API limitation)
+            // + explicitly allowlisted external contributors.
+            // The default GITHUB_TOKEN cannot see private org memberships, so
+            // admins with private membership would otherwise be auto-closed.
             const allowlist = new Set([
+              'noahgift',   // paiml org admin/owner
               'guyernest',  // pmcp lead developer
             ]);
 
