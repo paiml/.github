@@ -79,10 +79,26 @@ jobs:
               done
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
           # Verify critical siblings
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -123,6 +139,14 @@ jobs:
               fi
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -160,9 +184,25 @@ jobs:
               done
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -194,6 +234,14 @@ jobs:
               if [ ! -f "$src_dir/generated_contracts.rs" ] && [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
               fi
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -245,9 +293,25 @@ jobs:
               done
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -279,6 +343,14 @@ jobs:
               if [ ! -f "$src_dir/generated_contracts.rs" ] && [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
               fi
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -324,9 +396,25 @@ jobs:
               done
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - name: Generate contract assertions (pv codegen)
@@ -358,6 +446,14 @@ jobs:
               if [ ! -f "$src_dir/generated_contracts.rs" ] && [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
               fi
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -407,9 +503,25 @@ jobs:
               done
             fi
           done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
+            fi
+          done
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
+            fi
+          done
+          # Fix pv codegen unused variable bug (provable-contracts#64):
+          # Generated macros use `let path = &$input;` which triggers unused_variables.
+          # Prefix with underscore to suppress until pv codegen template is fixed.
+          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
+            if [ -f "$f" ]; then
+              sed -i 's/let \([a-z_]*\) = &\$input;/let _\1 = \&$input;/g' "$f"
             fi
           done
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
