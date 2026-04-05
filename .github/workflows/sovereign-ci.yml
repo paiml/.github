@@ -122,13 +122,9 @@ jobs:
           PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
           # Generate for root src/ if mod generated_contracts exists
           if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
-            # Always start with master contract set (276 contracts, all macros)
+            # Use master contract set (276 contracts, all macros including kernel ops)
             if [ -d "$PC_CONTRACTS" ]; then
               "$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
-            fi
-            # Append repo-specific contracts (may add extra macros)
-            if [ -d contracts ] && [ -f src/generated_contracts.rs ]; then
-              "$PV" codegen contracts/ >> src/generated_contracts.rs 2>/dev/null || true
             elif [ -d contracts ]; then
               "$PV" codegen contracts/ -o src/generated_contracts.rs || true
             fi
@@ -137,12 +133,8 @@ jobs:
           for src_dir in crates/*/src */src; do
             if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
               member_dir=$(dirname "$src_dir")
-              # Master set first, then append local
               if [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
-              fi
-              if [ -d "$member_dir/contracts" ] && [ -f "$src_dir/generated_contracts.rs" ]; then
-                "$PV" codegen "$member_dir/contracts" >> "$src_dir/generated_contracts.rs" 2>/dev/null || true
               elif [ -d "$member_dir/contracts" ]; then
                 "$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
               fi
@@ -240,12 +232,8 @@ jobs:
           for src_dir in crates/*/src */src; do
             if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
               member_dir=$(dirname "$src_dir")
-              # Master set first, then append local
               if [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
-              fi
-              if [ -d "$member_dir/contracts" ] && [ -f "$src_dir/generated_contracts.rs" ]; then
-                "$PV" codegen "$member_dir/contracts" >> "$src_dir/generated_contracts.rs" 2>/dev/null || true
               elif [ -d "$member_dir/contracts" ]; then
                 "$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
               fi
@@ -355,12 +343,8 @@ jobs:
           for src_dir in crates/*/src */src; do
             if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
               member_dir=$(dirname "$src_dir")
-              # Master set first, then append local
               if [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
-              fi
-              if [ -d "$member_dir/contracts" ] && [ -f "$src_dir/generated_contracts.rs" ]; then
-                "$PV" codegen "$member_dir/contracts" >> "$src_dir/generated_contracts.rs" 2>/dev/null || true
               elif [ -d "$member_dir/contracts" ]; then
                 "$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
               fi
@@ -464,12 +448,8 @@ jobs:
           for src_dir in crates/*/src */src; do
             if [ -d "$src_dir" ] && [ -f "$src_dir/lib.rs" ] && grep -q 'mod generated_contracts' "$src_dir/lib.rs" && [ ! -f "$src_dir/generated_contracts.rs" ]; then
               member_dir=$(dirname "$src_dir")
-              # Master set first, then append local
               if [ -d "$PC_CONTRACTS" ]; then
                 "$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true
-              fi
-              if [ -d "$member_dir/contracts" ] && [ -f "$src_dir/generated_contracts.rs" ]; then
-                "$PV" codegen "$member_dir/contracts" >> "$src_dir/generated_contracts.rs" 2>/dev/null || true
               elif [ -d "$member_dir/contracts" ]; then
                 "$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true
               fi
