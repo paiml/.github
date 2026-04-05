@@ -73,7 +73,10 @@ jobs:
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
-            if [ ! -d "$repo" ]; then
+            if [ -d "$repo" ]; then
+              # Pull latest to avoid stale cached versions
+              git -C "$repo" fetch --depth 1 origin main 2>/dev/null && git -C "$repo" reset --hard FETCH_HEAD 2>/dev/null || true
+            else
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
@@ -161,7 +164,10 @@ jobs:
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
-            if [ ! -d "$repo" ]; then
+            if [ -d "$repo" ]; then
+              # Pull latest to avoid stale cached versions
+              git -C "$repo" fetch --depth 1 origin main 2>/dev/null && git -C "$repo" reset --hard FETCH_HEAD 2>/dev/null || true
+            else
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
@@ -254,7 +260,10 @@ jobs:
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
-            if [ ! -d "$repo" ]; then
+            if [ -d "$repo" ]; then
+              # Pull latest to avoid stale cached versions
+              git -C "$repo" fetch --depth 1 origin main 2>/dev/null && git -C "$repo" reset --hard FETCH_HEAD 2>/dev/null || true
+            else
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
@@ -341,7 +350,10 @@ jobs:
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
-            if [ ! -d "$repo" ]; then
+            if [ -d "$repo" ]; then
+              # Pull latest to avoid stale cached versions
+              git -C "$repo" fetch --depth 1 origin main 2>/dev/null && git -C "$repo" reset --hard FETCH_HEAD 2>/dev/null || true
+            else
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
@@ -432,7 +444,10 @@ jobs:
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
-            if [ ! -d "$repo" ]; then
+            if [ -d "$repo" ]; then
+              # Pull latest to avoid stale cached versions
+              git -C "$repo" fetch --depth 1 origin main 2>/dev/null && git -C "$repo" reset --hard FETCH_HEAD 2>/dev/null || true
+            else
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
