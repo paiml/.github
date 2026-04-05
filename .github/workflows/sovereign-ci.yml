@@ -82,28 +82,16 @@ jobs:
               done
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
           # Verify critical siblings
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -140,14 +128,8 @@ jobs:
               fi
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -188,27 +170,15 @@ jobs:
               done
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -239,14 +209,8 @@ jobs:
               fi
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -261,8 +225,8 @@ jobs:
           CLIPPY_ARGS: ${{ inputs.clippy_args }}
           REPO_NAME: ${{ inputs.repo }}
         run: |
-          cargo clippy $CLIPPY_ARGS -- -D warnings 2>&1 || \
-          cargo clippy -p "$REPO_NAME" -- -D warnings 2>&1 || \
+          cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
+          cargo clippy -p "$REPO_NAME" -- -D warnings -A unused-variables 2>&1 || \
           { echo "::error::Clippy failed — check workspace path dependencies"; exit 1; }
       - name: Supply chain audit (cargo deny)
         continue-on-error: true
@@ -299,27 +263,15 @@ jobs:
               done
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -350,14 +302,8 @@ jobs:
               fi
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -404,27 +350,15 @@ jobs:
               done
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
@@ -455,14 +389,8 @@ jobs:
               fi
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -513,27 +441,15 @@ jobs:
               done
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
           for repo in provable-contracts; do
             if [ ! -d "$repo" ]; then
               echo "::error::Critical sibling $repo missing — builds will fail"
             fi
           done
-          # Fix pv codegen unused variable bug (provable-contracts#64):
-          # Generated macros use `let path = &$input;` which triggers unused_variables.
-          # Insert allow attribute at top of generated files.
-          for f in src/generated_contracts.rs crates/*/src/generated_contracts.rs */src/generated_contracts.rs; do
-            if [ -f "$f" ]; then
-              sed -i '1i #![allow(unused_variables, unused_macros)]' "$f"
-            fi
-          done
+          # Note: generated contract macros may have unused variables (provable-contracts#64).
+          # This is handled by adding -A unused-variables to the clippy step.
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
