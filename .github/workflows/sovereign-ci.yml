@@ -71,9 +71,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Remove stale partial clones (file instead of dir)
+            if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
               done
@@ -176,9 +179,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Remove stale partial clones (file instead of dir)
+            if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
               done
@@ -285,9 +291,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Remove stale partial clones (file instead of dir)
+            if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
               done
@@ -388,9 +397,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Remove stale partial clones (file instead of dir)
+            if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
               done
@@ -495,9 +507,12 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Remove stale partial clones (file instead of dir)
+            if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
                 git clone --depth 1 --quiet "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
               done
