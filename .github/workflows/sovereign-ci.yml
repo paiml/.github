@@ -182,21 +182,21 @@ jobs:
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
-          PV="/usr/local/cargo/bin/pv"
-          if [ ! -x "$PV" ]; then
-            PV=$(command -v pv 2>/dev/null || true)
-          fi
-          if [ -z "$PV" ] || [ ! -x "$PV" ]; then
-            echo "::warning::pv not available — skipping contract generation"
+          PV=""
+          for candidate in /usr/local/cargo/bin/pv /usr/local/bin/pv; do
+            if [ -f "$candidate" ]; then PV="$candidate"; break; fi
+          done
+          if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
+          if [ -z "$PV" ]; then
+            echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
           PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
           if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
-            if [ -d contracts ]; then
-              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
-            fi
-            if [ ! -f src/generated_contracts.rs ] && [ -d "$PC_CONTRACTS" ]; then
+            if [ -d "$PC_CONTRACTS" ]; then
               "$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
+            elif [ -d contracts ]; then
+              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
             fi
           fi
           for src_dir in crates/*/src */src; do
@@ -275,21 +275,21 @@ jobs:
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
-          PV="/usr/local/cargo/bin/pv"
-          if [ ! -x "$PV" ]; then
-            PV=$(command -v pv 2>/dev/null || true)
-          fi
-          if [ -z "$PV" ] || [ ! -x "$PV" ]; then
-            echo "::warning::pv not available — skipping contract generation"
+          PV=""
+          for candidate in /usr/local/cargo/bin/pv /usr/local/bin/pv; do
+            if [ -f "$candidate" ]; then PV="$candidate"; break; fi
+          done
+          if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
+          if [ -z "$PV" ]; then
+            echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
           PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
           if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
-            if [ -d contracts ]; then
-              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
-            fi
-            if [ ! -f src/generated_contracts.rs ] && [ -d "$PC_CONTRACTS" ]; then
+            if [ -d "$PC_CONTRACTS" ]; then
               "$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
+            elif [ -d contracts ]; then
+              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
             fi
           fi
           for src_dir in crates/*/src */src; do
@@ -362,21 +362,21 @@ jobs:
       - name: Generate contract assertions (pv codegen)
         run: |
           # pv is baked into sovereign-ci:stable at /usr/local/cargo/bin/pv
-          PV="/usr/local/cargo/bin/pv"
-          if [ ! -x "$PV" ]; then
-            PV=$(command -v pv 2>/dev/null || true)
-          fi
-          if [ -z "$PV" ] || [ ! -x "$PV" ]; then
-            echo "::warning::pv not available — skipping contract generation"
+          PV=""
+          for candidate in /usr/local/cargo/bin/pv /usr/local/bin/pv; do
+            if [ -f "$candidate" ]; then PV="$candidate"; break; fi
+          done
+          if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
+          if [ -z "$PV" ]; then
+            echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
           PC_CONTRACTS="$GITHUB_WORKSPACE/../provable-contracts/contracts"
           if [ -f src/lib.rs ] && grep -q 'mod generated_contracts' src/lib.rs && [ ! -f src/generated_contracts.rs ]; then
-            if [ -d contracts ]; then
-              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
-            fi
-            if [ ! -f src/generated_contracts.rs ] && [ -d "$PC_CONTRACTS" ]; then
+            if [ -d "$PC_CONTRACTS" ]; then
               "$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true
+            elif [ -d contracts ]; then
+              "$PV" codegen contracts/ -o src/generated_contracts.rs || true
             fi
           fi
           for src_dir in crates/*/src */src; do
