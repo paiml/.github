@@ -60,6 +60,10 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: "always"
+  # Prevent OTLP export hangs in CI (no collector available).
+  # Default BSP export timeout is 30s; set to 5s for fast failure.
+  OTEL_BSP_EXPORT_TIMEOUT: "5000"
+  OTEL_EXPORTER_OTLP_TIMEOUT: "5000"
 
 jobs:
   test:
@@ -346,6 +350,8 @@ jobs:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
         run: |
+          # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
