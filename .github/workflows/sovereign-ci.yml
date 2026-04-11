@@ -512,7 +512,7 @@ jobs:
           # cargo-audit 0.22 does NOT read config files — only CLI flags.
           IGNORE_FLAGS=""
           if [ -f .cargo/audit.toml ]; then
-            for id in $(grep -oE 'RUSTSEC-[0-9]+-[0-9]+' .cargo/audit.toml); do
+            for id in $(sed -n 's/.*\(RUSTSEC-[0-9]*-[0-9]*\).*/\1/p' .cargo/audit.toml); do
               IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"
             done
             echo "Audit ignores: $IGNORE_FLAGS"
