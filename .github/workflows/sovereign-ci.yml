@@ -506,18 +506,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || true
-      - name: Install audit config
-        run: |
-          # cargo-audit reads ~/.cargo/audit.toml for ignore list.
-          # Repos store their config at .cargo/audit.toml — copy it to
-          # where cargo-audit expects it (home dir, not workspace).
-          if [ -f .cargo/audit.toml ]; then
-            mkdir -p ~/.cargo
-            cp .cargo/audit.toml ~/.cargo/audit.toml
-            echo "Installed .cargo/audit.toml → ~/.cargo/audit.toml"
-          fi
       - name: Audit
-        run: cargo audit
+        run: |
+          # Build --ignore flags from .cargo/audit.toml if it exists.
+          # cargo-audit 0.22 does NOT read config files — only CLI flags.
+          IGNORE_FLAGS=""
+          if [ -f .cargo/audit.toml ]; then
+            for id in $(grep -oP 'RUSTSEC-\d+-\d+' .cargo/audit.toml); do
+              IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"
+            done
+            echo "Audit ignores: $IGNORE_FLAGS"
+          fi
+          cargo audit $IGNORE_FLAGS
 
   provenance:
     name: provenance
