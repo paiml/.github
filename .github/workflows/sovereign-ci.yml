@@ -85,6 +85,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
+            [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ -d "$repo" ]; then
@@ -183,6 +185,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
+            [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ -d "$repo" ]; then
@@ -284,6 +288,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
+            [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ -d "$repo" ]; then
@@ -381,6 +387,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
+            [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ -d "$repo" ]; then
@@ -483,6 +491,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/.."
           for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
+            [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             if [ -d "$repo" ]; then
