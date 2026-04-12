@@ -464,10 +464,12 @@ jobs:
 
   security:
     name: security
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, clean-room]
     timeout-minutes: 10
     # Rule 8: Security is a required check — no more continue-on-error.
     # Advisory exemptions go in .cargo/audit.toml, not in CI skip logic.
+    # Moved from ubuntu-latest to self-hosted: matches sovereign runner policy
+    # and avoids sibling checkout PWD issues on GitHub-hosted runners.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
