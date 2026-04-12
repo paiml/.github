@@ -508,6 +508,14 @@ jobs:
         run: cargo install cargo-audit --locked || true
       - name: Audit
         run: |
+          # FIVE-WHYS ROOT CAUSE (2026-04-12):
+          # The "Checkout sibling repos" step does cd $GITHUB_WORKSPACE/..
+          # and never restores PWD. Without this cd, cargo audit reads
+          # .cargo/audit.toml from a sibling repo (main branch), not from
+          # the PR checkout — causing advisory exemptions to be silently
+          # ignored. This was the root cause of 5 CI reruns on PR #726.
+          cd "$GITHUB_WORKSPACE"
+
           # Build --ignore flags from .cargo/audit.toml if it exists.
           # cargo-audit 0.22 does NOT read config files — only CLI flags.
           IGNORE_FLAGS=""
@@ -517,6 +525,19 @@ jobs:
             done
             echo "Audit ignores: $IGNORE_FLAGS"
           fi
+
+          # CONTRACT: FALSIFY-AUDIT-001 — count of --ignore flags must match
+          # count of RUSTSEC IDs in .cargo/audit.toml. If they differ, the
+          # sed parsing is broken or PWD is wrong.
+          if [ -f .cargo/audit.toml ]; then
+            EXPECTED=$(grep -c 'RUSTSEC-' .cargo/audit.toml || echo 0)
+            ACTUAL=$(echo "$IGNORE_FLAGS" | grep -o '\-\-ignore' | wc -l)
+            if [ "$EXPECTED" -ne "$ACTUAL" ]; then
+              echo "::error::FALSIFY-AUDIT-001: Expected $EXPECTED ignores, got $ACTUAL. PWD=$(pwd)"
+              exit 1
+            fi
+          fi
+
           cargo audit $IGNORE_FLAGS
 
   provenance:

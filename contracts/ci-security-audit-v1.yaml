@@ -1,0 +1,66 @@
+metadata:
+  version: "1.0.0"
+  created: "2026-04-12"
+  author: PAIML Engineering
+  registry: true
+  description: >
+    Provable contract for CI security audit job. Ensures cargo audit
+    reads advisory exemptions from the correct .cargo/audit.toml
+    (the PR checkout, not a sibling repo).
+
+five_whys:
+  incident: "PR #726 ci/security failed 5 times despite correct .cargo/audit.toml"
+  why_1:
+    question: "Why does ci/security fail?"
+    answer: "cargo audit reports RUSTSEC-2026-0087 (wasmtime) as unignored"
+  why_2:
+    question: "Why isn't it in the --ignore flags?"
+    answer: "sed parses .cargo/audit.toml but produces 13 IDs instead of 14"
+  why_3:
+    question: "Why is the 14th ID missing?"
+    answer: "The .cargo/audit.toml being read is from main, not the PR branch"
+  why_4:
+    question: "Why is it reading main's file?"
+    answer: "The sibling repos checkout step does cd $GITHUB_WORKSPACE/.. and never restores PWD"
+  why_5:
+    question: "Why doesn't PWD get restored?"
+    answer: "GitHub Actions shell steps inherit PWD from the previous step — no automatic restore"
+  root_cause: >
+    Shell step PWD inheritance. The "Checkout sibling repos" step
+    changes directory to $GITHUB_WORKSPACE/.. to clone siblings,
+    but each subsequent step inherits that PWD. The cargo audit step
+    then reads .cargo/audit.toml from the wrong directory.
+  permanent_fix: >
+    Added explicit `cd $GITHUB_WORKSPACE` at the start of the Audit step.
+    Added FALSIFY-AUDIT-001 contract that verifies the count of --ignore
+    flags matches the count of RUSTSEC IDs in .cargo/audit.toml.
+    If PWD is wrong, the file won't exist or will have wrong content,
+    and the contract catches it immediately instead of silently failing.
+
+equations:
+  audit_ignore_parity:
+    formula: |
+      count(--ignore flags) == count(RUSTSEC-* in .cargo/audit.toml)
+    domain: CI security audit step
+    codomain: bool
+    invariants:
+    - "Every RUSTSEC ID in .cargo/audit.toml appears as --ignore flag"
+    - "No phantom ignores (flags without matching TOML entry)"
+    - "PWD is $GITHUB_WORKSPACE when reading .cargo/audit.toml"
+
+falsification_tests:
+- id: FALSIFY-AUDIT-001
+  rule: audit_ignore_parity
+  prediction: "Number of --ignore flags equals number of RUSTSEC IDs in .cargo/audit.toml"
+  test: |
+    EXPECTED=$(grep -c 'RUSTSEC-' .cargo/audit.toml || echo 0)
+    ACTUAL=$(echo "$IGNORE_FLAGS" | grep -o '\-\-ignore' | wc -l)
+    [ "$EXPECTED" -eq "$ACTUAL" ]
+  if_fails: "PWD is wrong (sibling repo) or sed parsing is broken"
+
+- id: FALSIFY-AUDIT-002
+  rule: audit_ignore_parity
+  prediction: "Audit step runs in $GITHUB_WORKSPACE, not a sibling directory"
+  test: |
+    [ "$(pwd)" = "$GITHUB_WORKSPACE" ]
+  if_fails: "A previous step changed PWD without restoring it"
