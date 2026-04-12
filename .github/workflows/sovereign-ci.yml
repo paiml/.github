@@ -466,7 +466,8 @@ jobs:
     name: security
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
+    # Rule 8: Security is a required check — no more continue-on-error.
+    # Advisory exemptions go in .cargo/audit.toml, not in CI skip logic.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -579,4 +580,9 @@ jobs:
             echo "::error::Coverage failed"
             exit 1
           fi
-          echo "All critical jobs passed"
+          # Rule 8: Security is now mandatory (was silently skipped before PR #726)
+          if [ "${{ needs.security.result }}" = "failure" ]; then
+            echo "::error::Security audit failed — check .cargo/audit.toml exemptions"
+            exit 1
+          fi
+          echo "All critical jobs passed (test + lint + coverage + security)"
