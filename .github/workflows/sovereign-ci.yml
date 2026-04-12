@@ -526,12 +526,11 @@ jobs:
             echo "Audit ignores: $IGNORE_FLAGS"
           fi
 
-          # CONTRACT: FALSIFY-AUDIT-001 — count of --ignore flags must match
-          # count of RUSTSEC IDs in .cargo/audit.toml. If they differ, the
-          # sed parsing is broken or PWD is wrong.
+          # CONTRACT: FALSIFY-AUDIT-001 — verify PWD and ignore flag count.
           if [ -f .cargo/audit.toml ]; then
-            EXPECTED=$(grep -c 'RUSTSEC-' .cargo/audit.toml || echo 0)
-            ACTUAL=$(echo "$IGNORE_FLAGS" | grep -o '\-\-ignore' | wc -l)
+            EXPECTED=$(sed -n 's/.*\(RUSTSEC-[0-9]*-[0-9]*\).*/\1/p' .cargo/audit.toml | wc -l)
+            ACTUAL=$(echo "$IGNORE_FLAGS" | tr ' ' '\n' | grep -c '^--ignore$' || echo 0)
+            echo "FALSIFY-AUDIT-001: expected=$EXPECTED actual=$ACTUAL pwd=$(pwd)"
             if [ "$EXPECTED" -ne "$ACTUAL" ]; then
               echo "::error::FALSIFY-AUDIT-001: Expected $EXPECTED ignores, got $ACTUAL. PWD=$(pwd)"
               exit 1
