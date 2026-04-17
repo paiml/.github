@@ -266,7 +266,11 @@ jobs:
 
   coverage:
     name: coverage
-    if: ${{ !inputs.skip_coverage }}
+    # Coverage duplicates the `test` job under llvm-cov instrumentation and
+    # adds ~20min to every PR. Run on push-to-main only; codecov still tracks
+    # coverage trends, and PR authors can opt in via workflow_dispatch if
+    # they need coverage before merge.
+    if: ${{ !inputs.skip_coverage && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
