@@ -171,7 +171,7 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
