@@ -16,6 +16,7 @@ on:
 
 jobs:
   authorize:
+    # falsify-f8-allow: authorization gate MUST run before self-hosted runner claim — untrusted PR code cannot execute on self-hosted infra.
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

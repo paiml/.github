@@ -643,6 +643,7 @@ jobs:
 
   provenance:
     name: provenance
+    # falsify-f8-allow: SLSA attest-build-provenance needs GitHub OIDC id-token, only issued on GitHub-hosted runners. Job is continue-on-error (advisory).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     continue-on-error: true
