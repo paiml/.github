@@ -111,20 +111,18 @@ jobs:
         if: steps.metadata.outputs.metadata_ok == 'true'
         working-directory: src/${{ inputs.repo }}
         run: |
-          # Per-repo clippy tuning for inherent domain patterns
+          # Per-repo clippy tuning for inherent domain patterns.
+          # APR-MONO consolidation (2026-04-13): trueno-viz, trueno-zram,
+          # alimentar, entrenar, realizar merged into aprender monorepo.
+          # Former per-repo tunings now apply at the aprender workspace level.
           EXTRA_ALLOWS=""
           case "${{ inputs.repo }}" in
-            trueno-viz)
-              # Graphics code: u32 pixel coords cast to i32 for signed arithmetic
-              EXTRA_ALLOWS="-A clippy::cast_possible_wrap -A clippy::cast_lossless" ;;
-            trueno-zram)
-              # Compression code: bit manipulation with known-safe casts
-              EXTRA_ALLOWS="-A clippy::cast_possible_wrap -A clippy::cast_possible_truncation -A clippy::cast_precision_loss" ;;
-            alimentar|entrenar|aprender|realizar)
-              # ML repos: numeric casts (f32↔f64, usize↔f64) inherent to tensor/training operations
-              # json! macro triggers disallowed_methods (internal unwrap) — false positive
-              # map().unwrap_or() is idiomatic in ML option chains
-              EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::disallowed_methods -A clippy::uninlined_format_args -A clippy::map_unwrap_or" ;;
+            aprender)
+              # Monorepo covering compute/train/serve/viz/zram/data subsystems.
+              # Combined allowlist for numeric casts (ML), graphics coords (viz),
+              # and compression bit-ops (zram). json!/unwrap_or idioms are
+              # legitimate in ML option chains.
+              EXTRA_ALLOWS="-A clippy::cast_precision_loss -A clippy::cast_sign_loss -A clippy::cast_possible_truncation -A clippy::cast_lossless -A clippy::cast_possible_wrap -A clippy::disallowed_methods -A clippy::uninlined_format_args -A clippy::map_unwrap_or" ;;
             paiml-mcp-agent-toolkit)
               # Code analysis tool: format macros in CLI output, complex AST types
               EXTRA_ALLOWS="-A clippy::print_literal -A clippy::write_literal -A clippy::useless_format -A clippy::format_in_format_args -A clippy::unnecessary_map_or -A clippy::type_complexity -A clippy::unnecessary_cast -A clippy::manual_strip -A clippy::manual_div_ceil -A clippy::collapsible_if -A clippy::vec_init_then_push -A clippy::useless_vec -A clippy::wildcard_in_or_patterns" ;;
@@ -168,27 +166,23 @@ jobs:
         if: steps.metadata.outputs.is_rust == 'true'
         working-directory: src/${{ inputs.repo }}
         run: |
-          # Per-repo check tuning for inherent code patterns
+          # Per-repo check tuning for inherent code patterns.
+          # APR-MONO consolidation (2026-04-13): trueno, trueno-zram, realizar,
+          # entrenar, alimentar merged into aprender. Most lenient tuning from
+          # the former set wins for the monorepo.
           CHECKS="dead-code,complexity,satd,security,duplicates"
           case "${{ inputs.repo }}" in
-            trueno-zram)
-              # LZ4/ZSTD decompression loops are inherently complex (cognitive 100+)
-              CHECKS="dead-code,satd,security,duplicates" ;;
-            trueno)
-              # GPU SIMD compute: quantization format handlers are inherently duplicated
-              CHECKS="dead-code,satd,security" ;;
-            realizar|entrenar|aprender|alimentar)
-              # ML repos: attention/layer/quantization/dataset variants are inherently complex and duplicated
-              # SATD skipped: design annotations (// Defect: GH-420, // Design:) are legitimate, not tech debt
+            aprender)
+              # ML/GPU/compression monorepo: attention/layer/quantization/dataset
+              # variants and LZ4/ZSTD decompression are inherently complex and
+              # duplicated. SATD skipped: design annotations (// Defect: GH-420,
+              # // Design:) are legitimate, not tech debt.
               CHECKS="dead-code,security" ;;
             depyler)
               # Transpiler: AST code generation is inherently complex and repetitive
               CHECKS="dead-code,satd,security" ;;
             bashrs)
               # Shell transpiler/linter: parser, AST, corpus analysis are inherently complex
-              CHECKS="dead-code,security" ;;
-            trueno-viz)
-              # Graphics/visualization: rendering loops and coordinate math are inherently complex
               CHECKS="dead-code,security" ;;
             forjar)
               # IaC engine: YAML parsers, resolvers, and DAG planners are inherently complex
@@ -251,8 +245,9 @@ jobs:
           EXCLUDE='(^|/)(examples|tests|benches|fuzz|state|docs|machines)/'
           # Per-repo exclusions for legitimate path references
           case "${{ inputs.repo }}" in
-            trueno-viz)
-              # ttop is a system monitor — legitimately references NVMe mount paths for display
+            aprender)
+              # ttop (monorepo subsystem) is a system monitor — legitimately
+              # references NVMe mount paths for display.
               EXCLUDE="$EXCLUDE|crates/ttop/" ;;
             forjar)
               # IaC tool: doc examples + test assertions reference home dirs in generated scripts
@@ -381,9 +376,11 @@ jobs:
 
   # ── GPU Gates (Mode C) ──────────────────────────────────
   gpu-gates:
+    # APR-MONO: realizar/trueno/entrenar merged into aprender/crates/aprender-{compute,serve,train-*}.
+    # GPU surface now lives under the aprender monorepo; this gate targets aprender directly.
     if: >-
       !inputs.skip_gpu &&
-      contains(fromJson('["realizar","trueno","entrenar"]'),
+      contains(fromJson('["aprender"]'),
       inputs.repo)
     runs-on: [self-hosted, gpu, lambda-labs]
     steps:
