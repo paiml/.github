@@ -53,9 +53,9 @@ on:
         default: ''
         type: string
       enable_sccache:
-        description: 'Opt in to sccache compiler cache (build-performance.md §5.3). Pilot repos only until F9 hit-rate ≥ 40% observed over 7 days.'
+        description: 'sccache compiler cache (build-performance.md §5.3). Fleet-default on 2026-04-18 after Phase 3 pilot: F9 p95=100%, n=24 runs, median=100%. Set false to disable per-repo.'
         required: false
-        default: false
+        default: true
         type: boolean
 
 # HD-02: Least-privilege token — only escalate where needed
