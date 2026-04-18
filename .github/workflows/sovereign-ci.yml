@@ -52,6 +52,11 @@ on:
         required: false
         default: ''
         type: string
+      enable_sccache:
+        description: 'Opt in to sccache compiler cache (build-performance.md §5.3). Pilot repos only until F9 hit-rate ≥ 40% observed over 7 days.'
+        required: false
+        default: false
+        type: boolean
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -71,6 +76,12 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -165,18 +176,32 @@ jobs:
         env:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo test --lib $TEST_ARGS 2>&1 || \
           cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
           { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
+      - name: Record sccache stats
+        if: ${{ always() && inputs.enable_sccache }}
+        run: |
+          sccache --show-stats --stats-format json > \
+            "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-test.json" \
+            2>/dev/null || echo "::warning::sccache stats unavailable"
 
   lint:
     name: lint
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -267,10 +292,18 @@ jobs:
         env:
           CLIPPY_ARGS: ${{ inputs.clippy_args }}
           REPO_NAME: ${{ inputs.repo }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
           cargo clippy -p "$REPO_NAME" -- -D warnings -A unused-variables 2>&1 || \
           { echo "::error::Clippy failed — check workspace path dependencies"; exit 1; }
+      - name: Record sccache stats
+        if: ${{ always() && inputs.enable_sccache }}
+        run: |
+          sccache --show-stats --stats-format json > \
+            "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-lint.json" \
+            2>/dev/null || echo "::warning::sccache stats unavailable"
       - name: Supply chain audit (cargo deny)
         continue-on-error: true
         run: |
@@ -286,6 +319,12 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -373,12 +412,20 @@ jobs:
         env:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+      - name: Record sccache stats
+        if: ${{ always() && inputs.enable_sccache }}
+        run: |
+          sccache --show-stats --stats-format json > \
+            "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-coverage.json" \
+            2>/dev/null || echo "::warning::sccache stats unavailable"
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: lcov.info
@@ -390,6 +437,10 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      # Phase 3 §5.3 — sccache volumes (see test job for rationale).
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
     timeout-minutes: 60
     continue-on-error: true
     steps:
@@ -477,6 +528,8 @@ jobs:
       - name: Run criterion benchmarks
         env:
           REPO_NAME: ${{ inputs.repo }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           if ls benches/*.rs 2>/dev/null | head -1 | grep -q '.'; then
             cargo bench --bench '*' -- --output-format bencher 2>&1 | tee bench-results.txt || \
@@ -485,6 +538,12 @@ jobs:
           else
             echo "No benches/ directory — skipping"
           fi
+      - name: Record sccache stats
+        if: ${{ always() && inputs.enable_sccache }}
+        run: |
+          sccache --show-stats --stats-format json > \
+            "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-bench.json" \
+            2>/dev/null || echo "::warning::sccache stats unavailable"
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
