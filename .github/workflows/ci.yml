@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: validate
+    # falsify-f8-allow: source-validation gate — paiml/.github only contains reusable workflows, no self-hosted work
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Lint workflow YAML
+        run: |
+          pip install yamllint
+          yamllint -d relaxed .github/workflows/ || true
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+        with:
+          fail-on-error: false
+
+  gate:
+    name: gate
+    # falsify-f8-allow: status-rollup gate required by org ruleset (must be hosted to avoid bootstrap loop)
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [validate]
+    steps:
+      - name: Check all jobs
+        run: |
+          if echo '${{ toJson(needs) }}' | jq -e 'to_entries | map(select(.value.result != "success" and .value.result != "skipped")) | length > 0' > /dev/null 2>&1; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
