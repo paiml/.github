@@ -84,7 +84,13 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+          # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
+          # alimentar, presentar, renacer, batuta, realizar, probar merged into
+          # aprender monorepo and archived. Removed from sibling-clone list to
+          # stop wasting runner minutes on 10 archived repos × 5 CI stages.
+          # provable-contracts kept (pv codegen still uses it); aprender +
+          # whisper.apr still active.
+          for repo in provable-contracts aprender whisper.apr; do
             # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
             [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
@@ -184,7 +190,13 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+          # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
+          # alimentar, presentar, renacer, batuta, realizar, probar merged into
+          # aprender monorepo and archived. Removed from sibling-clone list to
+          # stop wasting runner minutes on 10 archived repos × 5 CI stages.
+          # provable-contracts kept (pv codegen still uses it); aprender +
+          # whisper.apr still active.
+          for repo in provable-contracts aprender whisper.apr; do
             # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
             [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
@@ -287,7 +299,13 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+          # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
+          # alimentar, presentar, renacer, batuta, realizar, probar merged into
+          # aprender monorepo and archived. Removed from sibling-clone list to
+          # stop wasting runner minutes on 10 archived repos × 5 CI stages.
+          # provable-contracts kept (pv codegen still uses it); aprender +
+          # whisper.apr still active.
+          for repo in provable-contracts aprender whisper.apr; do
             # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
             [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
@@ -386,7 +404,13 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+          # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
+          # alimentar, presentar, renacer, batuta, realizar, probar merged into
+          # aprender monorepo and archived. Removed from sibling-clone list to
+          # stop wasting runner minutes on 10 archived repos × 5 CI stages.
+          # provable-contracts kept (pv codegen still uses it); aprender +
+          # whisper.apr still active.
+          for repo in provable-contracts aprender whisper.apr; do
             # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
             [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
@@ -490,7 +514,13 @@ jobs:
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
-          for repo in provable-contracts probar trueno trueno-rag trueno-db trueno-viz alimentar presentar aprender renacer batuta realizar whisper.apr; do
+          # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
+          # alimentar, presentar, renacer, batuta, realizar, probar merged into
+          # aprender monorepo and archived. Removed from sibling-clone list to
+          # stop wasting runner minutes on 10 archived repos × 5 CI stages.
+          # provable-contracts kept (pv codegen still uses it); aprender +
+          # whisper.apr still active.
+          for repo in provable-contracts aprender whisper.apr; do
             # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
             [ "$repo" = "${{ inputs.repo }}" ] && continue
             # Remove stale partial clones (file instead of dir)
