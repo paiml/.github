@@ -1,0 +1,47 @@
+# CI for paiml/.github itself — lints reusable workflows so a broken YAML
+# or a config mismatch can't ship to the fleet.
+#
+# This workflow also produces the `gate` status check required by the org
+# ruleset "Green Main" (id 13878864). Without this, every PR to this repo
+# would be mergeStateStatus=BLOCKED and require an admin bypass.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Run actionlint
+        uses: raven-actions/actionlint@3a24062651993d40fed1019b58ac6fbdfbf276cc # v2.0.1
+        with:
+          matcher: true
+          fail-on-error: true
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+      - name: yamllint (relaxed)
+        run: yamllint -d relaxed .github/workflows/
+
+  gate:
+    name: gate
+    needs: [lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required jobs
+        run: |
+          if [ "${{ needs.lint.result }}" != "success" ]; then
+            echo "lint failed (result: ${{ needs.lint.result }})"
+            exit 1
+          fi
+          echo "gate passed"

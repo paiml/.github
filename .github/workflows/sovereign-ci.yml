@@ -70,7 +70,7 @@ jobs:
     name: test
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:dd219db7e10568f56aad0597367af1ba1b011d1a0d1c5c5e97b550501a3e014f
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -170,7 +170,7 @@ jobs:
     name: lint
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:dd219db7e10568f56aad0597367af1ba1b011d1a0d1c5c5e97b550501a3e014f
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -273,7 +273,7 @@ jobs:
     if: ${{ !inputs.skip_coverage }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:dd219db7e10568f56aad0597367af1ba1b011d1a0d1c5c5e97b550501a3e014f
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -371,7 +371,7 @@ jobs:
     if: ${{ inputs.run_benchmarks }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:dd219db7e10568f56aad0597367af1ba1b011d1a0d1c5c5e97b550501a3e014f
     timeout-minutes: 60
     continue-on-error: true
     steps:

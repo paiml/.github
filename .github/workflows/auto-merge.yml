@@ -1,0 +1,53 @@
+# Auto-merge — enable GitHub's built-in auto-merge for authorized PRs
+#
+# Reusable workflow called by each repo's ci.yml. Enables SQUASH auto-merge
+# on the triggering PR, which tells GitHub to merge the PR automatically once
+# all required status checks pass (see org ruleset "Green Main" id 13878864).
+#
+# Escape hatches (no code change needed):
+#   - Open the PR as a draft       → auto-merge is not enabled
+#   - Apply the `hold` label       → auto-merge is skipped
+#   - Apply the `do-not-merge` label → auto-merge is skipped
+#
+# Caller pattern (per-repo ci.yml):
+#
+#   on:
+#     pull_request_target:
+#       types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+#
+#   jobs:
+#     authorize:
+#       uses: paiml/.github/.github/workflows/pr-gate.yml@main
+#     auto-merge:
+#       needs: authorize
+#       uses: paiml/.github/.github/workflows/auto-merge.yml@main
+#
+# Prerequisites per repo:
+#   - `allow_auto_merge: true` in repo settings (gh api -X PATCH repos/OWNER/REPO -f allow_auto_merge=true)
+#   - At least one required status check (enforced fleet-wide by org ruleset `gate`)
+
+name: Auto-merge
+
+on:
+  workflow_call:
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    if: |
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.draft == false &&
+      !contains(github.event.pull_request.labels.*.name, 'hold') &&
+      !contains(github.event.pull_request.labels.*.name, 'do-not-merge')
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Idempotent: if auto-merge is already enabled, gh exits cleanly.
+          gh pr merge "$PR_NUMBER" --auto --squash
