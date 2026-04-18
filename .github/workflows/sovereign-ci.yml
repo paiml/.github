@@ -57,6 +57,11 @@ on:
         required: false
         default: true
         type: boolean
+      use_nextest:
+        description: 'cargo nextest run instead of cargo test (build-performance.md §4.3 + §7 Phase 2). 30-40% test-job speedup on large suites. Pilot repos only until F11 test-job p95 ≤ 300s verified over 7 days.'
+        required: false
+        default: false
+        type: boolean
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -186,12 +191,24 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          USE_NEXTEST: ${{ inputs.use_nextest }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cargo test --lib $TEST_ARGS 2>&1 || \
-          cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-          { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
+          # Phase 2 §4.3 — nextest drops ~35% off test-job wall-clock on large suites.
+          # Fallback to cargo test if nextest fails for any reason (e.g. test harness quirks).
+          if [ "$USE_NEXTEST" = "true" ]; then
+            cargo nextest run --lib $TEST_ARGS 2>&1 || \
+            cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+            { echo "::warning::nextest failed — falling back to cargo test"; \
+              cargo test --lib $TEST_ARGS 2>&1 || \
+              cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+              { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
+          else
+            cargo test --lib $TEST_ARGS 2>&1 || \
+            cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+            { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
+          fi
       - name: Record sccache stats
         if: ${{ always() && inputs.enable_sccache }}
         run: |
