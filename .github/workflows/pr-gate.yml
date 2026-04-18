@@ -16,6 +16,7 @@ on:
 
 jobs:
   authorize:
+    # falsify-f8-allow: PR authorization gate must run on hosted — blocks self-hosted claim before contributor is allowlisted
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
