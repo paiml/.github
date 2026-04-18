@@ -64,6 +64,11 @@ env:
   # Default BSP export timeout is 30s; set to 5s for fast failure.
   OTEL_BSP_EXPORT_TIMEOUT: "5000"
   OTEL_EXPORTER_OTLP_TIMEOUT: "5000"
+  # Bound per-cargo parallelism to prevent oversubscription when many runners
+  # share a host. Derived in docs/specifications/build-performance.md §4.1:
+  # runners × CARGO_BUILD_JOBS ≤ 1.2 × ncores. Default 4 is conservative and
+  # matches the lint runner class budget.
+  CARGO_BUILD_JOBS: "4"
 
 jobs:
   test:
@@ -554,7 +559,8 @@ jobs:
 
   provenance:
     name: provenance
-    runs-on: ubuntu-latest
+    # Self-hosted only — no GitHub-hosted runners (build-performance.md §3.8).
+    runs-on: [self-hosted, clean-room]
     timeout-minutes: 5
     continue-on-error: true
     permissions:
