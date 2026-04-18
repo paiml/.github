@@ -75,7 +75,7 @@ jobs:
     name: test
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:a7d47ef6e12e23c83075ceff4c41be8f34b00e68639a48bca9e41a2b2c8db80b
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
@@ -195,7 +195,7 @@ jobs:
     name: lint
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:a7d47ef6e12e23c83075ceff4c41be8f34b00e68639a48bca9e41a2b2c8db80b
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
@@ -318,7 +318,7 @@ jobs:
     if: ${{ !inputs.skip_coverage }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:a7d47ef6e12e23c83075ceff4c41be8f34b00e68639a48bca9e41a2b2c8db80b
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
@@ -436,7 +436,7 @@ jobs:
     if: ${{ inputs.run_benchmarks }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:c23c453328df86562ba69410810180d205490c6b202342972f65af7050db6686
+      image: localhost:5000/sovereign-ci:stable@sha256:a7d47ef6e12e23c83075ceff4c41be8f34b00e68639a48bca9e41a2b2c8db80b
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
       volumes:
         - /home/noah/data/sccache:/sccache
