@@ -189,7 +189,7 @@ jobs:
         env:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
-          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
           USE_NEXTEST: ${{ inputs.use_nextest }}
         run: |
@@ -325,7 +325,7 @@ jobs:
         env:
           CLIPPY_ARGS: ${{ inputs.clippy_args }}
           REPO_NAME: ${{ inputs.repo }}
-          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
@@ -453,7 +453,7 @@ jobs:
         env:
           TEST_ARGS: ${{ inputs.test_args }}
           REPO_NAME: ${{ inputs.repo }}
-          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
@@ -577,7 +577,7 @@ jobs:
       - name: Run criterion benchmarks
         env:
           REPO_NAME: ${{ inputs.repo }}
-          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'sccache' || '' }}
+          RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
         run: |
           if ls benches/*.rs 2>/dev/null | head -1 | grep -q '.'; then
