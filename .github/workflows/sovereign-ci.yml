@@ -216,6 +216,20 @@ jobs:
             "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-test.json" \
             2>/dev/null || echo "::warning::sccache stats unavailable"
 
+      # FIVE-WHYS ROOT CAUSE (2026-04-20, paiml/infra#69):
+      # Container runs as root; sibling-clone dir $GITHUB_WORKSPACE/.. is
+      # bind-mounted from the runner host, so root-owned files leak out of
+      # the container onto the runner's _work tree. Subsequent non-container
+      # jobs (e.g. `security`) run as the runner user and can't `rm -rf`
+      # the stale clones → silent 15s failures.
+      # Fix: chown back to the runner uid/gid before the container exits.
+      # `always()` so the chown runs even if tests fail, preventing poison
+      # from surviving red builds.
+      - name: Restore runner ownership of sibling workspace
+        if: always()
+        run: |
+          chown -R 1000:1000 "$GITHUB_WORKSPACE/.." 2>/dev/null || true
+
   lint:
     name: lint
     runs-on: [self-hosted, clean-room]
@@ -345,6 +359,10 @@ jobs:
           else
             echo "::warning::No deny.toml — skipping supply chain audit"
           fi
+      - name: Restore runner ownership of sibling workspace
+        if: always()
+        run: |
+          chown -R 1000:1000 "$GITHUB_WORKSPACE/.." 2>/dev/null || true
 
   coverage:
     name: coverage
@@ -471,6 +489,19 @@ jobs:
         with:
           files: lcov.info
         continue-on-error: true
+      # FIVE-WHYS ROOT CAUSE (2026-04-20, paiml/infra#69):
+      # Container runs as root; sibling-clone dir $GITHUB_WORKSPACE/.. is
+      # bind-mounted from the runner host, so root-owned files leak out of
+      # the container onto the runner's _work tree. Subsequent non-container
+      # jobs (e.g. `security`) run as the runner user and can't `rm -rf`
+      # the stale clones → silent 15s failures.
+      # Fix: chown back to the runner uid/gid before the container exits.
+      # `always()` so the chown runs even if tests fail, preventing poison
+      # from surviving red builds.
+      - name: Restore runner ownership of sibling workspace
+        if: always()
+        run: |
+          chown -R 1000:1000 "$GITHUB_WORKSPACE/.." 2>/dev/null || true
 
   bench:
     name: bench
@@ -601,6 +632,19 @@ jobs:
           path: bench-results.txt
           retention-days: 90
         continue-on-error: true
+      # FIVE-WHYS ROOT CAUSE (2026-04-20, paiml/infra#69):
+      # Container runs as root; sibling-clone dir $GITHUB_WORKSPACE/.. is
+      # bind-mounted from the runner host, so root-owned files leak out of
+      # the container onto the runner's _work tree. Subsequent non-container
+      # jobs (e.g. `security`) run as the runner user and can't `rm -rf`
+      # the stale clones → silent 15s failures.
+      # Fix: chown back to the runner uid/gid before the container exits.
+      # `always()` so the chown runs even if tests fail, preventing poison
+      # from surviving red builds.
+      - name: Restore runner ownership of sibling workspace
+        if: always()
+        run: |
+          chown -R 1000:1000 "$GITHUB_WORKSPACE/.." 2>/dev/null || true
 
   security:
     name: security
@@ -619,6 +663,16 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # FIVE-WHYS ROOT CAUSE RECOVERY (2026-04-20, paiml/infra#69):
+      # Container jobs upstream may have left root-owned files in the
+      # sibling workspace (bind-mount leak). Every container job now
+      # chowns back on exit, but for defense in depth — and to recover
+      # from runs that predated the fix — reclaim ownership before we
+      # touch the sibling tree. Without this, `rm -rf` on stale clones
+      # fails with EACCES and the job dies in 15s.
+      - name: Reclaim sibling workspace ownership (defense in depth)
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/.." 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
         run: |
           cd "$GITHUB_WORKSPACE/.."
