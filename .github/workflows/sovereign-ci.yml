@@ -62,6 +62,11 @@ on:
         required: false
         default: false
         type: boolean
+      test_workspace:
+        description: 'PMAT-159: test all workspace members with `--workspace --lib` (not just root). Opt-in because workspace members may not build in the sovereign-ci container (e.g. aprender-gpu needs cuBLAS). Pair with test_args exclusions as needed.'
+        required: false
+        default: false
+        type: boolean
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -192,20 +197,24 @@ jobs:
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
           USE_NEXTEST: ${{ inputs.use_nextest }}
+          TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # Phase 2 §4.3 — nextest drops ~35% off test-job wall-clock on large suites.
-          # Fallback to cargo test if nextest fails for any reason (e.g. test harness quirks).
+          # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
+          # workspace-member lib tests are exercised. Default stays `--lib` (root only) for
+          # back-compat: many repos have workspace members that don't build in the sovereign-ci
+          # container. Opt-in callers pair this with `test_args` exclusions as needed.
           if [ "$USE_NEXTEST" = "true" ]; then
-            cargo nextest run --lib $TEST_ARGS 2>&1 || \
+            cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1 || \
             cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
             { echo "::warning::nextest failed — falling back to cargo test"; \
-              cargo test --lib $TEST_ARGS 2>&1 || \
+              cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
               cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
               { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
           else
-            cargo test --lib $TEST_ARGS 2>&1 || \
+            cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
             cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
             { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
           fi
@@ -473,10 +482,14 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
+          # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
+          # coverage reflects all workspace members. Default stays `--lib` (root only) — see
+          # test job comment for back-compat rationale.
+          cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
       - name: Record sccache stats
