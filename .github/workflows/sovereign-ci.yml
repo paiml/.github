@@ -92,7 +92,11 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
-    timeout-minutes: 30
+    # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
+    # (test_workspace: true) have headroom to compile + test large workspaces.
+    # Default --lib callers are well under 30 min; the ceiling only binds for
+    # aprender-scale workspaces and is safe to extend fleet-wide.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -250,7 +254,11 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
-    timeout-minutes: 30
+    # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
+    # (test_workspace: true) have headroom to compile + test large workspaces.
+    # Default --lib callers are well under 30 min; the ceiling only binds for
+    # aprender-scale workspaces and is safe to extend fleet-wide.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -385,7 +393,11 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
-    timeout-minutes: 30
+    # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
+    # (test_workspace: true) have headroom to compile + test large workspaces.
+    # Default --lib callers are well under 30 min; the ceiling only binds for
+    # aprender-scale workspaces and is safe to extend fleet-wide.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
