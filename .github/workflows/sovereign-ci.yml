@@ -196,16 +196,20 @@ jobs:
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # Phase 2 §4.3 — nextest drops ~35% off test-job wall-clock on large suites.
-          # Fallback to cargo test if nextest fails for any reason (e.g. test harness quirks).
+          # PMAT-159 (2026-04-20): `--workspace --lib` so workspace-member lib tests are
+          # exercised, not just the root package. For repos with workspace members that
+          # don't build in the container (e.g. aprender-gpu/cuda-edge/compute), pass
+          # `test_args: "--exclude aprender-gpu --exclude aprender-cuda-edge ..."` from the
+          # caller to skip them here. Fallback to `cargo test` kept for harness quirks.
           if [ "$USE_NEXTEST" = "true" ]; then
-            cargo nextest run --lib $TEST_ARGS 2>&1 || \
+            cargo nextest run --workspace --lib $TEST_ARGS 2>&1 || \
             cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
             { echo "::warning::nextest failed — falling back to cargo test"; \
-              cargo test --lib $TEST_ARGS 2>&1 || \
+              cargo test --workspace --lib $TEST_ARGS 2>&1 || \
               cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
               { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
           else
-            cargo test --lib $TEST_ARGS 2>&1 || \
+            cargo test --workspace --lib $TEST_ARGS 2>&1 || \
             cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
             { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
           fi
@@ -476,7 +480,9 @@ jobs:
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
+          # PMAT-159 (2026-04-20): `--workspace --lib` so coverage reflects all workspace
+          # members, not just the root package (otherwise aprender reports 0 tests covered).
+          cargo llvm-cov test --workspace --lib --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
       - name: Record sccache stats
