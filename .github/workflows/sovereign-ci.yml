@@ -92,11 +92,20 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75 (2026-04-23): per-PR CARGO_TARGET_DIR isolation.
+        # Default /__w/<repo>/<repo>/target/ is shared across concurrent PR
+        # builds on the same self-hosted runner; cargo's fingerprint directory
+        # is not concurrent-safe and collides with "No such file or directory"
+        # errors (15 observed on aprender PR #1019). Mirrors the aprender
+        # workspace-test pattern (task #134).
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: /workspace/target
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -254,11 +263,15 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: /workspace/target
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -393,11 +406,15 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: /workspace/target
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -538,8 +555,12 @@ jobs:
       volumes:
         - /home/noah/data/sccache:/sccache
         - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     timeout-minutes: 60
     continue-on-error: true
+    env:
+      CARGO_TARGET_DIR: /workspace/target
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
