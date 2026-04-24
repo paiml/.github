@@ -763,8 +763,26 @@ jobs:
           # Note: generated contract macros may have unused variables (provable-contracts#64).
           # This is handled by adding -A unused-variables to the clippy step.
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked || true
+      # FIVE-WHYS ROOT CAUSE (2026-04-24, aprender#1043 ANDON, paiml/infra#77):
+      # The `security` job runs bare-metal (runs-on: [self-hosted, clean-room])
+      # so 16 intel-clean-room-* runners all share HOME=/home/noah and thus
+      # $HOME/.cargo/registry. Concurrent `cargo install cargo-audit` jobs
+      # race on src/ extraction + .cache/ writes, producing:
+      #   warning: failed to write cache, path: ~/.cargo/registry/index/.../.cache/ca/rg/<crate>, Permission denied (os error 13)
+      #   error: couldn't read ~/.cargo/registry/src/.../fnv-1.0.7/lib.rs: Permission denied
+      #   error: could not compile `fnv` (lib) due to 1 previous error
+      # Per-runner CARGO_HOME (matches `target/` per-runner pattern already
+      # used by the `test`/`lint`/`coverage` jobs above) eliminates the race
+      # class at source. Independent of aprender#1043's workspace-test fix
+      # (which addresses the containerized workspace-test job's registry
+      # mount, not this bare-metal security job's $HOME).
+      - name: Install cargo-audit (per-runner CARGO_HOME)
+        run: |
+          export CARGO_HOME="/tmp/cargo-home-security-${{ runner.name }}"
+          mkdir -p "$CARGO_HOME"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
+          cargo install cargo-audit --locked --root "$CARGO_HOME" || true
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Audit
         run: |
           # FIVE-WHYS ROOT CAUSE (2026-04-12):
