@@ -67,6 +67,31 @@ on:
         required: false
         default: false
         type: boolean
+      coverage_min:
+        description: >
+          OPT-IN line-coverage floor (ratchet, PMAT build-system audit gap #1).
+          DEFAULT IS EMPTY → behavior is UNCHANGED for every repo that does not
+          set it (coverage stays purely advisory, exactly as before). When set
+          to a number (e.g. "96.9"), the coverage job FAILS if measured line
+          coverage drops below this floor. Additionally, if a committed baseline
+          file (see coverage_baseline_file) exists, the job FAILS on ANY DROP
+          below the recorded baseline — so enabling this on an already-green
+          repo can never break it (the baseline is its current value). This is a
+          ratchet, not an absolute jump: it blocks regressions without demanding
+          an immediate coverage increase. Pilot: aprender only.
+        required: false
+        default: ''
+        type: string
+      coverage_baseline_file:
+        description: >
+          Path (repo-relative) to a committed file holding a single float = the
+          last-known-good line-coverage %. Used as the ratchet floor when
+          coverage_min is set: the effective floor is max(coverage_min,
+          baseline). Inert unless coverage_min is non-empty. Default:
+          .pmat/coverage-baseline.txt
+        required: false
+        default: '.pmat/coverage-baseline.txt'
+        type: string
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -521,6 +546,71 @@ jobs:
           cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+      - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
+        # ZERO BEHAVIOR CHANGE GUARANTEE:
+        #   When inputs.coverage_min is empty (the default for EVERY repo that
+        #   does not explicitly set it), this step is SKIPPED entirely via its
+        #   `if:` guard. Coverage stays exactly as advisory as it was before:
+        #   measured, uploaded to codecov (continue-on-error), never gating.
+        #
+        # When coverage_min IS set (pilot: aprender), this step:
+        #   1. Derives line-coverage % from lcov.info (sum of hit DA records ÷
+        #      total DA records). lcov.info was just produced by the step above;
+        #      no extra compile/test cost.
+        #   2. Computes the effective floor = max(coverage_min, baseline) where
+        #      baseline is read from inputs.coverage_baseline_file IF that file
+        #      is committed in the repo. This is the RATCHET: a repo that is
+        #      green today records its current % as the baseline, so enabling
+        #      the gate can never break the currently-green state — it only
+        #      blocks a DROP. coverage_min is the absolute floor underneath.
+        #   3. FAILS the job (exit 1) if measured < effective floor.
+        #
+        # The gate `coverage` job result is wired into the top-level `gate` job
+        # (needs: [...coverage...]; fails if coverage.result == failure), so a
+        # regression now blocks merge instead of merging silently.
+        if: ${{ inputs.coverage_min != '' }}
+        env:
+          COVERAGE_MIN: ${{ inputs.coverage_min }}
+          COVERAGE_BASELINE_FILE: ${{ inputs.coverage_baseline_file }}
+        run: |
+          set -euo pipefail
+          if [ ! -f lcov.info ]; then
+            echo "::error::coverage_min is set but lcov.info was not produced — cannot enforce floor"
+            exit 1
+          fi
+          # Derive line coverage from lcov DA records: DA:<line>,<hits>
+          # covered = count of DA records with hits > 0; total = all DA records.
+          read -r COVERED TOTAL < <(awk -F'[:,]' '
+            /^DA:/ { total++; if ($3 > 0) covered++ }
+            END { printf "%d %d", covered, total }
+          ' lcov.info)
+          if [ "${TOTAL:-0}" -eq 0 ]; then
+            echo "::error::coverage_min is set but lcov.info has 0 line records — refusing to pass a gate on empty data"
+            exit 1
+          fi
+          PCT=$(awk -v c="$COVERED" -v t="$TOTAL" 'BEGIN { printf "%.2f", (c / t) * 100 }')
+          echo "Measured line coverage: ${PCT}% (${COVERED}/${TOTAL} lines)"
+
+          # Effective floor = max(coverage_min, committed baseline if present).
+          FLOOR="$COVERAGE_MIN"
+          if [ -n "${COVERAGE_BASELINE_FILE}" ] && [ -f "${COVERAGE_BASELINE_FILE}" ]; then
+            BASELINE=$(tr -dc '0-9.' < "${COVERAGE_BASELINE_FILE}" | head -c 16)
+            if [ -n "$BASELINE" ]; then
+              echo "Ratchet baseline (${COVERAGE_BASELINE_FILE}): ${BASELINE}%"
+              FLOOR=$(awk -v a="$COVERAGE_MIN" -v b="$BASELINE" 'BEGIN { print (a > b) ? a : b }')
+            else
+              echo "::warning::${COVERAGE_BASELINE_FILE} present but unparseable — using coverage_min=${COVERAGE_MIN} as floor"
+            fi
+          else
+            echo "No committed baseline file — using coverage_min=${COVERAGE_MIN} as floor"
+          fi
+          echo "Effective coverage floor: ${FLOOR}%"
+
+          if awk -v p="$PCT" -v f="$FLOOR" 'BEGIN { exit !(p < f) }'; then
+            echo "::error::Coverage regression: ${PCT}% < floor ${FLOOR}% — this would have merged SILENTLY before the ratchet (PMAT gap #1). Raise coverage or, if intentional, update ${COVERAGE_BASELINE_FILE}."
+            exit 1
+          fi
+          echo "Coverage ${PCT}% ≥ floor ${FLOOR}% — ratchet satisfied"
       - name: Record sccache stats
         if: ${{ always() && inputs.enable_sccache }}
         run: |
