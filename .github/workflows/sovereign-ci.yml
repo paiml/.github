@@ -569,6 +569,11 @@ jobs:
         # (needs: [...coverage...]; fails if coverage.result == failure), so a
         # regression now blocks merge instead of merging silently.
         if: ${{ inputs.coverage_min != '' }}
+        # bash, not the container default `sh` (dash): this script uses
+        # `set -o pipefail` and `< <(...)` process substitution, both bash-only.
+        # Under dash it died at `set: Illegal option -o pipefail` (exit 2), which
+        # failed the coverage gate for every repo that sets coverage_min.
+        shell: bash
         env:
           COVERAGE_MIN: ${{ inputs.coverage_min }}
           COVERAGE_BASELINE_FILE: ${{ inputs.coverage_baseline_file }}
