@@ -585,10 +585,13 @@ jobs:
           fi
           # Derive line coverage from lcov DA records: DA:<line>,<hits>
           # covered = count of DA records with hits > 0; total = all DA records.
+          # NOTE the trailing \n in printf: without it `read` hits EOF with no
+          # line terminator and returns non-zero, which under `set -e` aborts the
+          # step (exit 1) BEFORE the floor is ever checked. `|| true` belt-and-braces.
           read -r COVERED TOTAL < <(awk -F'[:,]' '
             /^DA:/ { total++; if ($3 > 0) covered++ }
-            END { printf "%d %d", covered, total }
-          ' lcov.info)
+            END { printf "%d %d\n", covered, total }
+          ' lcov.info) || true
           if [ "${TOTAL:-0}" -eq 0 ]; then
             echo "::error::coverage_min is set but lcov.info has 0 line records — refusing to pass a gate on empty data"
             exit 1
