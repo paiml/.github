@@ -111,6 +111,14 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:6a13a5be9b8dcfef64fc8b97be77efd8cdeb57ac643013c50fef671439fe0dfc
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
@@ -282,6 +290,14 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:6a13a5be9b8dcfef64fc8b97be77efd8cdeb57ac643013c50fef671439fe0dfc
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
@@ -425,6 +441,14 @@ jobs:
     runs-on: [self-hosted, clean-room]
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:6a13a5be9b8dcfef64fc8b97be77efd8cdeb57ac643013c50fef671439fe0dfc
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
       # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
       # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
       # runners are on intel; paths are forjar-managed host dirs.
