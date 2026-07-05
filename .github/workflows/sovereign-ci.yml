@@ -158,8 +158,12 @@ jobs:
           # provable-contracts kept (pv codegen still uses it); aprender +
           # whisper.apr still active.
           for repo in provable-contracts aprender whisper.apr; do
-            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
-            [ "$repo" = "${{ inputs.repo }}" ] && continue
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE.
+            # Compare against the checkout DIRECTORY name (github.event.repository.name),
+            # NOT inputs.repo (the cargo package name). These differ for repos like
+            # whisper.apr (dir "whisper.apr" vs crate "whisper-apr"); using inputs.repo
+            # here fails to skip and `git reset --hard origin/main` clobbers the PR checkout.
+            [ "$repo" = "${{ github.event.repository.name }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             # Validate cached clone. If HEAD missing or fetch fails, nuke + re-clone.
@@ -332,8 +336,12 @@ jobs:
           # provable-contracts kept (pv codegen still uses it); aprender +
           # whisper.apr still active.
           for repo in provable-contracts aprender whisper.apr; do
-            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
-            [ "$repo" = "${{ inputs.repo }}" ] && continue
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE.
+            # Compare against the checkout DIRECTORY name (github.event.repository.name),
+            # NOT inputs.repo (the cargo package name). These differ for repos like
+            # whisper.apr (dir "whisper.apr" vs crate "whisper-apr"); using inputs.repo
+            # here fails to skip and `git reset --hard origin/main` clobbers the PR checkout.
+            [ "$repo" = "${{ github.event.repository.name }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             # Validate cached clone. If HEAD missing or fetch fails, nuke + re-clone.
@@ -483,8 +491,12 @@ jobs:
           # provable-contracts kept (pv codegen still uses it); aprender +
           # whisper.apr still active.
           for repo in provable-contracts aprender whisper.apr; do
-            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
-            [ "$repo" = "${{ inputs.repo }}" ] && continue
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE.
+            # Compare against the checkout DIRECTORY name (github.event.repository.name),
+            # NOT inputs.repo (the cargo package name). These differ for repos like
+            # whisper.apr (dir "whisper.apr" vs crate "whisper-apr"); using inputs.repo
+            # here fails to skip and `git reset --hard origin/main` clobbers the PR checkout.
+            [ "$repo" = "${{ github.event.repository.name }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             # Validate cached clone. If HEAD missing or fetch fails, nuke + re-clone.
@@ -702,8 +714,12 @@ jobs:
           # provable-contracts kept (pv codegen still uses it); aprender +
           # whisper.apr still active.
           for repo in provable-contracts aprender whisper.apr; do
-            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
-            [ "$repo" = "${{ inputs.repo }}" ] && continue
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE.
+            # Compare against the checkout DIRECTORY name (github.event.repository.name),
+            # NOT inputs.repo (the cargo package name). These differ for repos like
+            # whisper.apr (dir "whisper.apr" vs crate "whisper-apr"); using inputs.repo
+            # here fails to skip and `git reset --hard origin/main` clobbers the PR checkout.
+            [ "$repo" = "${{ github.event.repository.name }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             # Validate cached clone. If HEAD missing or fetch fails, nuke + re-clone.
@@ -851,8 +867,12 @@ jobs:
           # provable-contracts kept (pv codegen still uses it); aprender +
           # whisper.apr still active.
           for repo in provable-contracts aprender whisper.apr; do
-            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE
-            [ "$repo" = "${{ inputs.repo }}" ] && continue
+            # Skip the current repo — it is already checked out at $GITHUB_WORKSPACE.
+            # Compare against the checkout DIRECTORY name (github.event.repository.name),
+            # NOT inputs.repo (the cargo package name). These differ for repos like
+            # whisper.apr (dir "whisper.apr" vs crate "whisper-apr"); using inputs.repo
+            # here fails to skip and `git reset --hard origin/main` clobbers the PR checkout.
+            [ "$repo" = "${{ github.event.repository.name }}" ] && continue
             # Remove stale partial clones (file instead of dir)
             if [ -e "$repo" ] && [ ! -d "$repo" ]; then rm -f "$repo"; fi
             # Validate cached clone. If HEAD missing or fetch fails, nuke + re-clone.
