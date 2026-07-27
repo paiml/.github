@@ -1,0 +1,258 @@
+metadata:
+  version: "1.0.0"
+  created: "2026-07-27"
+  author: PAIML Engineering
+  registry: true
+  kind: pattern
+  references:
+  # Establishes that job-level container steps execute as the image's user
+  # (root here — sovereign-ci:stable declares no USER) against a bind-mounted
+  # runner workspace: the mechanism by which root ownership escapes onto _work.
+  - "GitHub Docs — Workflow syntax: jobs.<job_id>.container. https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idcontainer"
+  # ACTIONS_RUNNER_HOOK_JOB_STARTED — the runner-level entry hook that would
+  # generalise this contract to every repo and workflow (see GAP-OWN-002).
+  - "GitHub Docs — Running scripts before or after a job. https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts"
+  # Source of the level-triggered reconciliation principle applied here: converge
+  # from OBSERVED state on every pass rather than trusting an edge-triggered
+  # cleanup to have run. Exit-path cleanup is edge-triggered and a hard kill
+  # drops the edge; an entry-path restore is level-triggered and cannot be.
+  - "Hausenblas M. & Schimanski S., Programming Kubernetes, O'Reilly 2019 — level-triggered reconciliation"
+  # The incident this contract encodes.
+  - "paiml/.github#42 — clean-room jobs need a PRE-checkout ownership restore. https://github.com/paiml/.github/issues/42"
+  # Prior art: same guard applied repo-locally in aprender after 2026-07-02/07-06.
+  - "paiml/aprender#2311 — pre-checkout self-heal in aprender ci.yml. https://github.com/paiml/aprender/pull/2311"
+  description: >
+    Provable contract for clean-room runner workspace ownership. Every
+    self-hosted job that checks out must restore ownership of the runner's
+    _work tree BEFORE actions/checkout runs, and must not leave root-owned
+    files behind on exit. Guarantees a poisoned runner self-heals instead of
+    blocking merges until an operator SSHes in.
+
+five_whys:
+  incident: >
+    paiml/aprender PR #2316, job `ci / security` on runner intel-clean-room-14,
+    failed inside actions/checkout before any of its own steps ran:
+    "warning: failed to remove target/.rustc_info.json: Permission denied" then
+    "fatal: not a git repository". Re-run after a manual
+    `sudo chown -R noah:noah .../_work` passed unchanged.
+  why_1:
+    question: "Why did ci / security fail?"
+    answer: >
+      actions/checkout's `git clean -ffdx` hit EACCES on root-owned files under
+      target/ and left a .git-less tree behind.
+  why_2:
+    question: "Why were those files root-owned?"
+    answer: >
+      The container jobs in sovereign-ci.yml run as root (sovereign-ci:stable
+      declares no USER) with the runner's _work tree bind-mounted, so every
+      container write leaks root ownership onto the host tree.
+  why_3:
+    question: "Why did the root-owned files outlive the job that created them?"
+    answer: >
+      That job was hard-killed (runner death, forced cancel, OOM). A hard kill
+      skips even `if: always()` steps, so the end-of-job ownership restore —
+      the only cleanup that existed — never ran.
+  why_4:
+    question: "Why does that break the NEXT job instead of just its own?"
+    answer: >
+      `security` runs bare-metal as the runner user (uid 1000) and cannot clean
+      root-owned files, so it dies inside checkout. `gate` hard-requires it, so
+      the failure reads as a required-check failure.
+  why_5:
+    question: "Why was there no recovery path?"
+    answer: >
+      Nothing restored ownership BEFORE checkout. Every restore was end-of-job,
+      i.e. exactly the step a hard kill skips, so the runner stayed poisoned
+      until an operator SSHed in and chowned by hand.
+  root_cause: >
+    Cleanup was placed only on the exit path of the job that creates the poison.
+    Correctness therefore depended on the previous job having exited cleanly —
+    an assumption a hard kill violates by construction. Self-healing requires a
+    restore on the ENTRY path of the job that suffers the poison, because entry
+    is the only path a hard kill cannot skip.
+  permanent_fix: >
+    Added a "Pre-checkout ownership restore (EACCES self-heal)" step as the
+    FIRST step of every self-hosted job that checks out, in both
+    sovereign-ci.yml (test, lint, coverage, bench, security) and
+    unified-gate.yml (lint-gate, cpu-gates, gpu-gates, gate). Widened the
+    end-of-job restores from "$GITHUB_WORKSPACE/.." to the runner's whole _work
+    root, because the container HOME (_work/_temp/_github_home) and the action
+    cache (_work/_actions) sit outside the repo workspace and were accumulating
+    root-owned files on every clean exit. The bare-metal variant asserts its own
+    post-condition so a missing sudoers drop-in surfaces as a warning here
+    rather than as a mystery EACCES in the next job.
+
+equations:
+  entry_restore_coverage:
+    formula: |
+      forall j in jobs(workflow):
+        self_hosted(j) and checks_out(j) => first_step(j) == OWNERSHIP_RESTORE
+    domain: reusable workflow job graph
+    codomain: bool
+    invariants:
+    - "Restore precedes actions/checkout in every self-hosted checkout job"
+    - "Restore is the FIRST step — no step may run before it"
+    - "GitHub-hosted jobs are exempt: their runners are ephemeral"
+    - "Jobs with no checkout are exempt: nothing walks the poisoned tree"
+
+  restore_scope:
+    formula: |
+      scope(restore) == dirname(RUNNER_WORKSPACE) == dirname(RUNNER_TEMP)
+    domain: filesystem path
+    codomain: bool
+    invariants:
+    - "Scope covers the repo workspace AND _work/_temp AND _work/_actions"
+    - "Scope never escapes the work root (parent of both workspace and _temp)"
+    - "Fallback on an unresolvable work root narrows, never widens"
+    - >
+      Resolution is name-INDEPENDENT. The work root is "<runner>/_work"
+      bare-metal but "/__w" inside a job-level container, because the runner
+      path-translates RUNNER_WORKSPACE/RUNNER_TEMP across the bind mount. Any
+      check that pattern-matches the literal name (e.g. a `*/_work` glob) is
+      correct bare-metal and silently WRONG in every container job — which is
+      the half of the fleet that actually produces the root-owned files.
+
+  restore_totality:
+    formula: |
+      exit_status(restore_step) == 0   for all inputs
+    domain: CI step
+    codomain: bool
+    invariants:
+    - "A self-heal step must never itself fail a job"
+    - "Missing privilege degrades to a warning, not an error"
+    - "Absence of poison is a no-op, not a failure"
+
+falsification_tests:
+- id: FALSIFY-OWN-001
+  rule: entry_restore_coverage
+  prediction: >
+    Every job with runs-on containing 'self-hosted' that uses actions/checkout
+    has "Pre-checkout ownership restore" as steps[0].
+  test: |
+    python3 - <<'EOF'
+    import sys, yaml
+    bad = []
+    for f in ('.github/workflows/sovereign-ci.yml',
+              '.github/workflows/unified-gate.yml'):
+        for name, job in yaml.safe_load(open(f))['jobs'].items():
+            runs_on = job.get('runs-on') or []
+            if isinstance(runs_on, str):
+                runs_on = [runs_on]
+            steps = job.get('steps') or []
+            if 'self-hosted' not in runs_on:
+                continue
+            if not any('actions/checkout' in (s.get('uses') or '') for s in steps):
+                continue
+            if not (steps[0].get('name') or '').startswith(
+                    'Pre-checkout ownership restore'):
+                bad.append(f'{f}:{name}')
+    print('unguarded:', bad)
+    sys.exit(1 if bad else 0)
+    EOF
+  if_fails: >
+    A self-hosted checkout job is missing the entry guard. That single asymmetry
+    is enough to keep the runner poisoned — aprender took main red on 2026-07-06
+    for exactly this reason (one job of three lacked the guard).
+
+- id: FALSIFY-OWN-002
+  rule: restore_totality
+  prediction: >
+    The restore step exits 0 on a clean tree, on a poisoned tree, and when
+    privilege escalation is unavailable.
+  test: |
+    # Extract the guard script and run it against a synthetic _work tree.
+    WORK="$(mktemp -d)/_work"; mkdir -p "$WORK/repo/repo"
+    export RUNNER_WORKSPACE="$WORK/repo" GITHUB_WORKSPACE="$WORK/repo/repo"
+    bash -e -c "$GUARD_SCRIPT"; test $? -eq 0
+  if_fails: >
+    The self-heal step can fail a job, converting a recoverable condition into
+    the very required-check failure it exists to prevent.
+
+- id: FALSIFY-OWN-003
+  rule: restore_scope
+  prediction: >
+    After a full clean-room run, no path under <runner>/_work is owned by a uid
+    other than the runner user.
+  test: |
+    ssh intel 'sudo -n find /home/noah/data/actions-runner*/_work ! -user noah \
+      -printf "%u %p\n" 2>/dev/null | head -20; \
+      sudo -n find /home/noah/data/actions-runner*/_work ! -user noah 2>/dev/null | wc -l'
+    # expect: 0
+  if_fails: >
+    Some job is still producing root-owned files outside the restore scope, or
+    a restore step is silently a no-op (check that /etc/sudoers.d/runner-chown
+    still exists — it is machine-level config, not tracked in paiml/infra).
+
+- id: FALSIFY-OWN-005
+  rule: restore_scope
+  prediction: >
+    Every guard resolves WORK_ROOT to the true work root in BOTH a bare-metal
+    env (RUNNER_WORKSPACE=<runner>/_work/<repo>) and a containerised env
+    (RUNNER_WORKSPACE=/__w/<repo>), warning in neither; and it narrows with a
+    warning — never fails — when the work root cannot be resolved.
+  test: |
+    # Executable harness: extracts every guard's run: script from the workflow
+    # YAML and executes it under `bash -e` against a synthetic tree, once per
+    # simulated environment. Because the check under test is name-independent,
+    # a fake root standing in for "/__w" exercises the identical code path.
+    # See scratchpad/test_guards.py in the PR discussion; 56 executions
+    # (14 guards x 4 environments), all required to exit 0.
+    for env in bare-metal container temp-unset workspace-unset; do
+      run_guard "$env" || exit 1
+    done
+  if_fails: >
+    The work-root resolution is name-dependent again. Symptom in production is
+    NOT a failure but a silent narrowing: container jobs emit
+    "::warning::could not resolve the runner _work root" on every run and fall
+    back to workspace-only scope, so _work/_temp and _work/_actions keep
+    accumulating root-owned files. Caught pre-merge by the adversarial review
+    of paiml/.github#42, where a `*/_work` glob passed shellcheck, actionlint
+    and YAML validation while being wrong in all four container jobs.
+
+- id: FALSIFY-OWN-004
+  rule: entry_restore_coverage
+  prediction: >
+    RED-on-bug is reproducible: poisoning a runner makes an UNPATCHED clean-room
+    job fail in actions/checkout, and a PATCHED one pass.
+  test: |
+    ssh intel 'sudo chown -R root:root <runner>/_work/<repo>/<repo>/target'
+    # re-run any clean-room job:
+    #   pre-patch  -> fails in actions/checkout with EACCES
+    #   post-patch -> passes, guard reports "pre-checkout ownership restored"
+  if_fails: >
+    The guard is not actually running before checkout, or its scope does not
+    cover where the poison lives.
+
+exemptions:
+- job: sovereign-ci.yml/provenance
+  reason: >
+    runs-on ubuntu-latest. GitHub-hosted runners are ephemeral — the workspace
+    cannot carry poison between runs.
+- job: sovereign-ci.yml/gate
+  reason: >
+    Self-hosted but performs no checkout and touches no path under _work, so no
+    step can encounter a root-owned file.
+
+known_gaps:
+- id: GAP-OWN-001
+  description: >
+    The intel sudoers drop-ins that make the bare-metal restore effective
+    (/etc/sudoers.d/noah, /etc/sudoers.d/runner-chown) are machine-level config
+    and are NOT tracked in paiml/infra. A reimage or forjar re-provision can
+    drop them, silently degrading the bare-metal guard to "fix only what we
+    already own". FALSIFY-OWN-002's post-condition check emits a
+    ::warning:: when this happens, but nothing fails.
+  mitigation: >
+    Codify both drop-ins in paiml/infra machines/intel (alongside the existing
+    sudoers.d/ci-reaper) so `make -C machines/intel verify-systemd-units`
+    detects the drift.
+- id: GAP-OWN-002
+  description: >
+    This contract only binds workflows in paiml/.github. Repo-local workflows
+    that run on clean-room runners (e.g. aprender's ci.yml) carry their own
+    copy of the guard and are not covered here. A runner-level
+    ACTIONS_RUNNER_HOOK_JOB_STARTED restore in paiml/infra
+    (machines/clean-room/runner/pre-job.sh) would make the invariant hold for
+    every repo and every workflow, with no per-workflow duplication.
+  mitigation: >
+    Tracked as the fleet-wide follow-up to paiml/.github#42.

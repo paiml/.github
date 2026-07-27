@@ -43,6 +43,40 @@ jobs:
   lint-gate:
     runs-on: [self-hosted, clean-room]
     steps:
+      # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
+      # hard-killed container job skips even its `if: always()` cleanup, leaving
+      # root-owned files in the runner's _work tree; the next job then dies
+      # inside actions/checkout's `git clean -ffdx` before any of its own steps
+      # run, and the runner stays poisoned until an operator SSHes in and
+      # chowns. Same guard every clean-room job in sovereign-ci.yml carries —
+      # see the `test` job there for the full five-whys.
+      - name: Pre-checkout ownership restore (EACCES self-heal)
+        run: |
+          set -u
+          # Resolve the runner's _work root. Bare-metal that is
+          # "<runner>/_work"; inside a job-level container the runner
+          # path-translates these vars and it is "/__w" (bind-mounted from the
+          # same host dir). So do NOT match on the name — an earlier revision
+          # tested `*/_work` and silently narrowed every container job back to
+          # the old workspace-only scope. Validate structurally instead: the
+          # work root is the parent of BOTH the job workspace AND RUNNER_TEMP,
+          # which holds on either side of the mount, so requiring the two to
+          # agree pins us to the real work root and can never escape above it.
+          WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"
+          if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
+            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          OWNER="$(id -un):$(id -gn)"
+          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || true
+          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+          else
+            echo "pre-checkout ownership restored under $WORK_ROOT"
+          fi
+
       - name: Checkout target repo
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -287,6 +321,40 @@ jobs:
   cpu-gates:
     runs-on: [self-hosted, clean-room]
     steps:
+      # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
+      # hard-killed container job skips even its `if: always()` cleanup, leaving
+      # root-owned files in the runner's _work tree; the next job then dies
+      # inside actions/checkout's `git clean -ffdx` before any of its own steps
+      # run, and the runner stays poisoned until an operator SSHes in and
+      # chowns. Same guard every clean-room job in sovereign-ci.yml carries —
+      # see the `test` job there for the full five-whys.
+      - name: Pre-checkout ownership restore (EACCES self-heal)
+        run: |
+          set -u
+          # Resolve the runner's _work root. Bare-metal that is
+          # "<runner>/_work"; inside a job-level container the runner
+          # path-translates these vars and it is "/__w" (bind-mounted from the
+          # same host dir). So do NOT match on the name — an earlier revision
+          # tested `*/_work` and silently narrowed every container job back to
+          # the old workspace-only scope. Validate structurally instead: the
+          # work root is the parent of BOTH the job workspace AND RUNNER_TEMP,
+          # which holds on either side of the mount, so requiring the two to
+          # agree pins us to the real work root and can never escape above it.
+          WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"
+          if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
+            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          OWNER="$(id -un):$(id -gn)"
+          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || true
+          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+          else
+            echo "pre-checkout ownership restored under $WORK_ROOT"
+          fi
+
       - name: Sync infra repo on runner
         run: |
           INFRA_DIR="$HOME/src/infra"
@@ -384,6 +452,38 @@ jobs:
       inputs.repo)
     runs-on: [self-hosted, gpu, lambda-labs]
     steps:
+      # Same pre-checkout EACCES self-heal as every other self-hosted job here
+      # (paiml/.github#42). The lambda-labs GPU runner is currently masked, so
+      # this is inert today — it is present for uniformity: aprender took main
+      # red on 2026-07-06 precisely because ONE clean-room job was missing the
+      # guard, and a revived runner must not reintroduce that asymmetry.
+      - name: Pre-checkout ownership restore (EACCES self-heal)
+        run: |
+          set -u
+          # Resolve the runner's _work root. Bare-metal that is
+          # "<runner>/_work"; inside a job-level container the runner
+          # path-translates these vars and it is "/__w" (bind-mounted from the
+          # same host dir). So do NOT match on the name — an earlier revision
+          # tested `*/_work` and silently narrowed every container job back to
+          # the old workspace-only scope. Validate structurally instead: the
+          # work root is the parent of BOTH the job workspace AND RUNNER_TEMP,
+          # which holds on either side of the mount, so requiring the two to
+          # agree pins us to the real work root and can never escape above it.
+          WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"
+          if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
+            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          OWNER="$(id -un):$(id -gn)"
+          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || true
+          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES"
+          else
+            echo "pre-checkout ownership restored under $WORK_ROOT"
+          fi
+
       - name: Sync infra repo on runner
         run: |
           INFRA_DIR="$HOME/src/infra"
@@ -460,6 +560,40 @@ jobs:
     needs: [lint-gate, cpu-gates, gpu-gates]
     if: always()
     steps:
+      # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
+      # hard-killed container job skips even its `if: always()` cleanup, leaving
+      # root-owned files in the runner's _work tree; the next job then dies
+      # inside actions/checkout's `git clean -ffdx` before any of its own steps
+      # run, and the runner stays poisoned until an operator SSHes in and
+      # chowns. Same guard every clean-room job in sovereign-ci.yml carries —
+      # see the `test` job there for the full five-whys.
+      - name: Pre-checkout ownership restore (EACCES self-heal)
+        run: |
+          set -u
+          # Resolve the runner's _work root. Bare-metal that is
+          # "<runner>/_work"; inside a job-level container the runner
+          # path-translates these vars and it is "/__w" (bind-mounted from the
+          # same host dir). So do NOT match on the name — an earlier revision
+          # tested `*/_work` and silently narrowed every container job back to
+          # the old workspace-only scope. Validate structurally instead: the
+          # work root is the parent of BOTH the job workspace AND RUNNER_TEMP,
+          # which holds on either side of the mount, so requiring the two to
+          # agree pins us to the real work root and can never escape above it.
+          WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"
+          if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
+            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          OWNER="$(id -un):$(id -gn)"
+          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
+            || true
+          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
+            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+          else
+            echo "pre-checkout ownership restored under $WORK_ROOT"
+          fi
+
       - name: Evaluate gate results
         run: |
           echo "Lint gate: ${{ needs.lint-gate.result }}"
