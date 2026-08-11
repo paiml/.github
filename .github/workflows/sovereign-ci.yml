@@ -303,16 +303,29 @@ jobs:
           # workspace-member lib tests are exercised. Default stays `--lib` (root only) for
           # back-compat: many repos have workspace members that don't build in the sovereign-ci
           # container. Opt-in callers pair this with `test_args` exclusions as needed.
+          # BIN-ONLY FALLBACK (2026-07-30) — the last link in each chain drops
+          # `--lib`. Every branch above passes it, and `cargo test --lib` does not
+          # merely fail on a crate without a [lib]: it ERRORS with "no library
+          # targets found in package <name>" (exit 101). A bin-only repo could
+          # therefore never pass this job. Dropping `--lib` covers bins,
+          # integration tests and doctests, with or without a [lib].
+          #
+          # Purely additive: a crate that HAS a lib target satisfies an earlier
+          # branch and never reaches these lines, so nothing changes for the repos
+          # that work today.
           if [ "$USE_NEXTEST" = "true" ]; then
             cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1 || \
             cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+            cargo nextest run $TEST_ARGS 2>&1 || \
             { echo "::warning::nextest failed — falling back to cargo test"; \
               cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
               cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+              cargo test $TEST_ARGS 2>&1 || \
               { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
           else
             cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
             cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+            cargo test $TEST_ARGS 2>&1 || \
             { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
           fi
       - name: Record sccache stats
@@ -718,6 +731,17 @@ jobs:
           # test job comment for back-compat rationale.
           cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
+          # BIN-ONLY FALLBACK (2026-07-30). Every branch above passes `--lib`, and
+          # `cargo test --lib` does not merely fail on a crate without a [lib] — it
+          # ERRORS: "no library targets found in package <name>" (exit 101). So a
+          # bin-only repo could never produce coverage; cohete's job went red for
+          # this and nothing else. Dropping `--lib` covers bins, integration tests
+          # and doctests, and works with or without a [lib].
+          #
+          # Purely additive: a crate that HAS a lib target satisfies one of the
+          # branches above and never reaches this line, so behaviour is unchanged
+          # for every repo that works today.
+          cargo llvm-cov test --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
       - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
         # ZERO BEHAVIOR CHANGE GUARANTEE:
