@@ -1252,23 +1252,41 @@ jobs:
     if: always()
     needs: [test, lint, coverage, security, provenance]
     steps:
+      # ALLOWLIST, NOT DENYLIST. Each check previously read
+      #   if [ "<result>" = "failure" ]; then exit 1
+      # which fails ONLY on the literal string "failure". A GitHub job result
+      # is one of: success, failure, cancelled, skipped. So a job that was
+      # CANCELLED — by the concurrency group, by a timeout, by a runner going
+      # away — sailed straight through the gate.
+      #
+      # Observed live on paiml/ruchy#197: `ci / security` was CANCELLED and
+      # `ci / gate` reported SUCCESS, certifying a repo that had 21 open RUSTSEC
+      # advisories. The gate was not wrong about security; it never looked,
+      # because "cancelled" is not "failure".
+      #
+      # Requiring "success" makes every non-success state stop the line, which
+      # is the only safe default for a gate: a check that did not run has not
+      # passed. `skipped` is deliberately NOT tolerated here — all four of these
+      # jobs are mandatory, and a silently skipped mandatory job is exactly the
+      # failure mode this replaces.
       - name: Check results
         run: |
-          if [ "${{ needs.test.result }}" = "failure" ]; then
-            echo "::error::Test failed"
-            exit 1
-          fi
-          if [ "${{ needs.lint.result }}" = "failure" ]; then
-            echo "::error::Lint failed"
-            exit 1
-          fi
-          if [ "${{ needs.coverage.result }}" = "failure" ]; then
-            echo "::error::Coverage failed"
-            exit 1
-          fi
-          # Rule 8: Security is now mandatory (was silently skipped before PR #726)
-          if [ "${{ needs.security.result }}" = "failure" ]; then
-            echo "::error::Security audit failed — check .cargo/audit.toml exemptions"
+          rc=0
+          for pair in \
+            "test:${{ needs.test.result }}" \
+            "lint:${{ needs.lint.result }}" \
+            "coverage:${{ needs.coverage.result }}" \
+            "security:${{ needs.security.result }}"; do
+            job="${pair%%:*}"
+            res="${pair#*:}"
+            if [ "$res" != "success" ]; then
+              echo "::error::${job} did not succeed (result: ${res:-<none>})"
+              rc=1
+            fi
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "Gate FAILED — a mandatory job did not succeed."
+            echo "Note: cancelled and skipped both count as not-passed."
             exit 1
           fi
           echo "All critical jobs passed (test + lint + coverage + security)"
