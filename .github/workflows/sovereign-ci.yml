@@ -504,8 +504,10 @@ jobs:
             /usr/local/cargo/git
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
       - name: Format check
-        run: cargo fmt --all -- --check 2>&1 || echo "::warning::Format issues found"
-        continue-on-error: true
+        # Was suppressed TWICE — `|| echo` swallowed the exit code and
+        # `continue-on-error` swallowed the step — so removing either one alone
+        # changed nothing and unformatted code merged green.
+        run: cargo fmt --all -- --check
       - name: Clippy
         env:
           CLIPPY_ARGS: ${{ inputs.clippy_args }}
@@ -523,7 +525,12 @@ jobs:
             "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-lint.json" \
             2>/dev/null || echo "::warning::sccache stats unavailable"
       - name: Supply chain audit (cargo deny)
-        continue-on-error: true
+        # NOT continue-on-error. This is the fleet's only licenses+sources gate;
+        # suppressed, it merged green on a GPL dep, an unvetted registry source
+        # or a deny-only advisory in every repo shipping a deny.toml. Rule 8 at
+        # the `security` job below already says security checks are required —
+        # it was applied to `cargo audit` (advisories only) and never to this,
+        # the stricter check.
         run: |
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
