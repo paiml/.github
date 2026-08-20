@@ -31,14 +31,44 @@ jobs:
           # errors and stays quiet about cosmetics.
           uvx yamllint -d relaxed .github/workflows/
       - name: actionlint
-        uses: raven-actions/actionlint@v2
-        with:
-          # STILL ADVISORY — deliberately, and this is a known gap rather than an
-          # oversight. Unlike yamllint above, actionlint's current status on this
-          # tree has not been measured, and arming an unmeasured check in the one
-          # repo that holds the fleet's reusable workflows risks blocking every
-          # consumer's ability to merge a fix. Measure it, then arm it.
-          fail-on-error: false
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          # Was `raven-actions/actionlint@v2` with fail-on-error:false. Two
+          # separate defects, both now fixed.
+          #
+          # 1. It did not RUN here. That action shells out to
+          #    `npm install @actions/tool-cache`, and npm is not installed on the
+          #    clean-room runners — exit 127. (The Actions runner ships its own
+          #    node under externals/ for JavaScript actions, but that is not on
+          #    PATH for `run:` steps, so a JS action works while an action that
+          #    invokes npm as a command does not.) actionlint is a single static
+          #    Go binary, so fetch it directly and skip the dependency entirely.
+          #
+          # 2. It could not FAIL. fail-on-error:false was load-bearing because
+          #    actionlint's entire output on this repo was runner-label false
+          #    positives — it does not know `clean-room` / `intel` / `rtx4090`.
+          #    Those are now declared in .github/actionlint.yaml, so the check is
+          #    armed. Measured: rc=0 clean on this tree, and rc=1 with the
+          #    correct diagnosis when a bogus `needs:` entry is injected, so it
+          #    demonstrably still goes RED.
+          #
+          # -shellcheck= disables the embedded shellcheck pass ON PURPOSE. Fleet
+          # policy is bashrs for shell, not shellcheck (CLAUDE.md), and the only
+          # remaining findings were info-level SC2086/SC2012/SC2015 duplicating
+          # what bashrs already owns. actionlint keeps the part nothing else
+          # does: workflow syntax, expressions, action inputs, runner labels.
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          # Download to a file rather than piping into tar: a pipeline under
+          # `pipefail` can hand back the producer's status instead of tar's.
+          curl -fsSL --retry 3 -o "$tmp/actionlint.tar.gz" "$url"
+          tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+          "$tmp/actionlint" -version
+          "$tmp/actionlint" -shellcheck=
 
   gate:
     name: gate
