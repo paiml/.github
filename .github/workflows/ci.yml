@@ -84,32 +84,53 @@ jobs:
     steps:
       - name: Check all jobs
         shell: bash
-        env:
-          NEEDS_JSON: ${{ toJson(needs) }}
         run: |
           set -uo pipefail
-          # FAIL CLOSED. The previous form was:
+          # FAIL CLOSED. The original was:
           #
-          #   if echo '${{ toJson(needs) }}' | jq -e '... | length > 0'; then exit 1; fi
+          #   if echo '<toJson-needs-expression>' | jq -e '... | length > 0'; then exit 1; fi
+          #
+          # (that expression is written in prose here ON PURPOSE — see the
+          # substitution note below; spelling it literally in a COMMENT is what
+          # broke this job once already)
           #
           # `jq -e` exits 0 when the result is truthy, 1 when false/null, and 4+
           # on a parse error. So malformed input took the SAME path as "nothing
-          # failed" and the gate PASSED. Verified: piping `not json` into that
+          # failed" and the gate PASSED. Verified: piping `not json` through that
           # filter returns rc=4, which skips the if-branch. A required status
-          # gate that passes when it cannot read its own input is not a gate.
+          # check that passes when it cannot read its own input is not a check.
           #
-          # This is the same allowlist-not-denylist class already documented at
-          # length on sovereign-ci.yml's gate, which was fixed there after
-          # paiml/ruchy#197 certified a repo whose `security` job was CANCELLED.
-          # The same bug lived on here, in the gate that guards the reusable
-          # workflows themselves.
+          # Same allowlist-not-denylist class already documented at length on
+          # sovereign-ci.yml's gate, fixed there after paiml/ruchy#197 certified a
+          # repo whose `security` job had been CANCELLED. It outlived that fix
+          # here, in the gate guarding the reusable workflows themselves.
+          #
+          # NOTE ON SUBSTITUTION. The needs-context expression expands to
+          # MULTI-LINE JSON, and Actions substitutes these expressions TEXTUALLY
+          # into this script BEFORE bash ever sees it — including inside what
+          # look like shell comments. A `#` does not protect anything, because
+          # the substitution happens first. That is precisely how this job died
+          # with `validate:: command not found` (exit 127): a comment quoting the
+          # old one-liner spelled the expression out, so the JSON's own lines
+          # were spliced into the script body and executed.
+          #
+          # Two consequences, both load-bearing:
+          #   1. Never write that expression literally in a comment here.
+          #   2. Expand it exactly once, inside a QUOTED heredoc, where the lines
+          #      are inert data. This also keeps the check generic over whatever
+          #      `needs:` lists, instead of hardcoding job names that a later
+          #      edit could forget to update.
+          cat > "$RUNNER_TEMP/needs.json" <<'NEEDS_EOF'
+          ${{ toJson(needs) }}
+          NEEDS_EOF
           if ! failed=$(jq -r '
                 to_entries
                 | map(select(.value.result != "success" and .value.result != "skipped"))
                 | map("\(.key)=\(.value.result)")
-                | join(" ")' <<<"$NEEDS_JSON"); then
+                | join(" ")' "$RUNNER_TEMP/needs.json"); then
             echo "::error::gate could not parse the needs context — failing closed"
-            printf 'raw input was:\n%s\n' "$NEEDS_JSON"
+            echo "raw input was:"
+            cat "$RUNNER_TEMP/needs.json"
             exit 1
           fi
           if [ -n "$failed" ]; then
