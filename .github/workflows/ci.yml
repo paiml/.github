@@ -8,29 +8,133 @@ on:
 jobs:
   validate:
     name: validate
-    # falsify-f8-allow: source-validation gate — paiml/.github only contains reusable workflows, no self-hosted work
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest under an f8 allowlist entry. Hosted runners
+    # are banned fleet-wide (build-performance.md principle 8) — they bill on
+    # private repos, and at the spending limit a job does not start at all,
+    # reporting `failure` with zero steps. See paiml/infra#231.
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     steps:
       - uses: actions/checkout@v6
       - name: Lint workflow YAML
+        shell: bash
         run: |
-          pip install yamllint
-          yamllint -d relaxed .github/workflows/ || true
+          set -euo pipefail
+          # Was `pip install yamllint && yamllint ... || true`, which had two
+          # defects. First, `pip install` mutates the SYSTEM python of a
+          # persistent, shared self-hosted runner; uvx runs it in a throwaway
+          # environment instead and leaves no trace. Second, `|| true` meant this
+          # step could not fail — a "source-validation gate" that always passed.
+          #
+          # Arming it is safe and was measured, not assumed: yamllint currently
+          # exits 0 on this tree (0 errors, 279 line-length warnings, and
+          # warnings do not affect its exit status). So this now fails on real
+          # errors and stays quiet about cosmetics.
+          uvx yamllint -d relaxed .github/workflows/
       - name: actionlint
-        uses: raven-actions/actionlint@v2
-        with:
-          fail-on-error: false
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          # Was `raven-actions/actionlint@v2` with fail-on-error:false. Two
+          # separate defects, both now fixed.
+          #
+          # 1. It did not RUN here. That action shells out to
+          #    `npm install @actions/tool-cache`, and npm is not installed on the
+          #    clean-room runners — exit 127. (The Actions runner ships its own
+          #    node under externals/ for JavaScript actions, but that is not on
+          #    PATH for `run:` steps, so a JS action works while an action that
+          #    invokes npm as a command does not.) actionlint is a single static
+          #    Go binary, so fetch it directly and skip the dependency entirely.
+          #
+          # 2. It could not FAIL. fail-on-error:false was load-bearing because
+          #    actionlint's entire output on this repo was runner-label false
+          #    positives — it does not know `clean-room` / `intel` / `rtx4090`.
+          #    Those are now declared in .github/actionlint.yaml, so the check is
+          #    armed. Measured: rc=0 clean on this tree, and rc=1 with the
+          #    correct diagnosis when a bogus `needs:` entry is injected, so it
+          #    demonstrably still goes RED.
+          #
+          # -shellcheck= disables the embedded shellcheck pass ON PURPOSE. Fleet
+          # policy is bashrs for shell, not shellcheck (CLAUDE.md), and the only
+          # remaining findings were info-level SC2086/SC2012/SC2015 duplicating
+          # what bashrs already owns. actionlint keeps the part nothing else
+          # does: workflow syntax, expressions, action inputs, runner labels.
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          # Download to a file rather than piping into tar: a pipeline under
+          # `pipefail` can hand back the producer's status instead of tar's.
+          curl -fsSL --retry 3 -o "$tmp/actionlint.tar.gz" "$url"
+          tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+          "$tmp/actionlint" -version
+          "$tmp/actionlint" -shellcheck=
 
   gate:
     name: gate
-    # falsify-f8-allow: status-rollup gate required by org ruleset (must be hosted to avoid bootstrap loop)
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest, justified as "must be hosted to avoid
+    # bootstrap loop". The loop is real but narrow: it only bites if a change
+    # here breaks the self-hosted runners themselves, and in that case all CI
+    # everywhere is already down and an admin bypass is the remedy. Weighed
+    # against a gate that silently stops running on billing state, self-hosted
+    # is the safer failure mode.
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     if: always()
     needs: [validate]
     steps:
       - name: Check all jobs
+        shell: bash
         run: |
-          if echo '${{ toJson(needs) }}' | jq -e 'to_entries | map(select(.value.result != "success" and .value.result != "skipped")) | length > 0' > /dev/null 2>&1; then
-            echo "One or more jobs failed"
+          set -uo pipefail
+          # FAIL CLOSED. The original was:
+          #
+          #   if echo '<toJson-needs-expression>' | jq -e '... | length > 0'; then exit 1; fi
+          #
+          # (that expression is written in prose here ON PURPOSE — see the
+          # substitution note below; spelling it literally in a COMMENT is what
+          # broke this job once already)
+          #
+          # `jq -e` exits 0 when the result is truthy, 1 when false/null, and 4+
+          # on a parse error. So malformed input took the SAME path as "nothing
+          # failed" and the gate PASSED. Verified: piping `not json` through that
+          # filter returns rc=4, which skips the if-branch. A required status
+          # check that passes when it cannot read its own input is not a check.
+          #
+          # Same allowlist-not-denylist class already documented at length on
+          # sovereign-ci.yml's gate, fixed there after paiml/ruchy#197 certified a
+          # repo whose `security` job had been CANCELLED. It outlived that fix
+          # here, in the gate guarding the reusable workflows themselves.
+          #
+          # NOTE ON SUBSTITUTION. The needs-context expression expands to
+          # MULTI-LINE JSON, and Actions substitutes these expressions TEXTUALLY
+          # into this script BEFORE bash ever sees it — including inside what
+          # look like shell comments. A `#` does not protect anything, because
+          # the substitution happens first. That is precisely how this job died
+          # with `validate:: command not found` (exit 127): a comment quoting the
+          # old one-liner spelled the expression out, so the JSON's own lines
+          # were spliced into the script body and executed.
+          #
+          # Two consequences, both load-bearing:
+          #   1. Never write that expression literally in a comment here.
+          #   2. Expand it exactly once, inside a QUOTED heredoc, where the lines
+          #      are inert data. This also keeps the check generic over whatever
+          #      `needs:` lists, instead of hardcoding job names that a later
+          #      edit could forget to update.
+          cat > "$RUNNER_TEMP/needs.json" <<'NEEDS_EOF'
+          ${{ toJson(needs) }}
+          NEEDS_EOF
+          if ! failed=$(jq -r '
+                to_entries
+                | map(select(.value.result != "success" and .value.result != "skipped"))
+                | map("\(.key)=\(.value.result)")
+                | join(" ")' "$RUNNER_TEMP/needs.json"); then
+            echo "::error::gate could not parse the needs context — failing closed"
+            echo "raw input was:"
+            cat "$RUNNER_TEMP/needs.json"
             exit 1
           fi
+          if [ -n "$failed" ]; then
+            echo "::error::one or more jobs did not succeed: $failed"
+            exit 1
+          fi
+          echo "all upstream jobs succeeded or were skipped"

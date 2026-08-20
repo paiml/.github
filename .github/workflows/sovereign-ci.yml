@@ -1254,8 +1254,23 @@ jobs:
 
   provenance:
     name: provenance
-    # falsify-f8-allow: SLSA attest-build-provenance needs GitHub OIDC id-token, only issued on GitHub-hosted runners. Job is continue-on-error (advisory).
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest under an f8 allowlist entry claiming OIDC
+    # id-tokens are "only issued on GitHub-hosted runners". That claim is wrong:
+    # GitHub mints OIDC id-tokens for self-hosted runners too — the runner
+    # requests one from the Actions service via ACTIONS_ID_TOKEN_REQUEST_URL,
+    # which is exactly how self-hosted runners do keyless cloud auth. The claim
+    # had never been tested; it was asserted and then inherited.
+    #
+    # Hosted runners are banned fleet-wide (build-performance.md principle 8):
+    # they bill on private repos, and when the spending limit is reached the job
+    # does not start at all. On a PRIVATE repo this job was therefore producing
+    # no attestation while looking merely advisory-red. See paiml/infra#231.
+    #
+    # This job is continue-on-error, so flipping it is a cheap experiment rather
+    # than a bet: if OIDC really does fail here, the job goes advisory-red and
+    # nothing blocks. Verify by confirming an attestation is still produced
+    # (gh attestation list) before treating this as settled.
+    runs-on: [self-hosted, clean-room]
     timeout-minutes: 5
     continue-on-error: true
     permissions:

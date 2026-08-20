@@ -1,0 +1,28 @@
+# actionlint config — declare the fleet's self-hosted runner labels.
+#
+# Without this, actionlint reports every `runs-on: [self-hosted, ..., clean-room,
+# intel]` as `label "clean-room" is unknown`, because it only knows GitHub's
+# hosted labels. That was the ENTIRE content of actionlint's output on this repo
+# (rc=1, all findings runner-label) — which is why the check had been pinned to
+# `fail-on-error: false` and was therefore incapable of reporting a real problem.
+#
+# Declaring the labels removes the false positives so the check can be armed and
+# actually mean something.
+#
+# Sources, so this can be re-derived rather than guessed:
+#   gh api /orgs/paiml/actions/runners        -> clean-room, intel
+#   gh api repos/paiml/aprender/actions/runners -> ada, blackwell, cuda, gb10, rtx4090
+#   grep -rhoE 'runs-on: \[[^]]*\]' .github/workflows/  -> amd, gpu, lambda-labs, yoga
+self-hosted-runner:
+  labels:
+    - clean-room
+    - intel
+    - ada
+    - blackwell
+    - cuda
+    - gb10
+    - rtx4090
+    - amd
+    - gpu
+    - lambda-labs
+    - yoga
