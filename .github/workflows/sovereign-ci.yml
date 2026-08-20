@@ -293,6 +293,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
           USE_NEXTEST: ${{ inputs.use_nextest }}
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
@@ -514,6 +519,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
         run: |
           cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
           cargo clippy -p "$REPO_NAME" -- -D warnings -A unused-variables 2>&1 || \
@@ -716,6 +726,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
@@ -983,6 +998,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
         run: |
           if ls benches/*.rs 2>/dev/null | head -1 | grep -q '.'; then
             cargo bench --bench '*' -- --output-format bencher 2>&1 | tee bench-results.txt || \
