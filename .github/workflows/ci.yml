@@ -8,29 +8,82 @@ on:
 jobs:
   validate:
     name: validate
-    # falsify-f8-allow: source-validation gate — paiml/.github only contains reusable workflows, no self-hosted work
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest under an f8 allowlist entry. Hosted runners
+    # are banned fleet-wide (build-performance.md principle 8) — they bill on
+    # private repos, and at the spending limit a job does not start at all,
+    # reporting `failure` with zero steps. See paiml/infra#231.
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     steps:
       - uses: actions/checkout@v6
       - name: Lint workflow YAML
+        shell: bash
         run: |
-          pip install yamllint
-          yamllint -d relaxed .github/workflows/ || true
+          set -euo pipefail
+          # Was `pip install yamllint && yamllint ... || true`, which had two
+          # defects. First, `pip install` mutates the SYSTEM python of a
+          # persistent, shared self-hosted runner; uvx runs it in a throwaway
+          # environment instead and leaves no trace. Second, `|| true` meant this
+          # step could not fail — a "source-validation gate" that always passed.
+          #
+          # Arming it is safe and was measured, not assumed: yamllint currently
+          # exits 0 on this tree (0 errors, 279 line-length warnings, and
+          # warnings do not affect its exit status). So this now fails on real
+          # errors and stays quiet about cosmetics.
+          uvx yamllint -d relaxed .github/workflows/
       - name: actionlint
         uses: raven-actions/actionlint@v2
         with:
+          # STILL ADVISORY — deliberately, and this is a known gap rather than an
+          # oversight. Unlike yamllint above, actionlint's current status on this
+          # tree has not been measured, and arming an unmeasured check in the one
+          # repo that holds the fleet's reusable workflows risks blocking every
+          # consumer's ability to merge a fix. Measure it, then arm it.
           fail-on-error: false
 
   gate:
     name: gate
-    # falsify-f8-allow: status-rollup gate required by org ruleset (must be hosted to avoid bootstrap loop)
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest, justified as "must be hosted to avoid
+    # bootstrap loop". The loop is real but narrow: it only bites if a change
+    # here breaks the self-hosted runners themselves, and in that case all CI
+    # everywhere is already down and an admin bypass is the remedy. Weighed
+    # against a gate that silently stops running on billing state, self-hosted
+    # is the safer failure mode.
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     if: always()
     needs: [validate]
     steps:
       - name: Check all jobs
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
         run: |
-          if echo '${{ toJson(needs) }}' | jq -e 'to_entries | map(select(.value.result != "success" and .value.result != "skipped")) | length > 0' > /dev/null 2>&1; then
-            echo "One or more jobs failed"
+          set -uo pipefail
+          # FAIL CLOSED. The previous form was:
+          #
+          #   if echo '${{ toJson(needs) }}' | jq -e '... | length > 0'; then exit 1; fi
+          #
+          # `jq -e` exits 0 when the result is truthy, 1 when false/null, and 4+
+          # on a parse error. So malformed input took the SAME path as "nothing
+          # failed" and the gate PASSED. Verified: piping `not json` into that
+          # filter returns rc=4, which skips the if-branch. A required status
+          # gate that passes when it cannot read its own input is not a gate.
+          #
+          # This is the same allowlist-not-denylist class already documented at
+          # length on sovereign-ci.yml's gate, which was fixed there after
+          # paiml/ruchy#197 certified a repo whose `security` job was CANCELLED.
+          # The same bug lived on here, in the gate that guards the reusable
+          # workflows themselves.
+          if ! failed=$(jq -r '
+                to_entries
+                | map(select(.value.result != "success" and .value.result != "skipped"))
+                | map("\(.key)=\(.value.result)")
+                | join(" ")' <<<"$NEEDS_JSON"); then
+            echo "::error::gate could not parse the needs context — failing closed"
+            printf 'raw input was:\n%s\n' "$NEEDS_JSON"
             exit 1
           fi
+          if [ -n "$failed" ]; then
+            echo "::error::one or more jobs did not succeed: $failed"
+            exit 1
+          fi
+          echo "all upstream jobs succeeded or were skipped"
