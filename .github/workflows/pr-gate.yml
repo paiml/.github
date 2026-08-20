@@ -16,8 +16,22 @@ on:
 
 jobs:
   authorize:
-    # falsify-f8-allow: authorization gate MUST run before self-hosted runner claim — untrusted PR code cannot execute on self-hosted infra.
-    runs-on: ubuntu-latest
+    # Runs on self-hosted intel. GitHub-hosted runners are BANNED fleet-wide:
+    # they bill on private repos, and when the Actions spending limit is reached
+    # the job does not start AT ALL — it reports `failure` with ZERO steps, which
+    # is indistinguishable from this gate rejecting an author. That is exactly
+    # what happened: this gate had NEVER executed on paiml/infra while showing
+    # FAILURE on 100% of its PRs, so it was routinely stepped over (paiml/infra#231).
+    # An authorization control that cannot start is worse than no control, because
+    # it manufactures the appearance of enforcement.
+    #
+    # The original rationale for ubuntu-latest was that untrusted PR code must not
+    # execute on self-hosted infra. That concern does not apply to THIS job: it has
+    # exactly one step, `actions/github-script`, and there is NO `actions/checkout`
+    # anywhere in this workflow. No PR-authored code is ever fetched or run here —
+    # the job only reads `context.payload` and calls the API. If a checkout step is
+    # ever added, this decision must be revisited.
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     permissions:
       pull-requests: write
     steps:
