@@ -110,7 +110,7 @@ jobs:
     name: test
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -366,7 +366,7 @@ jobs:
     name: lint
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -578,7 +578,7 @@ jobs:
     if: ${{ !inputs.skip_coverage }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -864,7 +864,7 @@ jobs:
     if: ${{ inputs.run_benchmarks }}
     runs-on: [self-hosted, clean-room]
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
       volumes:
         - /home/noah/data/sccache:/sccache
