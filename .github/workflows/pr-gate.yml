@@ -35,128 +35,152 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - name: Check PR author authorization
+      - name: Determine authorization
+        id: authz
+        shell: bash
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -uo pipefail
+
+          # ==============================================================
+          # WHY THIS USES THE RUNNER'S AMBIENT ORG AUTH
+          #
+          # Two different APIs have now been caught giving this gate a
+          # confidently wrong answer, both for the same underlying reason:
+          # the default GITHUB_TOKEN cannot see PRIVATE org memberships,
+          # and every paiml owner's membership is private.
+          #
+          #   1. `orgs.checkMembershipForUser` with GITHUB_TOKEN answers 404
+          #      for a private member -- byte-for-byte identical to "not a
+          #      member". This closed @noahgift's PRs until he was
+          #      allowlisted by name (#12), then closed @alfredodeza's
+          #      paiml/infra#340 twice while `gate` and `validate` were
+          #      green on the same commit.
+          #
+          #   2. `author_association` from the payload looked like the fix
+          #      -- the REST API reports MEMBER for those same PRs. It is
+          #      NOT the fix. MEASURED on the live webhook for #340:
+          #      author_association=COLLABORATOR. GitHub downgrades the
+          #      payload's association for private members too, so a real
+          #      org owner is indistinguishable from an outside
+          #      collaborator. That attempt (#54) is what this replaces.
+          #
+          # The runner's ambient `gh` auth holds admin:org and therefore
+          # sees the truth. This is the same decision, for the same reason,
+          # already taken by lane-liveness.sh (CLAUDE.md: "Uses the
+          # runner's ambient org gh auth -- never github.token").
+          #
+          # Safe here: this job has exactly ONE input it does not control,
+          # a login string, and there is NO actions/checkout anywhere in
+          # this workflow. No PR-authored code is fetched or run.
+          # ==============================================================
+
+          ORG=paiml
+
+          # Deliberately NOT the workflow token: that token is the blind
+          # instrument this whole file exists to route around.
+          unset GITHUB_TOKEN GH_TOKEN
+
+          # Returns: member | notmember | indeterminate
+          # `indeterminate` is a THIRD answer and must never collapse into
+          # `notmember` -- conflating "they are not a member" with "I could
+          # not ask" is the exact defect that closed two owners' PRs.
+          membership() {
+            local user="$1" resp rc state
+            resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              state=$(printf '%s' "$resp" | jq -r '.state // "unknown"')
+              # "pending" = invited, not accepted. Not a member yet.
+              if [ "$state" = "active" ]; then echo member; else echo notmember; fi
+              return 0
+            fi
+            case "$resp" in
+              *"HTTP 404"*) echo notmember ;;
+              *)            echo indeterminate ;;
+            esac
+          }
+
+          # --------------------------------------------------------------
+          # PROBE THE INSTRUMENT BEFORE TRUSTING ITS VERDICT.
+          # A membership check that cannot see members reports everyone as
+          # an outsider, and that is precisely how this gate failed twice.
+          # So it must answer a known member and a known non-member
+          # correctly, right now, on this runner, before it is allowed to
+          # judge anybody.
+          # --------------------------------------------------------------
+          PROBE_MEMBER=noahgift                          # org owner, private membership
+          PROBE_STRANGER=paiml-pr-gate-sentinel-no-such-user
+
+          probe_pos=$(membership "$PROBE_MEMBER")
+          probe_neg=$(membership "$PROBE_STRANGER")
+          echo "instrument probe: ${PROBE_MEMBER}=${probe_pos} (want member), ${PROBE_STRANGER}=${probe_neg} (want notmember)"
+
+          if [ "$probe_pos" != "member" ] || [ "$probe_neg" != "notmember" ]; then
+            echo "::error::pr-gate instrument probe FAILED (${PROBE_MEMBER}=${probe_pos}, ${PROBE_STRANGER}=${probe_neg}) -- refusing to judge anyone with a check that cannot demonstrate both answers"
+            # Fail RED and leave the PR OPEN. The harm is asymmetric and
+            # measured: auto-closing a legitimate owner's PR has happened
+            # repeatedly and is invisible to them, while an unauthorized PR
+            # left open under a red required check is visible to every
+            # human on the repo.
+            exit 1
+          fi
+
+          # --------------------------------------------------------------
+          # Decision.
+          # --------------------------------------------------------------
+          # Explicitly allowlisted EXTERNAL contributors only. Org members
+          # are authorized structurally, below -- adding one here is how
+          # this gate hid its own blindness for four months.
+          case "$PR_AUTHOR" in
+            guyernest) # pmcp lead developer -- outside collaborator, not an org member
+              echo "allow=true"   >> "$GITHUB_OUTPUT"
+              echo "reason=allowlisted external contributor" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: allowlisted external contributor -- ALLOWED"
+              exit 0 ;;
+          esac
+
+          # Bots (dependabot, renovate, actions-user) are always allowed.
+          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "allow=true" >> "$GITHUB_OUTPUT"
+            echo "reason=bot"  >> "$GITHUB_OUTPUT"
+            echo "$PR_AUTHOR: bot -- ALLOWED"
+            exit 0
+          fi
+
+          author_state=$(membership "$PR_AUTHOR")
+          echo "author=${PR_AUTHOR} type=${PR_AUTHOR_TYPE} membership=${author_state}"
+
+          case "$author_state" in
+            member)
+              echo "allow=true" >> "$GITHUB_OUTPUT"
+              echo "reason=active ${ORG} org member" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: active ${ORG} org member -- ALLOWED" ;;
+            notmember)
+              echo "allow=false" >> "$GITHUB_OUTPUT"
+              echo "reason=not an active ${ORG} org member and not allowlisted" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: not a member -- REJECTED" ;;
+            *)
+              # Could not ask. Not a verdict. Never close on this.
+              echo "::error::could not determine ${ORG} membership for ${PR_AUTHOR} -- leaving the PR open for a human"
+              exit 1 ;;
+          esac
+
+      - name: Close unauthorized PR
+        if: steps.authz.outputs.allow != 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          REASON: ${{ steps.authz.outputs.reason }}
         with:
           script: |
-            // ================================================================
-            // WHY THIS READS author_association AND NOT THE MEMBERSHIP API
-            //
-            // This gate used to call `orgs.checkMembershipForUser` with the
-            // default GITHUB_TOKEN. That token has no `read:org` scope, and
-            // WITHOUT IT THE API CANNOT SEE PRIVATE ORG MEMBERSHIPS: it answers
-            // 404, which is byte-for-byte indistinguishable from "not a member".
-            //
-            // Every paiml owner has private membership, so the gate auto-closed
-            // the org's own owners. It was patched one name at a time — first
-            // @noahgift (allowlisted, paiml/.github#12), then it closed
-            // @alfredodeza's paiml/infra#340 TWICE while that PR's `gate` and
-            // `validate` checks were both green. The allowlist was never the
-            // fix; it was a per-person workaround for a blind instrument, and
-            // it silently re-broke for the next member who opened a PR.
-            //
-            // `author_association` is computed by GitHub server-side, ships in
-            // the pull_request_target payload, is NOT filtered by the calling
-            // token's scopes, and cannot be set by the PR author. Measured on
-            // the PRs of two private-membership owners before this change:
-            // MEMBER for both. So it answers the question the API could not,
-            // for EVERY member at once, with no extra token and no new secret.
-            //
-            // COLLABORATOR is deliberately NOT accepted: an outside
-            // collaborator with repo write access is still an external
-            // contributor under this policy and needs an allowlist entry.
-            // ================================================================
+            const author = context.payload.pull_request.user.login;
+            const number = context.payload.pull_request.number;
 
-            // Explicitly allowlisted external contributors. Org members do NOT
-            // belong here — they are authorized structurally, above.
-            const ALLOWLIST = new Set([
-              'guyernest',  // pmcp lead developer — outside collaborator, not an org member
-            ]);
-
-            const MEMBER_ASSOCIATIONS = new Set(['OWNER', 'MEMBER']);
-
-            // Pure decision function — no I/O, so it can be self-tested below.
-            function decide({ author, authorType, association }) {
-              // Bots (dependabot, actions-user, renovate) are always allowed.
-              if (authorType === 'Bot') {
-                return { allow: true, reason: 'bot' };
-              }
-              if (ALLOWLIST.has(author)) {
-                return { allow: true, reason: 'allowlisted external contributor' };
-              }
-              if (MEMBER_ASSOCIATIONS.has(association)) {
-                return { allow: true, reason: `org membership reported by GitHub as ${association}` };
-              }
-              return { allow: false, reason: `author_association ${association} is not org membership` };
-            }
-
-            // ---------------------------------------------------------------
-            // SELF-TEST. This gate's whole failure history is of a control that
-            // reported a verdict it had not measured, so it proves it can still
-            // REJECT before it is trusted to ACCEPT. Runs on every invocation;
-            // a broken decision function fails the job instead of nodding
-            // everyone through.
-            // ---------------------------------------------------------------
-            const SELF_TEST = [
-              { name: 'stranger rejected', expect: false,
-                input: { author: 'test-stranger', authorType: 'User', association: 'NONE' } },
-              { name: 'first-time contributor rejected', expect: false,
-                input: { author: 'test-stranger', authorType: 'User', association: 'FIRST_TIME_CONTRIBUTOR' } },
-              { name: 'prior contributor rejected', expect: false,
-                input: { author: 'test-stranger', authorType: 'User', association: 'CONTRIBUTOR' } },
-              { name: 'un-allowlisted outside collaborator rejected', expect: false,
-                input: { author: 'test-stranger', authorType: 'User', association: 'COLLABORATOR' } },
-              { name: 'missing association rejected', expect: false,
-                input: { author: 'test-stranger', authorType: 'User', association: undefined } },
-              { name: 'private-membership member allowed', expect: true,
-                input: { author: 'test-member', authorType: 'User', association: 'MEMBER' } },
-              { name: 'org owner allowed', expect: true,
-                input: { author: 'test-owner', authorType: 'User', association: 'OWNER' } },
-              { name: 'bot allowed', expect: true,
-                input: { author: 'dependabot[bot]', authorType: 'Bot', association: 'NONE' } },
-              { name: 'allowlisted external allowed', expect: true,
-                input: { author: 'guyernest', authorType: 'User', association: 'NONE' } },
-            ];
-
-            const selfTestFailures = SELF_TEST
-              .filter((t) => decide(t.input).allow !== t.expect)
-              .map((t) => t.name);
-
-            if (selfTestFailures.length > 0) {
-              core.setFailed(
-                `pr-gate SELF-TEST FAILED (${selfTestFailures.length}/${SELF_TEST.length}): ` +
-                `${selfTestFailures.join('; ')} — refusing to render a verdict with a broken instrument`
-              );
-              return;
-            }
-            console.log(`pr-gate self-test: ${SELF_TEST.length}/${SELF_TEST.length} passed`);
-
-            // ---------------------------------------------------------------
-            // Real decision.
-            // ---------------------------------------------------------------
-            const pr = context.payload.pull_request;
-            const author = pr.user.login;
-            const verdict = decide({
-              author,
-              authorType: pr.user.type,
-              association: pr.author_association,
-            });
-
-            console.log(
-              `author=${author} type=${pr.user.type} ` +
-              `author_association=${pr.author_association} -> ` +
-              `${verdict.allow ? 'ALLOWED' : 'REJECTED'} (${verdict.reason})`
-            );
-
-            if (verdict.allow) {
-              return;
-            }
-
-            // Unauthorized — close the PR.
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pr.number,
+              issue_number: number,
               body: [
                 `Thank you for your interest in this project, @${author}.`,
                 '',
@@ -169,8 +193,8 @@ jobs:
             await github.rest.pulls.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: pr.number,
+              pull_number: number,
               state: 'closed',
             });
 
-            core.setFailed(`PR author ${author} is not authorized (${verdict.reason})`);
+            core.setFailed(`PR author ${author} is not authorized (${process.env.REASON})`);
