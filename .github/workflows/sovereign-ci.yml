@@ -1184,9 +1184,26 @@ jobs:
       # class at source. Independent of aprender#1043's workspace-test fix
       # (which addresses the containerized workspace-test job's registry
       # mount, not this bare-metal security job's $HOME).
+      #
+      # 2026-08-30: that per-runner CARGO_HOME moved off /tmp. The isolation
+      # above is right; the location was not. /tmp is emptied at boot, so a
+      # per-runner cache there HALF-persists — it survives between jobs and
+      # vanishes on the next reboot, so the crates.io registry and the
+      # cargo-audit compile are re-paid on an unpredictable subset of runs.
+      # paiml/infra's shared-$HOME guard blocks that shape as
+      # `cargo-install-boot-volatile`, and this exact step is the fixture it
+      # was written from (infra#219, bad-cargo-install-tmp.yml).
+      #
+      # $RUNNER_TOOL_CACHE is the runner's own persistent tool directory
+      # (<runner>/_work/_tool). It is already per-runner by construction —
+      # each of the 16 intel services has its own _work tree — so it keeps
+      # every property this step was reaching for, and survives a reboot.
       - name: Install cargo-audit (per-runner CARGO_HOME)
         run: |
-          export CARGO_HOME="/tmp/cargo-home-security-${{ runner.name }}"
+          # Fail closed: an unset RUNNER_TOOL_CACHE would root CARGO_HOME at /
+          # and the mkdir would fail with a message about the wrong thing.
+          : "${RUNNER_TOOL_CACHE:?RUNNER_TOOL_CACHE is unset; refusing to root CARGO_HOME at /}"
+          export CARGO_HOME="$RUNNER_TOOL_CACHE/cargo-home-security"
           mkdir -p "$CARGO_HOME"
           echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
           cargo install cargo-audit --locked --root "$CARGO_HOME" || true
