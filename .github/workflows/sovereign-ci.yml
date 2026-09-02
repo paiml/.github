@@ -206,11 +206,17 @@ jobs:
           # 'https://github.com'" while the same clone with the job token answered.
           # The siblings are public, so the calling workflow's token can read them;
           # the header is per-invocation and never written to the checkout.
-          git_auth=()
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
           if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           fi
-          export GIT_TERMINAL_PROMPT=0
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -232,14 +238,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -447,11 +453,17 @@ jobs:
           # 'https://github.com'" while the same clone with the job token answered.
           # The siblings are public, so the calling workflow's token can read them;
           # the header is per-invocation and never written to the checkout.
-          git_auth=()
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
           if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           fi
-          export GIT_TERMINAL_PROMPT=0
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -473,14 +485,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -672,11 +684,17 @@ jobs:
           # 'https://github.com'" while the same clone with the job token answered.
           # The siblings are public, so the calling workflow's token can read them;
           # the header is per-invocation and never written to the checkout.
-          git_auth=()
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
           if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           fi
-          export GIT_TERMINAL_PROMPT=0
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -698,14 +716,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -958,11 +976,17 @@ jobs:
           # 'https://github.com'" while the same clone with the job token answered.
           # The siblings are public, so the calling workflow's token can read them;
           # the header is per-invocation and never written to the checkout.
-          git_auth=()
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
           if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           fi
-          export GIT_TERMINAL_PROMPT=0
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -984,14 +1008,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -1186,11 +1210,17 @@ jobs:
           # 'https://github.com'" while the same clone with the job token answered.
           # The siblings are public, so the calling workflow's token can read them;
           # the header is per-invocation and never written to the checkout.
-          git_auth=()
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
           if [ -n "${GITHUB_TOKEN:-}" ]; then
-            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           fi
-          export GIT_TERMINAL_PROMPT=0
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -1212,14 +1242,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
