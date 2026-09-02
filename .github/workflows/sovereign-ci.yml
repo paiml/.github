@@ -214,6 +214,11 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+            # Later steps of this container job (cargo deny's advisory-db fetch,
+            # cargo's git dependencies) do not inherit a step's environment, so
+            # the same header also goes into the container's global git config.
+            # The container is per-job and discarded; nothing lands in the checkout.
+            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -461,6 +466,11 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+            # Later steps of this container job (cargo deny's advisory-db fetch,
+            # cargo's git dependencies) do not inherit a step's environment, so
+            # the same header also goes into the container's global git config.
+            # The container is per-job and discarded; nothing lands in the checkout.
+            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -702,6 +712,11 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+            # Later steps of this container job (cargo deny's advisory-db fetch,
+            # cargo's git dependencies) do not inherit a step's environment, so
+            # the same header also goes into the container's global git config.
+            # The container is per-job and discarded; nothing lands in the checkout.
+            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -994,6 +1009,11 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+            # Later steps of this container job (cargo deny's advisory-db fetch,
+            # cargo's git dependencies) do not inherit a step's environment, so
+            # the same header also goes into the container's global git config.
+            # The container is per-job and discarded; nothing lands in the checkout.
+            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -1228,6 +1248,11 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+            # Later steps of this container job (cargo deny's advisory-db fetch,
+            # cargo's git dependencies) do not inherit a step's environment, so
+            # the same header also goes into the container's global git config.
+            # The container is per-job and discarded; nothing lands in the checkout.
+            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
