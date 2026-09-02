@@ -214,11 +214,6 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-            # Later steps of this container job (cargo deny's advisory-db fetch,
-            # cargo's git dependencies) do not inherit a step's environment, so
-            # the same header also goes into the container's global git config.
-            # The container is per-job and discarded; nothing lands in the checkout.
-            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -466,11 +461,6 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-            # Later steps of this container job (cargo deny's advisory-db fetch,
-            # cargo's git dependencies) do not inherit a step's environment, so
-            # the same header also goes into the container's global git config.
-            # The container is per-job and discarded; nothing lands in the checkout.
-            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -599,7 +589,14 @@ jobs:
           # here, so a url rewrite carrying the job's own (read-only) token is
           # honoured. Scoped to this step's process: --global on a job
           # container that is discarded after the job.
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # Step-local, never `git config --global`: the `security` job is bare-metal and
+          # its global writes land in the shared runner ~/.gitconfig, where a stale
+          # job token then rides on every later job's git request (2026-09-02: every
+          # host job answered "Duplicate header: Authorization" -> HTTP 400).
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
           else
@@ -712,11 +709,6 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-            # Later steps of this container job (cargo deny's advisory-db fetch,
-            # cargo's git dependencies) do not inherit a step's environment, so
-            # the same header also goes into the container's global git config.
-            # The container is per-job and discarded; nothing lands in the checkout.
-            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -1009,11 +1001,6 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-            # Later steps of this container job (cargo deny's advisory-db fetch,
-            # cargo's git dependencies) do not inherit a step's environment, so
-            # the same header also goes into the container's global git config.
-            # The container is per-job and discarded; nothing lands in the checkout.
-            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -1248,11 +1235,6 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
             export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-            # Later steps of this container job (cargo deny's advisory-db fetch,
-            # cargo's git dependencies) do not inherit a step's environment, so
-            # the same header also goes into the container's global git config.
-            # The container is per-job and discarded; nothing lands in the checkout.
-            git config --global "http.https://github.com/.extraheader" "$GIT_CONFIG_VALUE_0"
           fi
           GIT_TERMINAL_PROMPT=0
           export GIT_TERMINAL_PROMPT
@@ -1344,7 +1326,14 @@ jobs:
         run: |
           # forjar#422: same throttle as the cargo-deny step — authenticate the
           # advisory-db fetch with the job's own token via a url rewrite.
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # Step-local, never `git config --global`: the `security` job is bare-metal and
+          # its global writes land in the shared runner ~/.gitconfig, where a stale
+          # job token then rides on every later job's git request (2026-09-02: every
+          # host job answered "Duplicate header: Authorization" -> HTTP 400).
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           # FIVE-WHYS ROOT CAUSE (2026-04-12):
           # The "Checkout sibling repos" step does cd $GITHUB_WORKSPACE/..
           # and never restores PWD. Without this cd, cargo audit reads
