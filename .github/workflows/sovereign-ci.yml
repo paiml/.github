@@ -196,8 +196,21 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          git_auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+          fi
+          export GIT_TERMINAL_PROMPT=0
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -219,14 +232,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -424,8 +437,21 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          git_auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+          fi
+          export GIT_TERMINAL_PROMPT=0
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -447,14 +473,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -636,8 +662,21 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          git_auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+          fi
+          export GIT_TERMINAL_PROMPT=0
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -659,14 +698,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -909,8 +948,21 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          git_auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+          fi
+          export GIT_TERMINAL_PROMPT=0
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -932,14 +984,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
@@ -1124,8 +1176,21 @@ jobs:
       # the whole _work root instead of just $GITHUB_WORKSPACE/.. . Keeping
       # both would just pay for a second full-tree chown.
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          git_auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            git_auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')")
+          fi
+          export GIT_TERMINAL_PROMPT=0
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -1147,14 +1212,14 @@ jobs:
               if ! git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
                 echo "::warning::$repo cache invalid (no HEAD) — re-cloning"
                 rm -rf "$repo"
-              elif ! (git -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
+              elif ! (git "${git_auth[@]}" -C "$repo" fetch --depth 1 origin main 2>&1 && git -C "$repo" reset --hard FETCH_HEAD >/dev/null 2>&1); then
                 echo "::warning::$repo fetch failed — re-cloning"
                 rm -rf "$repo"
               fi
             fi
             if [ ! -d "$repo" ]; then
               for attempt in 1 2 3; do
-                git clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
+                git "${git_auth[@]}" clone --depth 1 "https://github.com/paiml/$repo.git" "$repo" 2>&1 && break
                 rm -rf "$repo"  # Clean failed clone before retry
                 echo "::warning::Retry $attempt for $repo clone"
                 sleep 2
