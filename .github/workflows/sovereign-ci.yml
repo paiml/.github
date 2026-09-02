@@ -567,7 +567,17 @@ jobs:
         # the `security` job below already says security checks are required —
         # it was applied to `cargo audit` (advisories only) and never to this,
         # the stricter check.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # forjar#422: the advisory-db clone is an anonymous git-over-HTTPS
+          # fetch of a public repo, and GitHub answers the fleet's IP with 401
+          # once its anonymous quota is spent — the same throttle dfb8914
+          # closed for the sibling clones. cargo-deny fetches with the git CLI
+          # here, so a url rewrite carrying the job's own (read-only) token is
+          # honoured. Scoped to this step's process: --global on a job
+          # container that is discarded after the job.
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
           else
@@ -1274,7 +1284,12 @@ jobs:
           cargo install cargo-audit --locked --root "$CARGO_HOME" || true
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Audit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # forjar#422: same throttle as the cargo-deny step — authenticate the
+          # advisory-db fetch with the job's own token via a url rewrite.
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
           # FIVE-WHYS ROOT CAUSE (2026-04-12):
           # The "Checkout sibling repos" step does cd $GITHUB_WORKSPACE/..
           # and never restores PWD. Without this cd, cargo audit reads
