@@ -20,17 +20,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Was `pip install yamllint && yamllint ... || true`, which had two
-          # defects. First, `pip install` mutates the SYSTEM python of a
-          # persistent, shared self-hosted runner; uvx runs it in a throwaway
-          # environment instead and leaves no trace. Second, `|| true` meant this
-          # step could not fail — a "source-validation gate" that always passed.
+          # THREE MECHANISMS, EACH ONE FIXING THE LAST.
           #
-          # Arming it is safe and was measured, not assumed: yamllint currently
-          # exits 0 on this tree (0 errors, 279 line-length warnings, and
-          # warnings do not affect its exit status). So this now fails on real
-          # errors and stays quiet about cosmetics.
-          uvx yamllint -d relaxed .github/workflows/
+          # 1. `pip install yamllint && yamllint … || true` mutated the SYSTEM
+          #    python of a persistent, shared self-hosted runner, and `|| true`
+          #    meant this step could not fail — a "source-validation gate" that
+          #    always passed.
+          # 2. `uvx yamllint -d relaxed …` fixed both: a throwaway environment,
+          #    no trace, and armed. Arming it was measured, not assumed —
+          #    yamllint exits 0 on this tree (0 errors, 279 line-length
+          #    warnings, and warnings do not affect its exit status). THAT PART
+          #    STANDS; the step still fails on real errors and stays quiet about
+          #    cosmetics.
+          #
+          #    What broke was the delivery: an ephemeral environment resolved
+          #    per run, on a box where uv's cache is shared by 16 runner
+          #    services, started dying with
+          #        ModuleNotFoundError: No module named 'yamllint.cli'
+          #    — a broken interpreter environment reported as a lint failure, on
+          #    every PR to this repo (paiml/.github#63).
+          # 3. So the linter is PROVISIONED, exactly like every other tool this
+          #    fleet's CI depends on: infra's `stack-tool-yamllint` (PMAT-234)
+          #    pins it into /opt/fleet-bin, which is root-owned, first on the
+          #    runner PATH and survives a rust-cache prune. One declared
+          #    version, installed once, not resolved per job.
+          #
+          # `|| true` IS NOT COMING BACK, and neither is a "skip if missing"
+          # branch. An absent verifier is a NO-GO, never a pass: this org has
+          # already shipped a `if command -v pv; then …; else echo skip; fi`
+          # that reported green for months while the thing it guarded was
+          # unvalidatable. Hence the explicit refusal below — it names the
+          # resource that installs the tool so the remedy is one line, not a
+          # bisect.
+          export PATH="/opt/fleet-bin/bin:$PATH"
+          command -v yamllint || {
+            echo "::error::yamllint is not in fleet-bin (infra stack-tool-yamllint, PMAT-234) — absent linter is a NO-GO"
+            exit 1
+          }
+          # Printed, always: which binary and which version produced the
+          # verdict. A green from an unknown linter version is a claim nobody
+          # can reproduce.
+          yamllint --version
+          yamllint -d relaxed .github/workflows/
       - name: actionlint
         shell: bash
         env:
