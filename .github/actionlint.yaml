@@ -26,3 +26,5 @@ self-hosted-runner:
     - gpu
     - lambda-labs
     - yoga
+    - perf-solo
+    - merge-queue

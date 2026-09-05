@@ -41,6 +41,7 @@ env:
 jobs:
   # ── Lint Gate (fast feedback: fmt → clippy → deny → pmat) ──
   lint-gate:
+    timeout-minutes: 30
     runs-on: [self-hosted, clean-room]
     steps:
       # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
@@ -319,6 +320,7 @@ jobs:
 
   # ── CPU Gates (Mode A + Mode B) ─────────────────────────
   cpu-gates:
+    timeout-minutes: 30
     runs-on: [self-hosted, clean-room]
     steps:
       # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
@@ -450,6 +452,7 @@ jobs:
       !inputs.skip_gpu &&
       contains(fromJson('["aprender"]'),
       inputs.repo)
+    timeout-minutes: 30
     runs-on: [self-hosted, gpu, lambda-labs]
     steps:
       # Same pre-checkout EACCES self-heal as every other self-hosted job here
@@ -556,6 +559,7 @@ jobs:
   # ── Gate Aggregation ─────────────────────────────────────
   # Single stable check name for branch protection: "unified / gate"
   gate:
+    timeout-minutes: 15
     runs-on: [self-hosted, clean-room]
     needs: [lint-gate, cpu-gates, gpu-gates]
     if: always()

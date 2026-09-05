@@ -12,6 +12,7 @@ jobs:
     # are banned fleet-wide (build-performance.md principle 8) — they bill on
     # private repos, and at the spending limit a job does not start at all,
     # reporting `failure` with zero steps. See paiml/infra#231.
+    timeout-minutes: 15
     runs-on: [self-hosted, Linux, X64, clean-room, intel]
     steps:
       - uses: actions/checkout@v6
@@ -78,6 +79,7 @@ jobs:
     # everywhere is already down and an admin bypass is the remedy. Weighed
     # against a gate that silently stops running on billing state, self-hosted
     # is the safer failure mode.
+    timeout-minutes: 15
     runs-on: [self-hosted, Linux, X64, clean-room, intel]
     if: always()
     needs: [validate]
