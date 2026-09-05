@@ -1393,6 +1393,30 @@ jobs:
             || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
             || true
 
+      - name: roadmap-valid
+        # BSE-09c (BSE-001 v1.2, infra PMAT-239): every repo's docs/roadmaps/roadmap.yaml
+        # must parse AND validate before ci / gate — infra carried an unparseable roadmap
+        # for a whole afternoon and pmat's own master a schema-invalid row, and no gate
+        # noticed. Fail-closed: an absent pmat, or a pmat without `work validate`, is RED,
+        # never a skip. `pmat work validate` exists since pmat v3.0.6 (measured in the
+        # pmat tree), so the fleet pin (3.31.0 today, 3.37.0 after BSE-10b) carries it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/fleet-bin/bin:$HOME/.cargo/bin:/usr/local/cargo/bin:$PATH"
+          if [ ! -f docs/roadmaps/roadmap.yaml ]; then
+            echo "roadmap-valid: no docs/roadmaps/roadmap.yaml — NOT-RUN (nothing to validate)"
+            exit 0
+          fi
+          if ! command -v pmat >/dev/null 2>&1; then
+            echo "::error::roadmap-valid: pmat is not on PATH — an absent verifier is a NO-GO, not a pass"
+            exit 1
+          fi
+          if ! pmat work validate --help >/dev/null 2>&1; then
+            echo "::error::roadmap-valid: $(pmat --version 2>&1 | head -1) has no 'work validate' (first in v3.0.6); the fleet pin is BSE-10b (infra PMAT-231)"
+            exit 1
+          fi
+          pmat work validate
   provenance:
     name: provenance
     # 2026-08-20: was ubuntu-latest under an f8 allowlist entry claiming OIDC
