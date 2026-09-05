@@ -31,6 +31,7 @@ jobs:
     # anywhere in this workflow. No PR-authored code is ever fetched or run here —
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
+    timeout-minutes: 22
     runs-on: [self-hosted, Linux, X64, clean-room, intel]
     permissions:
       pull-requests: write
