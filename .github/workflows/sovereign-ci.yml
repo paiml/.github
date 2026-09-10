@@ -27,6 +27,15 @@ on:
         description: 'Repository name'
         required: true
         type: string
+      runs_on:
+        description: >-
+          JSON array of runner labels for every job of this workflow. Default = the intel clean-room
+          pool this workflow always used. aprender passes ["self-hosted","X64","Linux","build"] so its
+          CI can land on any x86 box carrying the `build` pool label (paiml/aprender#3100, operator
+          2026-09-10: builds may use any of intel/gx10/yoga; redirect = toggle the label on a box).
+        required: false
+        default: '["self-hosted","clean-room"]'
+        type: string
       test_args:
         description: 'Extra args for cargo test (e.g. --features cli)'
         required: false
@@ -108,7 +117,7 @@ env:
 jobs:
   test:
     name: test
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
@@ -383,7 +392,7 @@ jobs:
 
   lint:
     name: lint
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
@@ -631,7 +640,7 @@ jobs:
   coverage:
     name: coverage
     if: ${{ !inputs.skip_coverage }}
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
@@ -936,7 +945,7 @@ jobs:
   bench:
     name: bench
     if: ${{ inputs.run_benchmarks }}
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
@@ -1155,7 +1164,7 @@ jobs:
 
   security:
     name: security
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 10
     # Rule 8: Security is a required check — no more continue-on-error.
     # Advisory exemptions go in .cargo/audit.toml, not in CI skip logic.
@@ -1445,7 +1454,7 @@ jobs:
     # than a bet: if OIDC really does fail here, the job goes advisory-red and
     # nothing blocks. Verify by confirming an attestation is still produced
     # (gh attestation list) before treating this as settled.
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     continue-on-error: true
     permissions:
@@ -1464,7 +1473,7 @@ jobs:
 
   gate:
     name: gate
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     if: always()
     needs: [test, lint, coverage, security, provenance]
