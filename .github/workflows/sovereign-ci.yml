@@ -119,7 +119,7 @@ jobs:
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -394,7 +394,7 @@ jobs:
     name: lint
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -642,7 +642,7 @@ jobs:
     if: ${{ !inputs.skip_coverage }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -947,7 +947,7 @@ jobs:
     if: ${{ inputs.run_benchmarks }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:66016caace1f07b57c2ab84aa91eba7c01e3abe348c36daf4504c51f43f66bf0
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
       volumes:
         - /home/noah/data/sccache:/sccache
