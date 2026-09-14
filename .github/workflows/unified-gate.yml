@@ -320,7 +320,23 @@ jobs:
 
   # ── CPU Gates (Mode A + Mode B) ─────────────────────────
   cpu-gates:
-    timeout-minutes: 30
+    # 90, not 30, and the number is measured rather than chosen. `clean-room-pmat`
+    # on an IDLE box (paiml/paiml-mcp-agent-toolkit@v3.40.1, 2026-09-14):
+    #
+    #   A0 0s · A1 6s · A2 149s · A3 237s · A4 0s
+    #   B0 133s · B1 210s · B2 601s · B3 218s · B4 32s      = 1586s = 26.4 min
+    #
+    # 30 minutes left 3.6 minutes for runner setup, the infra sync, the target
+    # checkout, the container build and the cleanup — before any contention at
+    # all. It has not been enough since v3.39.0: paiml-mcp-agent-toolkit's
+    # release.yml was killed here on v3.39.0, v3.40.0 and v3.40.1, each at
+    # ~30m39s, and `prerelease` needs this job, so three releases shipped with no
+    # GitHub release and no attached binaries and nobody had to answer for it
+    # (paiml/paiml-mcp-agent-toolkit#1358).
+    #
+    # 90 is 3.4x the measured idle time, which is the headroom a contended
+    # 16-runner box needs. Raise it from a measurement, never from a guess.
+    timeout-minutes: 90
     runs-on: [self-hosted, clean-room]
     steps:
       # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
@@ -401,6 +417,14 @@ jobs:
           docker rm -f "${{ inputs.repo }}-clean-room" 2>/dev/null || true
 
       - name: Run clean-room Mode A+B
+        # 75 sits BELOW the job's 90 on purpose. A job-level timeout kills the
+        # job and GitHub records the conclusion as `cancelled` — the same word an
+        # operator pressing cancel produces — so three consecutive release runs
+        # were timeout-killed here and read as if somebody had stopped them
+        # (paiml/paiml-mcp-agent-toolkit#1358). A STEP-level timeout fails the
+        # step, and a failed step carries its own name into the check. The gate
+        # then says which thing ran out of time instead of saying nothing.
+        timeout-minutes: 75
         run: |
           REPO_NAME="${{ inputs.repo }}"
           case "$REPO_NAME" in
