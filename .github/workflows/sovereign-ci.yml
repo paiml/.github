@@ -1247,6 +1247,68 @@ jobs:
             exit 1
           fi
           pmat work validate
+      - name: roadmap-fragment-parity
+        # PMAT-1363 / paiml/aprender#3296. docs/roadmaps/roadmap.yaml is a
+        # GENERATED aggregate of docs/roadmaps/entries/<id>.yaml. A pull request
+        # therefore writes ONE fragment, named for its own Pmat-Ticket trailer,
+        # and never touches the aggregate.
+        #
+        # WHY: every PR writing the roadmap makes it a shared mutable file on the
+        # merge path — Amdahl serial fraction 1, so N pull requests contend on one
+        # file however disjoint their code is. Measured in paiml/aprender
+        # 2026-09-15: 146 PRs opened over 10 days against 88 merged, and of the
+        # last 25 merge_group CI runs 7 succeeded and 15 were CANCELLED. A unique
+        # filename per ticket makes them pairwise disjoint by construction.
+        #
+        # OPT-IN ON entries/, AND THAT IS LOAD-BEARING. This workflow runs in
+        # every consumer repo, and the ones that have not migrated still write
+        # roadmap.yaml legitimately. Failing them would be the shape that took
+        # every consumer red when `continue-on-error` was removed upstream: a gate
+        # armed here lands everywhere at once. No entries/ dir => NOT-RUN, said
+        # out loud, never a silent pass (the same discipline as roadmap-valid
+        # above: a result that was not measured must never read as a pass).
+        #
+        # This is the bespoke form. It becomes `pmat comply` once pmat ships the
+        # check (paiml/paiml-mcp-agent-toolkit#1363) — tracked, not forgotten.
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          entries=docs/roadmaps/entries
+          aggregate=docs/roadmaps/roadmap.yaml
+          if [ ! -d "$entries" ]; then
+            echo "roadmap-fragment-parity: NOT-RUN — no $entries/ in this repo (not migrated)"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            git fetch -q --no-tags origin "$BASE_SHA" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            echo "::error::roadmap-fragment-parity: base $BASE_SHA is unreachable — a check that cannot read its input does not pass"
+            exit 1
+          fi
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          bad=0
+          if printf '%s\n' "$files" | grep -qx "$aggregate"; then
+            echo "::error::roadmap-fragment-parity: $aggregate is GENERATED — run 'make roadmap-aggregate' on the default branch, never edit it in a PR"
+            bad=1
+          fi
+          trailers=$(git log --format='%(trailers:key=Pmat-Ticket,valueonly)' "$BASE_SHA..$HEAD_SHA" | tr -d ' ' | grep -v '^$' | sort -u || true)
+          n=0
+          while IFS= read -r f; do
+            case "$f" in "$entries"/*.yaml) ;; *) continue ;; esac
+            n=$((n + 1))
+            id="${f##*/}"; id="${id%.yaml}"
+            if ! printf '%s\n' "$trailers" | grep -qx "$id"; then
+              echo "::error::roadmap-fragment-parity: $f has no matching 'Pmat-Ticket: $id' trailer on this branch"
+              bad=1
+            fi
+          done <<< "$files"
+          [ "$bad" = 0 ] || exit 1
+          echo "roadmap-fragment-parity: ok — $n fragment(s), every one named for a Pmat-Ticket on this branch"
       - name: Install extra packages
         if: ${{ inputs.extra_pkgs != '' }}
         run: |
