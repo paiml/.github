@@ -1282,7 +1282,8 @@ jobs:
         # last 25 merge_group CI runs 7 succeeded and 15 were CANCELLED. A unique
         # filename per ticket makes them pairwise disjoint by construction.
         #
-        # OPT-IN ON entries/, AND THAT IS LOAD-BEARING. This workflow runs in
+        # OPT-IN ON entries/ AND AN UNTRACKED AGGREGATE (see NOT-ACTIVE below),
+        # AND THAT IS LOAD-BEARING. This workflow runs in
         # every consumer repo, and the ones that have not migrated still write
         # roadmap.yaml legitimately. Failing them would be the shape that took
         # every consumer red when `continue-on-error` was removed upstream: a gate
@@ -1311,6 +1312,18 @@ jobs:
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
             echo "::error::roadmap-fragment-parity: base $BASE_SHA is unreachable — a check that cannot read its input does not pass"
             exit 1
+          fi
+          # ACTIVE ONLY ONCE THE AGGREGATE IS UNTRACKED (paiml/aprender#3709). A repo
+          # that has entries/ but still COMMITS roadmap.yaml has not migrated: its own
+          # roadmap-aggregate-check requires the committed file in sync, so arming here
+          # would refuse every PR it opens (measured on aprender's sovereign-ci pin bump
+          # for coverage_on, paiml/aprender#3676). Keyed on the BASE tree, not the PR
+          # head: a PR that re-adds the aggregate must not switch its own gate off, and
+          # the PR that deletes it (the migration) must not be refused by the gate that
+          # deletion arms. No flag to forget: migrating is what switches it on.
+          if git cat-file -e "$BASE_SHA:$aggregate" 2>/dev/null; then
+            echo "roadmap-fragment-parity: NOT-ACTIVE — $aggregate is TRACKED at the base (${BASE_SHA:0:9}), so this repo still commits the aggregate; the check arms by itself once it is untracked (paiml/aprender#3709)"
+            exit 0
           fi
           files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
           bad=0
