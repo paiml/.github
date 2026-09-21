@@ -51,6 +51,17 @@ on:
         required: false
         default: false
         type: boolean
+      coverage_on:
+        description: >-
+          When the coverage job runs. 'always' (default, unchanged behaviour): every event.
+          'tag': only on a push of a v* tag, on schedule and on workflow_dispatch; on
+          pull_request / merge_group / branch pushes the job is SKIPPED (never reported
+          green) and `gate` prints "coverage: NOT MEASURED". On a v* tag push coverage is
+          mandatory: skipped or failed there is RED. Operator decision 2026-09-21:
+          "YES, coverage on tags release only" (paiml/aprender#3676).
+        required: false
+        default: 'always'
+        type: string
       run_benchmarks:
         description: 'Run criterion benchmarks (slow, use for nightly only)'
         required: false
@@ -639,7 +650,14 @@ jobs:
 
   coverage:
     name: coverage
-    if: ${{ !inputs.skip_coverage }}
+    # coverage_on == 'tag': run only where coverage is owed (a v* tag push, the nightly,
+    # a manual dispatch). Everywhere else the job is SKIPPED -- visibly not measured --
+    # and `gate` below accepts that skip only under this input and never on a tag push.
+    if: >-
+      ${{ !inputs.skip_coverage && (inputs.coverage_on != 'tag'
+        || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        || github.event_name == 'schedule'
+        || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
@@ -1558,8 +1576,29 @@ jobs:
       # jobs are mandatory, and a silently skipped mandatory job is exactly the
       # failure mode this replaces.
       - name: Check results
+        env:
+          COVERAGE_ON: ${{ inputs.coverage_on }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
         run: |
           rc=0
+          # coverage_on: 'always' keeps the rule above verbatim (coverage must succeed).
+          # 'tag': coverage is OWED on a v* tag push, schedule and workflow_dispatch --
+          # there it must succeed, and skipped is RED (the anti-vacuity arm). On every
+          # other event the job is skipped by its own `if:`; that skip, and only that
+          # skip, is accepted here and printed as NOT MEASURED, never as a pass.
+          case "$COVERAGE_ON" in
+            always|tag) ;;
+            *) echo "::error::coverage_on must be 'always' or 'tag', got '${COVERAGE_ON}'"; exit 1 ;;
+          esac
+          coverage_owed=1
+          if [ "$COVERAGE_ON" = tag ]; then
+            case "$EVENT_NAME" in
+              schedule|workflow_dispatch) coverage_owed=1 ;;
+              push) case "$GIT_REF" in refs/tags/v*) coverage_owed=1 ;; *) coverage_owed=0 ;; esac ;;
+              *) coverage_owed=0 ;;
+            esac
+          fi
           for pair in \
             "test:${{ needs.test.result }}" \
             "lint:${{ needs.lint.result }}" \
@@ -1567,6 +1606,10 @@ jobs:
             "security:${{ needs.security.result }}"; do
             job="${pair%%:*}"
             res="${pair#*:}"
+            if [ "$job" = coverage ] && [ "$coverage_owed" = 0 ] && [ "$res" = skipped ]; then
+              echo "coverage: NOT MEASURED on ${EVENT_NAME} (coverage_on=tag; owed on v* tags, schedule, dispatch)"
+              continue
+            fi
             if [ "$res" != "success" ]; then
               echo "::error::${job} did not succeed (result: ${res:-<none>})"
               rc=1
