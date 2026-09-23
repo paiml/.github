@@ -404,6 +404,12 @@ jobs:
           n=$(find .arbiter-r2a/junit -name '*.xml' | wc -l)
           if [ "$n" -eq 0 ]; then
             echo "::warning::Arbiter R2a: no junit written by THIS run (nextest fell back to cargo test, or wrote none) — the junit artifact is absent, not stale"
+            # Say what WAS there, so the warning is actionable rather than a shrug.
+            echo "Arbiter R2a: tool-config: $(cat "$d/nextest.toml" 2>/dev/null | tr '\n' ' ')"
+            echo "Arbiter R2a: marker: $(ls -l --time-style=+%T "$d/marker" 2>/dev/null || echo absent)"
+            echo "Arbiter R2a: xml under $CARGO_TARGET_DIR/nextest (any age):"
+            find "$CARGO_TARGET_DIR/nextest" -maxdepth 3 -name '*.xml' -exec ls -l --time-style=+%T {} ; 2>/dev/null | head -10
+            cargo nextest --version 2>/dev/null | head -1
           fi
           echo "Arbiter R2a: $n junit file(s) staged"
       - name: Arbiter R2a — upload junit
