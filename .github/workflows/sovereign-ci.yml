@@ -342,6 +342,7 @@ jobs:
       # mount that outlives runs, so only files newer than this run's marker are
       # staged for upload.
       - name: Arbiter R2a — nextest junit tool-config and this run's marker
+        continue-on-error: true
         if: ${{ inputs.use_nextest }}
         run: |
           d="$RUNNER_TEMP/arbiter-r2a"
@@ -394,6 +395,7 @@ jobs:
       # so an upload path built from it would not exist where the action runs.
       # An absent report is a WARNING that says why, never a silent empty upload.
       - name: Arbiter R2a — stage this run's junit (never a stale one)
+        continue-on-error: true
         if: ${{ always() && inputs.use_nextest }}
         run: |
           d="$RUNNER_TEMP/arbiter-r2a"
@@ -404,15 +406,20 @@ jobs:
           n=$(find .arbiter-r2a/junit -name '*.xml' | wc -l)
           if [ "$n" -eq 0 ]; then
             echo "::warning::Arbiter R2a: no junit written by THIS run (nextest fell back to cargo test, or wrote none) — the junit artifact is absent, not stale"
-            # Say what WAS there, so the warning is actionable rather than a shrug.
-            echo "Arbiter R2a: tool-config: $(cat "$d/nextest.toml" 2>/dev/null | tr '\n' ' ')"
-            echo "Arbiter R2a: marker: $(ls -l --time-style=+%T "$d/marker" 2>/dev/null || echo absent)"
-            echo "Arbiter R2a: xml under $CARGO_TARGET_DIR/nextest (any age):"
-            find "$CARGO_TARGET_DIR/nextest" -maxdepth 3 -name '*.xml' -exec ls -l --time-style=+%T {} ; 2>/dev/null | head -10
-            cargo nextest --version 2>/dev/null | head -1
+            # Say what WAS there, so the warning is actionable rather than a shrug. In a
+            # subshell whose failure is a NAMED warning: a diagnostic must never abort the
+            # step (an unescaped `;` in an earlier revision did, under sh -e, and turned
+            # paiml/forjar#612's test job red).
+            ( echo "Arbiter R2a: tool-config: $(tr '\n' ' ' < "$d/nextest.toml" 2>/dev/null)"
+              echo "Arbiter R2a: marker: $(ls -l --time-style=+%T "$d/marker" 2>/dev/null || echo absent)"
+              echo "Arbiter R2a: xml under $CARGO_TARGET_DIR/nextest (any age):"
+              find "$CARGO_TARGET_DIR/nextest" -maxdepth 3 -name '*.xml' -exec ls -l --time-style=+%T {} \; 2>/dev/null | head -10
+              echo "Arbiter R2a: $(cargo nextest --version 2>/dev/null | head -1)" ) \
+              || echo "::warning::Arbiter R2a: the junit diagnostic itself failed"
           fi
           echo "Arbiter R2a: $n junit file(s) staged"
       - name: Arbiter R2a — upload junit
+        continue-on-error: true
         if: ${{ always() && inputs.use_nextest }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -420,6 +427,7 @@ jobs:
           path: .arbiter-r2a/junit/
           if-no-files-found: warn
       - name: Arbiter R2a — upload sccache-metrics
+        continue-on-error: true
         if: ${{ always() && inputs.enable_sccache }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -908,11 +916,13 @@ jobs:
       # job runs, so its cadence is each repo's `coverage_on` (recorded per repo in
       # arbiter.md §9.4 R2a). A failed report is a warning, never a red job.
       - name: Arbiter R2a — llvm-cov JSON summary
+        continue-on-error: true
         run: |
           mkdir -p .arbiter-r2a
           cargo llvm-cov report --json --summary-only --output-path .arbiter-r2a/llvm-cov.json 2>&1 \
             || echo "::warning::Arbiter R2a: cargo llvm-cov report failed — no llvm-cov artifact this run"
       - name: Arbiter R2a — upload llvm-cov
+        continue-on-error: true
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
