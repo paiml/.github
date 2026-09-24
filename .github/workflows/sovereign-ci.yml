@@ -330,6 +330,25 @@ jobs:
             /usr/local/cargo/registry
             /usr/local/cargo/git
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+      # ARBITER R2a (paiml/infra#532; arbiter.md §9.4 R2a): the three artifact
+      # rows the Arbiter reads — `junit`, `sccache-metrics`, `llvm-cov`. Every
+      # R2a step is additive, with ONE NAMED EXCEPTION: the two `cargo nextest
+      # run` lines in "Run tests" carry `--tool-config-file`, which ADDS a junit
+      # report and changes nothing else — a repo's own nextest config takes
+      # precedence over a tool config, and the exit code is unchanged (both
+      # proven on real runs in the PR that introduced this). The config is
+      # generated here because a reusable workflow never checks out paiml/.github.
+      # The marker is what keeps a STALE report out: the target dir is a per-PR
+      # mount that outlives runs, so only files newer than this run's marker are
+      # staged for upload.
+      - name: Arbiter R2a — nextest junit tool-config and this run's marker
+        continue-on-error: true
+        if: ${{ inputs.use_nextest }}
+        run: |
+          d="$RUNNER_TEMP/arbiter-r2a"
+          mkdir -p "$d"
+          printf '[profile.default.junit]\npath = "junit.xml"\n' > "$d/nextest.toml"
+          touch "$d/marker"
       - name: Run tests
         env:
           TEST_ARGS: ${{ inputs.test_args }}
@@ -352,8 +371,10 @@ jobs:
           # back-compat: many repos have workspace members that don't build in the sovereign-ci
           # container. Opt-in callers pair this with `test_args` exclusions as needed.
           if [ "$USE_NEXTEST" = "true" ]; then
-            cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1 || \
-            cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
+            # Arbiter R2a: `--tool-config-file` is the ONE named exception above —
+            # it adds a junit report; the repo's own config and the exit code win.
+            cargo nextest run --tool-config-file "arbiter:$RUNNER_TEMP/arbiter-r2a/nextest.toml" $TEST_SCOPE $TEST_ARGS 2>&1 || \
+            cargo nextest run --tool-config-file "arbiter:$RUNNER_TEMP/arbiter-r2a/nextest.toml" --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
             { echo "::warning::nextest failed — falling back to cargo test"; \
               cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
               cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
@@ -369,6 +390,59 @@ jobs:
           sccache --show-stats --stats-format json > \
             "/var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-test.json" \
             2>/dev/null || echo "::warning::sccache stats unavailable"
+      # Arbiter R2a — stage THIS run's junit only (newer than the marker), into a
+      # workspace-relative dir: `runner.temp` is the HOST path in a container job,
+      # so an upload path built from it would not exist where the action runs.
+      # An absent report is a WARNING that says why, never a silent empty upload.
+      - name: Arbiter R2a — stage this run's junit (never a stale one)
+        continue-on-error: true
+        if: ${{ always() && inputs.use_nextest }}
+        run: |
+          d="$RUNNER_TEMP/arbiter-r2a"
+          mkdir -p .arbiter-r2a/junit
+          # Two roots: nextest's default store is `target/nextest` under the WORKSPACE
+          # ROOT and does not follow CARGO_TARGET_DIR (measured, paiml/forjar#612 run
+          # 35937067561: cargo built in /workspace/target, junit landed in
+          # $GITHUB_WORKSPACE/target/nextest/default/junit.xml). A repo whose own
+          # [store] dir points at the target dir is the second root.
+          for root in "$GITHUB_WORKSPACE/target/nextest" "$CARGO_TARGET_DIR/nextest"; do
+            if [ -f "$d/marker" ] && [ -d "$root" ]; then
+              find "$root" -name '*.xml' -newer "$d/marker" -exec cp {} .arbiter-r2a/junit/ \;
+            fi
+          done
+          n=$(find .arbiter-r2a/junit -name '*.xml' | wc -l)
+          if [ "$n" -eq 0 ]; then
+            echo "::warning::Arbiter R2a: no junit written by THIS run (nextest fell back to cargo test, or wrote none) — the junit artifact is absent, not stale"
+            # Say what WAS there, so the warning is actionable rather than a shrug. In a
+            # subshell whose failure is a NAMED warning: a diagnostic must never abort the
+            # step (an unescaped `;` in an earlier revision did, under sh -e, and turned
+            # paiml/forjar#612's test job red).
+            ( echo "Arbiter R2a: tool-config: $(tr '\n' ' ' < "$d/nextest.toml" 2>/dev/null)"
+              echo "Arbiter R2a: marker: $(ls -l --time-style=+%T "$d/marker" 2>/dev/null || echo absent)"
+              echo "Arbiter R2a: $(cargo nextest --version 2>/dev/null | head -1)"
+              for root in "$GITHUB_WORKSPACE/target/nextest" "$CARGO_TARGET_DIR/nextest"; do
+                echo "Arbiter R2a: xml under $root (any age):"
+                find "$root" -maxdepth 3 -name '*.xml' -exec ls -l --time-style=+%T {} \; 2>/dev/null | head -5
+              done ) \
+              || echo "::warning::Arbiter R2a: the junit diagnostic itself failed"
+          fi
+          echo "Arbiter R2a: $n junit file(s) staged"
+      - name: Arbiter R2a — upload junit
+        continue-on-error: true
+        if: ${{ always() && inputs.use_nextest }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: junit
+          path: .arbiter-r2a/junit/
+          if-no-files-found: warn
+      - name: Arbiter R2a — upload sccache-metrics
+        continue-on-error: true
+        if: ${{ always() && inputs.enable_sccache }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sccache-metrics
+          path: /var/log/ci-metrics/sccache-${{ github.run_id }}-${{ inputs.repo }}-test.json
+          if-no-files-found: warn
 
       # FIVE-WHYS ROOT CAUSE (2026-04-20, paiml/infra#69):
       # Container runs as root; sibling-clone dir $GITHUB_WORKSPACE/.. is
@@ -846,6 +920,24 @@ jobs:
           cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
           cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
           { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+      # Arbiter R2a — the llvm-cov row: a JSON summary re-read from the profdata
+      # the step above just wrote (no second test run). It exists only where this
+      # job runs, so its cadence is each repo's `coverage_on` (recorded per repo in
+      # arbiter.md §9.4 R2a). A failed report is a warning, never a red job.
+      - name: Arbiter R2a — llvm-cov JSON summary
+        continue-on-error: true
+        run: |
+          mkdir -p .arbiter-r2a
+          cargo llvm-cov report --json --summary-only --output-path .arbiter-r2a/llvm-cov.json 2>&1 \
+            || echo "::warning::Arbiter R2a: cargo llvm-cov report failed — no llvm-cov artifact this run"
+      - name: Arbiter R2a — upload llvm-cov
+        continue-on-error: true
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: llvm-cov
+          path: .arbiter-r2a/llvm-cov.json
+          if-no-files-found: warn
       - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
         # ZERO BEHAVIOR CHANGE GUARANTEE:
         #   When inputs.coverage_min is empty (the default for EVERY repo that
