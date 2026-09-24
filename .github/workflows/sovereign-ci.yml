@@ -400,9 +400,16 @@ jobs:
         run: |
           d="$RUNNER_TEMP/arbiter-r2a"
           mkdir -p .arbiter-r2a/junit
-          if [ -f "$d/marker" ] && [ -d "$CARGO_TARGET_DIR/nextest" ]; then
-            find "$CARGO_TARGET_DIR/nextest" -name '*.xml' -newer "$d/marker" -exec cp {} .arbiter-r2a/junit/ \;
-          fi
+          # Two roots: nextest's default store is `target/nextest` under the WORKSPACE
+          # ROOT and does not follow CARGO_TARGET_DIR (measured, paiml/forjar#612 run
+          # 35937067561: cargo built in /workspace/target, junit landed in
+          # $GITHUB_WORKSPACE/target/nextest/default/junit.xml). A repo whose own
+          # [store] dir points at the target dir is the second root.
+          for root in "$GITHUB_WORKSPACE/target/nextest" "$CARGO_TARGET_DIR/nextest"; do
+            if [ -f "$d/marker" ] && [ -d "$root" ]; then
+              find "$root" -name '*.xml' -newer "$d/marker" -exec cp {} .arbiter-r2a/junit/ \;
+            fi
+          done
           n=$(find .arbiter-r2a/junit -name '*.xml' | wc -l)
           if [ "$n" -eq 0 ]; then
             echo "::warning::Arbiter R2a: no junit written by THIS run (nextest fell back to cargo test, or wrote none) — the junit artifact is absent, not stale"
