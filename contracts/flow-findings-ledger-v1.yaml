@@ -1,0 +1,113 @@
+metadata:
+  version: "1.0.0"
+  created: "2026-09-25"
+  author: PAIML Engineering
+  registry: true
+  kind: pattern
+  references:
+  # Little's law: open = arrival rate x time in system. A stock cap alone cannot
+  # hold when arrivals are unmetered, which is why findings are queued in a
+  # ledger instead of minted as issues.
+  - "Little J.D.C., A Proof for the Queuing Formula L = lambda W, Operations Research 9(3), 1961"
+  # Poka-yoke: make the wrong action (an agent opening an issue) structurally
+  # unnecessary by giving the defect a cheaper, correct home.
+  - "Shingo S., Zero Quality Control: Source Inspection and the Poka-yoke System, Productivity Press 1986"
+  # JSON Lines: one JSON value per line; append-only by construction.
+  - "JSON Lines format. https://jsonlines.org/"
+  description: >
+    Provable contract for the fleet findings ledger (FLOW rule 17, "findings
+    are not issues"). A session that surfaces a defect appends one JSON line to
+    docs/findings/<session>.jsonl instead of opening an issue; only the cop
+    mints issues, against an epic's free budget. The ledger is append-only and
+    every line carries enough to reproduce the finding without its author.
+    Enforced by scripts/flow/check_findings_ledger.sh in the reusable
+    sovereign-ci `flow` job; rules 18 (check_pr_closes.sh) and 19
+    (check_issue_flow.sh) ship beside it, and scripts/flow/flow_mode.sh holds
+    the warn -> block promotion schedule (FLOW-001-A1 §2.8).
+
+five_whys:
+  incident: >
+    Fleet issue inflow of about 77 issues/day against far fewer closures
+    (2026-09-24: 205 opened vs 78 closed in one day), with 1,750 open issues
+    across the fleet on 2026-09-25. Agent sessions filed every surfaced defect
+    as a new issue.
+  why_1:
+    question: "Why did the open-issue stock keep growing after triage passes?"
+    answer: "Arrivals were unmetered; each cleanup was refilled within days."
+  why_2:
+    question: "Why were arrivals unmetered?"
+    answer: "Any session could open an issue, and 'surface defects, don't ask' made opening one the default."
+  why_3:
+    question: "Why was an issue the only place to surface a defect?"
+    answer: "No cheaper, durable, reviewable home for an unscheduled finding existed."
+  root_cause: >
+    The only durable sink for a finding was the issue tracker, whose items are
+    WIP by definition and count against every cap.
+  permanent_fix: >
+    Give findings their own append-only ledger with a fixed schema, validated
+    in CI; the cop pulls from it into issues in expected-value order when an
+    epic has budget. Rules 18 and 19 meter the outflow and the net flow.
+
+equations:
+  ledger_line_schema:
+    formula: |
+      forall line in docs/findings/*.jsonl, line non-blank:
+        is_object(line) and
+        forall k in {id, title, evidence, repro, suspected_epic, severity, found_at_sha}:
+          type(line[k]) == string and len(line[k]) > 0
+        and line.found_at_sha =~ ^[0-9a-f]{7,40}$
+    domain: docs/findings/*.jsonl in a consuming repository
+    codomain: bool
+    invariants:
+    - "Every finding is reproducible without its author (evidence + repro present)"
+    - "Every finding names the commit it was observed at"
+  ledger_id_unique:
+    formula: |
+      |ids(ledger)| == |lines(ledger)|
+    domain: all ledger files of one repository
+    codomain: bool
+    invariants:
+    - "A finding id identifies exactly one line across all session files"
+  ledger_append_only:
+    formula: |
+      forall f in ledger(base): f in ledger(head) and bytes(f, base) is_prefix_of bytes(f, head)
+    domain: a PR diff (base..head)
+    codomain: bool
+    invariants:
+    - "No finding is edited or deleted; a correction is a new line"
+
+falsification_tests:
+- id: FALSIFY-FIND-001
+  rule: ledger_line_schema
+  prediction: "A line missing suspected_epic is RED findings-schema"
+  test: |
+    bash scripts/flow/test_flow_guards.sh   # row FIND-missing-key
+  if_fails: "The jq schema no longer enumerates every required key"
+
+- id: FALSIFY-FIND-002
+  rule: ledger_line_schema
+  prediction: "A numeric id, an empty title, a non-hex sha, a non-object and invalid JSON are each RED findings-schema"
+  test: |
+    bash scripts/flow/test_flow_guards.sh   # rows FIND-number-field, FIND-empty-field, FIND-bad-sha, FIND-not-object, FIND-invalid-json
+  if_fails: "The type/emptiness/sha test was weakened or jq errors are read as ok"
+
+- id: FALSIFY-FIND-003
+  rule: ledger_id_unique
+  prediction: "The same id in two session files is RED findings-dup-id"
+  test: |
+    bash scripts/flow/test_flow_guards.sh   # row FIND-dup-id
+  if_fails: "Duplicate detection is scoped per file instead of per ledger"
+
+- id: FALSIFY-FIND-004
+  rule: ledger_append_only
+  prediction: "Editing a committed line, or deleting a committed ledger file, is RED findings-rewrite against --base"
+  test: |
+    bash scripts/flow/test_flow_guards.sh   # rows FIND-rewrite-edit, FIND-rewrite-delete
+  if_fails: "The prefix comparison or the deleted-file scan was removed"
+
+- id: FALSIFY-FIND-005
+  rule: ledger_line_schema
+  prediction: "A repository with no ledger reports SKIP no-ledger, never GREEN"
+  test: |
+    bash scripts/flow/test_flow_guards.sh   # row FIND-no-ledger
+  if_fails: "An absent ledger is being certified as a clean one"
