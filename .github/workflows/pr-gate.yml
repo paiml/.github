@@ -16,59 +16,172 @@ on:
 
 jobs:
   authorize:
-    # falsify-f8-allow: authorization gate MUST run before self-hosted runner claim — untrusted PR code cannot execute on self-hosted infra.
-    runs-on: ubuntu-latest
+    # Runs on self-hosted intel. GitHub-hosted runners are BANNED fleet-wide:
+    # they bill on private repos, and when the Actions spending limit is reached
+    # the job does not start AT ALL — it reports `failure` with ZERO steps, which
+    # is indistinguishable from this gate rejecting an author. That is exactly
+    # what happened: this gate had NEVER executed on paiml/infra while showing
+    # FAILURE on 100% of its PRs, so it was routinely stepped over (paiml/infra#231).
+    # An authorization control that cannot start is worse than no control, because
+    # it manufactures the appearance of enforcement.
+    #
+    # The original rationale for ubuntu-latest was that untrusted PR code must not
+    # execute on self-hosted infra. That concern does not apply to THIS job: it has
+    # exactly one step, `actions/github-script`, and there is NO `actions/checkout`
+    # anywhere in this workflow. No PR-authored code is ever fetched or run here —
+    # the job only reads `context.payload` and calls the API. If a checkout step is
+    # ever added, this decision must be revisited.
+    timeout-minutes: 22
+    runs-on: [self-hosted, Linux, X64, clean-room, intel]
     permissions:
       pull-requests: write
     steps:
-      - name: Check PR author authorization
+      - name: Determine authorization
+        id: authz
+        shell: bash
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -uo pipefail
+
+          # ==============================================================
+          # WHY THIS USES THE RUNNER'S AMBIENT ORG AUTH
+          #
+          # Two different APIs have now been caught giving this gate a
+          # confidently wrong answer, both for the same underlying reason:
+          # the default GITHUB_TOKEN cannot see PRIVATE org memberships,
+          # and every paiml owner's membership is private.
+          #
+          #   1. `orgs.checkMembershipForUser` with GITHUB_TOKEN answers 404
+          #      for a private member -- byte-for-byte identical to "not a
+          #      member". This closed @noahgift's PRs until he was
+          #      allowlisted by name (#12), then closed @alfredodeza's
+          #      paiml/infra#340 twice while `gate` and `validate` were
+          #      green on the same commit.
+          #
+          #   2. `author_association` from the payload looked like the fix
+          #      -- the REST API reports MEMBER for those same PRs. It is
+          #      NOT the fix. MEASURED on the live webhook for #340:
+          #      author_association=COLLABORATOR. GitHub downgrades the
+          #      payload's association for private members too, so a real
+          #      org owner is indistinguishable from an outside
+          #      collaborator. That attempt (#54) is what this replaces.
+          #
+          # The runner's ambient `gh` auth holds admin:org and therefore
+          # sees the truth. This is the same decision, for the same reason,
+          # already taken by lane-liveness.sh (CLAUDE.md: "Uses the
+          # runner's ambient org gh auth -- never github.token").
+          #
+          # Safe here: this job has exactly ONE input it does not control,
+          # a login string, and there is NO actions/checkout anywhere in
+          # this workflow. No PR-authored code is fetched or run.
+          # ==============================================================
+
+          ORG=paiml
+
+          # Deliberately NOT the workflow token: that token is the blind
+          # instrument this whole file exists to route around.
+          unset GITHUB_TOKEN GH_TOKEN
+
+          # Returns: member | notmember | indeterminate
+          # `indeterminate` is a THIRD answer and must never collapse into
+          # `notmember` -- conflating "they are not a member" with "I could
+          # not ask" is the exact defect that closed two owners' PRs.
+          membership() {
+            local user="$1" resp rc state
+            resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              state=$(printf '%s' "$resp" | jq -r '.state // "unknown"')
+              # "pending" = invited, not accepted. Not a member yet.
+              if [ "$state" = "active" ]; then echo member; else echo notmember; fi
+              return 0
+            fi
+            case "$resp" in
+              *"HTTP 404"*) echo notmember ;;
+              *)            echo indeterminate ;;
+            esac
+          }
+
+          # --------------------------------------------------------------
+          # PROBE THE INSTRUMENT BEFORE TRUSTING ITS VERDICT.
+          # A membership check that cannot see members reports everyone as
+          # an outsider, and that is precisely how this gate failed twice.
+          # So it must answer a known member and a known non-member
+          # correctly, right now, on this runner, before it is allowed to
+          # judge anybody.
+          # --------------------------------------------------------------
+          PROBE_MEMBER=noahgift                          # org owner, private membership
+          PROBE_STRANGER=paiml-pr-gate-sentinel-no-such-user
+
+          probe_pos=$(membership "$PROBE_MEMBER")
+          probe_neg=$(membership "$PROBE_STRANGER")
+          echo "instrument probe: ${PROBE_MEMBER}=${probe_pos} (want member), ${PROBE_STRANGER}=${probe_neg} (want notmember)"
+
+          if [ "$probe_pos" != "member" ] || [ "$probe_neg" != "notmember" ]; then
+            echo "::error::pr-gate instrument probe FAILED (${PROBE_MEMBER}=${probe_pos}, ${PROBE_STRANGER}=${probe_neg}) -- refusing to judge anyone with a check that cannot demonstrate both answers"
+            # Fail RED and leave the PR OPEN. The harm is asymmetric and
+            # measured: auto-closing a legitimate owner's PR has happened
+            # repeatedly and is invisible to them, while an unauthorized PR
+            # left open under a red required check is visible to every
+            # human on the repo.
+            exit 1
+          fi
+
+          # --------------------------------------------------------------
+          # Decision.
+          # --------------------------------------------------------------
+          # Explicitly allowlisted EXTERNAL contributors only. Org members
+          # are authorized structurally, below -- adding one here is how
+          # this gate hid its own blindness for four months.
+          case "$PR_AUTHOR" in
+            guyernest) # pmcp lead developer -- outside collaborator, not an org member
+              echo "allow=true"   >> "$GITHUB_OUTPUT"
+              echo "reason=allowlisted external contributor" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: allowlisted external contributor -- ALLOWED"
+              exit 0 ;;
+          esac
+
+          # Bots (dependabot, renovate, actions-user) are always allowed.
+          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "allow=true" >> "$GITHUB_OUTPUT"
+            echo "reason=bot"  >> "$GITHUB_OUTPUT"
+            echo "$PR_AUTHOR: bot -- ALLOWED"
+            exit 0
+          fi
+
+          author_state=$(membership "$PR_AUTHOR")
+          echo "author=${PR_AUTHOR} type=${PR_AUTHOR_TYPE} membership=${author_state}"
+
+          case "$author_state" in
+            member)
+              echo "allow=true" >> "$GITHUB_OUTPUT"
+              echo "reason=active ${ORG} org member" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: active ${ORG} org member -- ALLOWED" ;;
+            notmember)
+              echo "allow=false" >> "$GITHUB_OUTPUT"
+              echo "reason=not an active ${ORG} org member and not allowlisted" >> "$GITHUB_OUTPUT"
+              echo "$PR_AUTHOR: not a member -- REJECTED" ;;
+            *)
+              # Could not ask. Not a verdict. Never close on this.
+              echo "::error::could not determine ${ORG} membership for ${PR_AUTHOR} -- leaving the PR open for a human"
+              exit 1 ;;
+          esac
+
+      - name: Close unauthorized PR
+        if: steps.authz.outputs.allow != 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          REASON: ${{ steps.authz.outputs.reason }}
         with:
           script: |
             const author = context.payload.pull_request.user.login;
-
-            // Bots (dependabot, actions-user, renovate) are always allowed
-            const authorType = context.payload.pull_request.user.type;
-            if (authorType === 'Bot') {
-              console.log(`${author} is a bot — allowed`);
-              return;
-            }
-
-            // Explicitly allowlisted external contributors
-            // Allowlist: org admins (bypass private-membership API limitation)
-            // + explicitly allowlisted external contributors.
-            // The default GITHUB_TOKEN cannot see private org memberships, so
-            // admins with private membership would otherwise be auto-closed.
-            const allowlist = new Set([
-              'noahgift',   // paiml org admin/owner
-              'guyernest',  // pmcp lead developer
-            ]);
-
-            if (allowlist.has(author)) {
-              console.log(`${author} is on the external contributor allowlist — allowed`);
-              return;
-            }
-
-            // Check org membership
-            try {
-              await github.rest.orgs.checkMembershipForUser({
-                org: 'paiml',
-                username: author,
-              });
-              console.log(`${author} is a paiml org member — allowed`);
-              return;
-            } catch (e) {
-              // 404 or 302 = not a member
-              console.log(`${author} is NOT a paiml org member (status: ${e.status})`);
-            }
-
-            // Unauthorized — close the PR
-            console.log(`Closing unauthorized PR from ${author}`);
+            const number = context.payload.pull_request.number;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: number,
               body: [
                 `Thank you for your interest in this project, @${author}.`,
                 '',
@@ -81,8 +194,8 @@ jobs:
             await github.rest.pulls.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
+              pull_number: number,
               state: 'closed',
             });
 
-            core.setFailed(`PR author ${author} is not authorized`);
+            core.setFailed(`PR author ${author} is not authorized (${process.env.REASON})`);

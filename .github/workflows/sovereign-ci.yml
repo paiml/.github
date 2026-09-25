@@ -27,6 +27,15 @@ on:
         description: 'Repository name'
         required: true
         type: string
+      runs_on:
+        description: >-
+          JSON array of runner labels for every job of this workflow. Default = the intel clean-room
+          pool this workflow always used. aprender passes ["self-hosted","X64","Linux","build"] so its
+          CI can land on any x86 box carrying the `build` pool label (paiml/aprender#3100, operator
+          2026-09-10: builds may use any of intel/gx10/yoga; redirect = toggle the label on a box).
+        required: false
+        default: '["self-hosted","clean-room"]'
+        type: string
       test_args:
         description: 'Extra args for cargo test (e.g. --features cli)'
         required: false
@@ -42,6 +51,21 @@ on:
         required: false
         default: false
         type: boolean
+      coverage_on:
+        description: >-
+          When the coverage job runs. 'always' (default, unchanged behaviour): every event.
+          'tag': only on a push of a v* tag and on workflow_dispatch (an explicit manual
+          run); on pull_request / merge_group / schedule / branch pushes the job is SKIPPED
+          (never reported green) and `gate` prints "coverage: NOT MEASURED". On a v* tag
+          push coverage is mandatory: skipped or failed there is RED. Operator decision
+          2026-09-21: "YES, coverage on tags release only" (paiml/aprender#3676).
+          OPT-IN IS TWO EDITS in the caller: `coverage_on: tag` here AND a v* tag trigger
+          on the caller's own workflow (`on: push: tags: ['v*']`). A `push:` filtered to
+          branches never fires for a tag, so with the input alone coverage would run on
+          manual dispatch only.
+        required: false
+        default: 'always'
+        type: string
       run_benchmarks:
         description: 'Run criterion benchmarks (slow, use for nightly only)'
         required: false
@@ -108,9 +132,9 @@ env:
 jobs:
   test:
     name: test
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -196,8 +220,27 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          fi
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -293,6 +336,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
           USE_NEXTEST: ${{ inputs.use_nextest }}
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
@@ -359,9 +407,9 @@ jobs:
 
   lint:
     name: lint
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -419,8 +467,27 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          fi
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -514,6 +581,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
         run: |
           cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
           cargo clippy -p "$REPO_NAME" -- -D warnings -A unused-variables 2>&1 || \
@@ -531,7 +603,24 @@ jobs:
         # the `security` job below already says security checks are required —
         # it was applied to `cargo audit` (advisories only) and never to this,
         # the stricter check.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # forjar#422: the advisory-db clone is an anonymous git-over-HTTPS
+          # fetch of a public repo, and GitHub answers the fleet's IP with 401
+          # once its anonymous quota is spent — the same throttle dfb8914
+          # closed for the sibling clones. cargo-deny fetches with the git CLI
+          # here, so a url rewrite carrying the job's own (read-only) token is
+          # honoured. Scoped to this step's process: --global on a job
+          # container that is discarded after the job.
+          # Step-local, never `git config --global`: the `security` job is bare-metal and
+          # its global writes land in the shared runner ~/.gitconfig, where a stale
+          # job token then rides on every later job's git request (2026-09-02: every
+          # host job answered "Duplicate header: Authorization" -> HTTP 400).
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           if [ -f deny.toml ]; then
             cargo deny check advisories licenses sources
           else
@@ -565,10 +654,17 @@ jobs:
 
   coverage:
     name: coverage
-    if: ${{ !inputs.skip_coverage }}
-    runs-on: [self-hosted, clean-room]
+    # coverage_on == 'tag': run only where coverage is owed (a v* tag push, a manual
+    # dispatch). Everywhere else -- the nightly included -- the job is SKIPPED, visibly
+    # not measured, and `gate` below accepts that skip only under this input and never
+    # on a tag push or a dispatch.
+    if: >-
+      ${{ !inputs.skip_coverage && (inputs.coverage_on != 'tag'
+        || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+        || github.event_name == 'workflow_dispatch') }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -626,8 +722,27 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          fi
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -716,6 +831,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
@@ -847,9 +967,9 @@ jobs:
   bench:
     name: bench
     if: ${{ inputs.run_benchmarks }}
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:01bdebefb45996df96de71cfd194d89d68ea3beff4532d480d01307888f483be
+      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
       volumes:
         - /home/noah/data/sccache:/sccache
@@ -894,8 +1014,27 @@ jobs:
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          fi
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -983,6 +1122,11 @@ jobs:
           REPO_NAME: ${{ inputs.repo }}
           RUSTC_WRAPPER: ${{ inputs.enable_sccache && 'rustc-sccache' || '' }}
           SCCACHE_DIR: ${{ inputs.enable_sccache && '/sccache' || '' }}
+          # MUST match machines/intel/sovereign-ci/Dockerfile ENV and any repo that
+          # launches its own container against /home/noah/data/sccache. A server
+          # capped lower EVICTS the shared cache back down to its own cap, so a
+          # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
+          SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
         run: |
           if ls benches/*.rs 2>/dev/null | head -1 | grep -q '.'; then
             cargo bench --bench '*' -- --output-format bencher 2>&1 | tee bench-results.txt || \
@@ -1042,7 +1186,7 @@ jobs:
 
   security:
     name: security
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 10
     # Rule 8: Security is a required check — no more continue-on-error.
     # Advisory exemptions go in .cargo/audit.toml, not in CI skip logic.
@@ -1091,6 +1235,115 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: roadmap-valid
+        # BSE-09c (BSE-001 v1.2, infra PMAT-239): every repo's docs/roadmaps/roadmap.yaml
+        # must parse AND validate before ci / gate — infra carried an unparseable roadmap
+        # for an afternoon and pmat's own master a schema-invalid row, and no gate noticed.
+        # Fail-closed: an absent pmat, or a pmat without `work validate`, is RED, never a
+        # skip. `pmat work validate` exists since pmat v3.0.6 (measured in the pmat tree),
+        # so the fleet pin (3.31.0 today, 3.37.0 after BSE-10b) carries it. Placed right
+        # after checkout, ABOVE the `if: always()` ownership-restore teardown, so it runs
+        # before anything in this job can fail and never sits after a teardown-last step.
+        # A repo with no roadmap at pmat's canonical path is the ONLY NOT-RUN, and the step
+        # says so — and names any roadmap-like file it found elsewhere, because a result
+        # that was not measured must never read as a pass (2026-09-05 D1 quorum, Q4c).
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/fleet-bin/bin:$HOME/.cargo/bin:/usr/local/cargo/bin:$PATH"
+          if [ ! -f docs/roadmaps/roadmap.yaml ]; then
+            others=$(find . -maxdepth 3 -iname 'roadmap.y*ml' -not -path './docs/roadmaps/roadmap.yaml' -not -path './target/*' 2>/dev/null | sort | tr '\n' ' ')
+            if [ -n "$others" ]; then
+              echo "::warning::roadmap-valid: NOT-RUN — no docs/roadmaps/roadmap.yaml (pmat's canonical path), but roadmap-like file(s) exist elsewhere and were NOT validated: $others"
+            else
+              echo "roadmap-valid: NOT-RUN — no docs/roadmaps/roadmap.yaml (nothing to validate)"
+            fi
+            exit 0
+          fi
+          if ! command -v pmat >/dev/null 2>&1; then
+            echo "::error::roadmap-valid: pmat is not on PATH — an absent verifier is a NO-GO, not a pass"
+            exit 1
+          fi
+          if ! pmat work validate --help >/dev/null 2>&1; then
+            echo "::error::roadmap-valid: $(pmat --version 2>&1 | head -1) has no 'work validate' (first in v3.0.6); the fleet pin is BSE-10b (infra PMAT-231)"
+            exit 1
+          fi
+          pmat work validate
+      - name: roadmap-fragment-parity
+        # PMAT-1363 / paiml/aprender#3296. docs/roadmaps/roadmap.yaml is a
+        # GENERATED aggregate of docs/roadmaps/entries/<id>.yaml. A pull request
+        # therefore writes ONE fragment, named for its own Pmat-Ticket trailer,
+        # and never touches the aggregate.
+        #
+        # WHY: every PR writing the roadmap makes it a shared mutable file on the
+        # merge path — Amdahl serial fraction 1, so N pull requests contend on one
+        # file however disjoint their code is. Measured in paiml/aprender
+        # 2026-09-15: 146 PRs opened over 10 days against 88 merged, and of the
+        # last 25 merge_group CI runs 7 succeeded and 15 were CANCELLED. A unique
+        # filename per ticket makes them pairwise disjoint by construction.
+        #
+        # OPT-IN ON entries/ AND AN UNTRACKED AGGREGATE (see NOT-ACTIVE below),
+        # AND THAT IS LOAD-BEARING. This workflow runs in
+        # every consumer repo, and the ones that have not migrated still write
+        # roadmap.yaml legitimately. Failing them would be the shape that took
+        # every consumer red when `continue-on-error` was removed upstream: a gate
+        # armed here lands everywhere at once. No entries/ dir => NOT-RUN, said
+        # out loud, never a silent pass (the same discipline as roadmap-valid
+        # above: a result that was not measured must never read as a pass).
+        #
+        # This is the bespoke form. It becomes `pmat comply` once pmat ships the
+        # check (paiml/paiml-mcp-agent-toolkit#1363) — tracked, not forgotten.
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          entries=docs/roadmaps/entries
+          aggregate=docs/roadmaps/roadmap.yaml
+          if [ ! -d "$entries" ]; then
+            echo "roadmap-fragment-parity: NOT-RUN — no $entries/ in this repo (not migrated)"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            git fetch -q --no-tags origin "$BASE_SHA" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            echo "::error::roadmap-fragment-parity: base $BASE_SHA is unreachable — a check that cannot read its input does not pass"
+            exit 1
+          fi
+          # ACTIVE ONLY ONCE THE AGGREGATE IS UNTRACKED (paiml/aprender#3709). A repo
+          # that has entries/ but still COMMITS roadmap.yaml has not migrated: its own
+          # roadmap-aggregate-check requires the committed file in sync, so arming here
+          # would refuse every PR it opens (measured on aprender's sovereign-ci pin bump
+          # for coverage_on, paiml/aprender#3676). Keyed on the BASE tree, not the PR
+          # head: a PR that re-adds the aggregate must not switch its own gate off, and
+          # the PR that deletes it (the migration) must not be refused by the gate that
+          # deletion arms. No flag to forget: migrating is what switches it on.
+          if git cat-file -e "$BASE_SHA:$aggregate" 2>/dev/null; then
+            echo "roadmap-fragment-parity: NOT-ACTIVE — $aggregate is TRACKED at the base (${BASE_SHA:0:9}), so this repo still commits the aggregate; the check arms by itself once it is untracked (paiml/aprender#3709)"
+            exit 0
+          fi
+          files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          bad=0
+          if printf '%s\n' "$files" | grep -qx "$aggregate"; then
+            echo "::error::roadmap-fragment-parity: $aggregate is GENERATED — run 'make roadmap-aggregate' on the default branch, never edit it in a PR"
+            bad=1
+          fi
+          trailers=$(git log --format='%(trailers:key=Pmat-Ticket,valueonly)' "$BASE_SHA..$HEAD_SHA" | tr -d ' ' | grep -v '^$' | sort -u || true)
+          n=0
+          while IFS= read -r f; do
+            case "$f" in "$entries"/*.yaml) ;; *) continue ;; esac
+            n=$((n + 1))
+            id="${f##*/}"; id="${id%.yaml}"
+            if ! printf '%s\n' "$trailers" | grep -qx "$id"; then
+              echo "::error::roadmap-fragment-parity: $f has no matching 'Pmat-Ticket: $id' trailer on this branch"
+              bad=1
+            fi
+          done <<< "$files"
+          [ "$bad" = 0 ] || exit 1
+          echo "roadmap-fragment-parity: ok — $n fragment(s), every one named for a Pmat-Ticket on this branch"
       - name: Install extra packages
         if: ${{ inputs.extra_pkgs != '' }}
         run: |
@@ -1104,8 +1357,27 @@ jobs:
       # the whole _work root instead of just $GITHUB_WORKSPACE/.. . Keeping
       # both would just pay for a second full-tree chown.
       - name: Checkout sibling repos (path deps)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE/.."
+          # Anonymous git over HTTPS from the fleet's shared egress IP is throttled
+          # by GitHub once the 16 runners have each cloned a few times: every job
+          # on 2026-09-02 died here at "could not read Username for
+          # 'https://github.com'" while the same clone with the job token answered.
+          # The siblings are public, so the calling workflow's token can read them;
+          # the header is per-invocation and never written to the checkout.
+          # POSIX sh, not bash: these container steps run under `sh -e`. The
+          # token rides in git's GIT_CONFIG_* environment (git >= 2.31), which
+          # every git call in this step inherits.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            GIT_CONFIG_COUNT=1
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          fi
+          GIT_TERMINAL_PROMPT=0
+          export GIT_TERMINAL_PROMPT
           # APR-MONO (2026-04-13): trueno, trueno-rag, trueno-db, trueno-viz,
           # alimentar, presentar, renacer, batuta, realizar, probar merged into
           # aprender monorepo and archived. Removed from sibling-clone list to
@@ -1164,15 +1436,44 @@ jobs:
       # class at source. Independent of aprender#1043's workspace-test fix
       # (which addresses the containerized workspace-test job's registry
       # mount, not this bare-metal security job's $HOME).
+      #
+      # 2026-08-30: that per-runner CARGO_HOME moved off /tmp. The isolation
+      # above is right; the location was not. /tmp is emptied at boot, so a
+      # per-runner cache there HALF-persists — it survives between jobs and
+      # vanishes on the next reboot, so the crates.io registry and the
+      # cargo-audit compile are re-paid on an unpredictable subset of runs.
+      # paiml/infra's shared-$HOME guard blocks that shape as
+      # `cargo-install-boot-volatile`, and this exact step is the fixture it
+      # was written from (infra#219, bad-cargo-install-tmp.yml).
+      #
+      # $RUNNER_TOOL_CACHE is the runner's own persistent tool directory
+      # (<runner>/_work/_tool). It is already per-runner by construction —
+      # each of the 16 intel services has its own _work tree — so it keeps
+      # every property this step was reaching for, and survives a reboot.
       - name: Install cargo-audit (per-runner CARGO_HOME)
         run: |
-          export CARGO_HOME="/tmp/cargo-home-security-${{ runner.name }}"
+          # Fail closed: an unset RUNNER_TOOL_CACHE would root CARGO_HOME at /
+          # and the mkdir would fail with a message about the wrong thing.
+          : "${RUNNER_TOOL_CACHE:?RUNNER_TOOL_CACHE is unset; refusing to root CARGO_HOME at /}"
+          export CARGO_HOME="$RUNNER_TOOL_CACHE/cargo-home-security"
           mkdir -p "$CARGO_HOME"
           echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
           cargo install cargo-audit --locked --root "$CARGO_HOME" || true
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Audit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # forjar#422: same throttle as the cargo-deny step — authenticate the
+          # advisory-db fetch with the job's own token via a url rewrite.
+          # Step-local, never `git config --global`: the `security` job is bare-metal and
+          # its global writes land in the shared runner ~/.gitconfig, where a stale
+          # job token then rides on every later job's git request (2026-09-02: every
+          # host job answered "Duplicate header: Authorization" -> HTTP 400).
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           # FIVE-WHYS ROOT CAUSE (2026-04-12):
           # The "Checkout sibling repos" step does cd $GITHUB_WORKSPACE/..
           # and never restores PWD. Without this cd, cargo audit reads
@@ -1234,8 +1535,23 @@ jobs:
 
   provenance:
     name: provenance
-    # falsify-f8-allow: SLSA attest-build-provenance needs GitHub OIDC id-token, only issued on GitHub-hosted runners. Job is continue-on-error (advisory).
-    runs-on: ubuntu-latest
+    # 2026-08-20: was ubuntu-latest under an f8 allowlist entry claiming OIDC
+    # id-tokens are "only issued on GitHub-hosted runners". That claim is wrong:
+    # GitHub mints OIDC id-tokens for self-hosted runners too — the runner
+    # requests one from the Actions service via ACTIONS_ID_TOKEN_REQUEST_URL,
+    # which is exactly how self-hosted runners do keyless cloud auth. The claim
+    # had never been tested; it was asserted and then inherited.
+    #
+    # Hosted runners are banned fleet-wide (build-performance.md principle 8):
+    # they bill on private repos, and when the spending limit is reached the job
+    # does not start at all. On a PRIVATE repo this job was therefore producing
+    # no attestation while looking merely advisory-red. See paiml/infra#231.
+    #
+    # This job is continue-on-error, so flipping it is a cheap experiment rather
+    # than a bet: if OIDC really does fail here, the job goes advisory-red and
+    # nothing blocks. Verify by confirming an attestation is still produced
+    # (gh attestation list) before treating this as settled.
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     continue-on-error: true
     permissions:
@@ -1254,7 +1570,7 @@ jobs:
 
   gate:
     name: gate
-    runs-on: [self-hosted, clean-room]
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     if: always()
     needs: [test, lint, coverage, security, provenance]
@@ -1277,8 +1593,29 @@ jobs:
       # jobs are mandatory, and a silently skipped mandatory job is exactly the
       # failure mode this replaces.
       - name: Check results
+        env:
+          COVERAGE_ON: ${{ inputs.coverage_on }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
         run: |
           rc=0
+          # coverage_on: 'always' keeps the rule above verbatim (coverage must succeed).
+          # 'tag': coverage is OWED on a v* tag push and on workflow_dispatch --
+          # there it must succeed, and skipped is RED (the anti-vacuity arm). On every
+          # other event the job is skipped by its own `if:`; that skip, and only that
+          # skip, is accepted here and printed as NOT MEASURED, never as a pass.
+          case "$COVERAGE_ON" in
+            always|tag) ;;
+            *) echo "::error::coverage_on must be 'always' or 'tag', got '${COVERAGE_ON}'"; exit 1 ;;
+          esac
+          coverage_owed=1
+          if [ "$COVERAGE_ON" = tag ]; then
+            case "$EVENT_NAME" in
+              workflow_dispatch) coverage_owed=1 ;;
+              push) case "$GIT_REF" in refs/tags/v*) coverage_owed=1 ;; *) coverage_owed=0 ;; esac ;;
+              *) coverage_owed=0 ;;
+            esac
+          fi
           for pair in \
             "test:${{ needs.test.result }}" \
             "lint:${{ needs.lint.result }}" \
@@ -1286,6 +1623,10 @@ jobs:
             "security:${{ needs.security.result }}"; do
             job="${pair%%:*}"
             res="${pair#*:}"
+            if [ "$job" = coverage ] && [ "$coverage_owed" = 0 ] && [ "$res" = skipped ]; then
+              echo "coverage: NOT MEASURED on ${EVENT_NAME} (coverage_on=tag; owed on v* tags and dispatch)"
+              continue
+            fi
             if [ "$res" != "success" ]; then
               echo "::error::${job} did not succeed (result: ${res:-<none>})"
               rc=1
