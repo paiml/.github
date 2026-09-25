@@ -211,7 +211,7 @@ jobs:
           # uid:gid because the runner user has no entry in the image's passwd.
           chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
           echo "pre-checkout ownership restored under $WORK_ROOT"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install extra packages
@@ -471,7 +471,7 @@ jobs:
           # uid:gid because the runner user has no entry in the image's passwd.
           chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
           echo "pre-checkout ownership restored under $WORK_ROOT"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install extra packages
@@ -726,7 +726,7 @@ jobs:
           # uid:gid because the runner user has no entry in the image's passwd.
           chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
           echo "pre-checkout ownership restored under $WORK_ROOT"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install extra packages
@@ -1029,7 +1029,7 @@ jobs:
           # uid:gid because the runner user has no entry in the image's passwd.
           chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
           echo "pre-checkout ownership restored under $WORK_ROOT"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install extra packages
@@ -1167,7 +1167,7 @@ jobs:
             2>/dev/null || echo "::warning::sccache stats unavailable"
       - name: Upload benchmark results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bench-${{ inputs.repo }}
           path: bench-results.txt
@@ -1256,7 +1256,7 @@ jobs:
           else
             echo "pre-checkout ownership restored under $WORK_ROOT"
           fi
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: roadmap-valid
@@ -1583,7 +1583,7 @@ jobs:
       attestations: write
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Generate SLSA provenance
