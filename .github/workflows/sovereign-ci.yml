@@ -116,6 +116,14 @@ on:
         required: false
         default: '.pmat/coverage-baseline.txt'
         type: string
+      flow_guards_ref:
+        description: >-
+          Ref of paiml/.github whose scripts/flow/ guards the `flow` job runs (FLOW rules 17-19).
+          A caller that pins this workflow by sha passes the SAME sha here, so the guards are pinned
+          with it (FLOW-001-A1 §2.3). Default main.
+        required: false
+        default: 'main'
+        type: string
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -1567,6 +1575,71 @@ jobs:
         with:
           subject-path: 'Cargo.toml'
         continue-on-error: true
+
+  # FLOW rules 17-19 (FLOW-001 / APR-EPIC-001): findings ledger, every PR
+  # discharges an issue, created <= closed over 3 days. NOT in `gate`'s needs:
+  # each check runs in the mode scripts/flow/flow_mode.sh prints for this repo
+  # (FLOW-001-A1 §2.8) — warn until the repo records the milestone that
+  # promotes it in docs/roadmaps/flow-guards.json, then block. A RED in warn
+  # mode is a ::warning:: and the job stays green. A guard that could not
+  # measure (exit 2: tool/API error) is NOT MEASURED — a warning in warn mode,
+  # a failure in block mode, never a pass.
+  flow:
+    name: flow
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: paiml/.github
+          ref: ${{ inputs.flow_guards_ref }}
+          path: .flow-guards
+          persist-credentials: false
+      - name: FLOW guards (rules 17, 18, 19)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          G=.flow-guards/scripts/flow
+          STATE=docs/roadmaps/flow-guards.json
+          rc_all=0
+          # guard <check-name> <command…>: run one guard in its §2.8 mode.
+          guard() {
+            local check="$1" mode out rc; shift
+            mode="$(bash "$G/flow_mode.sh" --check "$check" --state "$STATE")" || {
+              echo "::error::flow_mode could not read $STATE for $check"; rc_all=1; return; }
+            out="$("$@" 2>&1)"; rc=$?
+            echo "[$check mode=$mode] $out"
+            case "$rc" in
+              0) ;;
+              10) if [ "$mode" = block ]; then echo "::error::$check ($mode): $out"; rc_all=1
+                  else echo "::warning::$check ($mode): $out"; fi ;;
+              *) if [ "$mode" = block ]; then echo "::error::$check NOT MEASURED (exit $rc): $out"; rc_all=1
+                 else echo "::warning::$check NOT MEASURED (exit $rc): $out"; fi ;;
+            esac
+          }
+          if [ "$EVENT_NAME" = pull_request ]; then
+            body="$(mktemp)"; printf '%s' "$PR_BODY" > "$body"
+            guard no-close bash "$G/check_pr_closes.sh" --repo "$REPO" "$body"
+            guard findings bash "$G/check_findings_ledger.sh" --base "$BASE_SHA"
+          else
+            guard findings bash "$G/check_findings_ledger.sh"
+          fi
+          guard inflow bash "$G/check_issue_flow.sh" --repo "$REPO"
+          exit "$rc_all"
 
   gate:
     name: gate
