@@ -35,7 +35,7 @@ dir="$root/docs/findings"
 if [ -n "$base" ]; then
   git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
     || { echo "usage error: --base $base is not a commit in $root" >&2; exit 2; }
-  while IFS= read -r path; do
+  while IFS= read -r -d '' path; do
     [ -n "$path" ] || continue
     if [ ! -f "$root/$path" ]; then
       echo "RED findings-rewrite $path existed at $base and was deleted"
@@ -46,7 +46,9 @@ if [ -n "$base" ]; then
       echo "RED findings-rewrite $path: content at $base is not a prefix of the current file"
       exit 10
     fi
-  done < <(git -C "$root" ls-tree -r --name-only "$base" -- docs/findings | grep -E '\.jsonl$' || true)
+  # Same scope as the schema scan below (docs/findings/*.jsonl, top level
+  # only); -z so a path with spaces or non-ASCII is not quoted.
+  done < <(git -C "$root" ls-tree -z --name-only "$base" -- docs/findings/ | grep -zE '^docs/findings/[^/]*\.jsonl$' || true)
 fi
 
 shopt -s nullglob
@@ -84,7 +86,7 @@ for f in "${files[@]}"; do
   done < "$f"
 done
 
-dup="$(cut -f1 "$ids" | sort | uniq -d | head -1)"
+dup="$(cut -f1 "$ids" | sort | uniq -d | sed -n 1p)"
 if [ -n "$dup" ]; then
   echo "RED findings-dup-id id '$dup' at $(awk -F'\t' -v d="$dup" '$1==d{printf "%s ",$2}' "$ids")"
   exit 10

@@ -32,7 +32,7 @@ run() { set +e; out="$("$@" 2>&1)"; rc=$?; set -e; }
 # ---------------------------------------------------------------- rule 18
 # id <TAB> want-exit <TAB> want-verdict <TAB> body (\n = newline)
 states="$tmp/states.tsv"
-printf '12\tOPEN\n13\tCLOSED\npaiml/infra#7\tOPEN\n' > "$states"
+printf '12\tOPEN\n13\tCLOSED\n14\tERROR\npaiml/infra#7\tOPEN\n' > "$states"
 while IFS=$'\t' read -r id wx wv body; do
   printf '%b' "$body" > "$tmp/body"
   run bash "$FLOW_DIR/check_pr_closes.sh" --states "$states" "$tmp/body"
@@ -57,6 +57,8 @@ PRC-one-open-of-two	0	GREEN closes	Closes #13, closes #12\n
 PRC-no-issue	0	GREEN no-issue	Bump a pin.\n\nno-issue: dependabot action bump\n
 PRC-no-issue-crlf	0	GREEN no-issue	Bump.\r\nNo-Issue: ci-only\r\n
 PRC-refs-row	0	GREEN refs-row	Refs #12 row F-GUARD\n
+PRC-api-error	2	tool error:	Closes #14\n
+PRC-api-error-but-open	0	GREEN closes	Closes #14, closes #12\n
 EOF
 
 # Without --states/--repo the open-state check must SAY it did not measure.
@@ -113,6 +115,31 @@ ledger --base HEAD; expect FIND-rewrite-edit 10 "RED findings-rewrite" "$rc" "$o
 rm -f "${repo:?}/docs/findings/s1.jsonl"
 ledger --base HEAD; expect FIND-rewrite-delete 10 "RED findings-rewrite" "$rc" "$out"
 ledger --base no-such-ref; expect FIND-bad-base 2 "usage error:" "$rc" "$out"
+printf '%s\n' "$good" > "$repo/docs/findings/a ñ.jsonl"
+git -C "$repo" add -A && git -C "$repo" commit -qm spaced >/dev/null 2>&1
+ledger --base HEAD; expect FIND-nonascii-path 0 "GREEN findings" "$rc" "$out"
+rm -f "${repo:?}/docs/findings/a ñ.jsonl"
+ledger --base HEAD; expect FIND-nonascii-path-delete 10 "RED findings-rewrite" "$rc" "$out"
+
+# ---------------------------------------------------------------- workflow warn mode
+# Run sovereign-ci's own `flow` step under the shell Actions uses for
+# `shell: bash` (bash -eo pipefail) with stub guards that go RED: in warn mode
+# the step must stay green and downgrade each RED to ::warning::.
+wf="$FLOW_DIR/../../.github/workflows/sovereign-ci.yml"
+ws="$tmp/wf"; mkdir -p "$ws/.flow-guards/scripts/flow"
+awk '/name: FLOW guards \(rules 17, 18, 19\)/{f=1} f&&/run: \|/{r=1; next} r&&/^  [a-z]/{exit} r{sub(/^          /,""); print}' "$wf" > "$ws/step.sh"
+for g in check_pr_closes check_findings_ledger check_issue_flow; do
+  printf '#!/usr/bin/env bash\necho "RED stub %s"; exit 10\n' "$g" > "$ws/.flow-guards/scripts/flow/$g.sh"
+done
+printf '#!/usr/bin/env bash\necho warn\n' > "$ws/.flow-guards/scripts/flow/flow_mode.sh"
+wfrun() { run env -C "$ws" EVENT_NAME=pull_request REPO=o/r PR_BODY=x BASE_SHA=HEAD bash -eo pipefail step.sh; }
+# pick PATTERN: compare on the first output line carrying PATTERN (MISSING if none)
+pick() { out="$(printf '%s\n' "$out" | grep -m1 -F -- "$1" || echo MISSING)"; }
+wfrun; pick "::warning::inflow"; expect WF-warn-red-stays-green 0 "::warning::inflow (warn):" "$rc" "$out"
+printf '#!/usr/bin/env bash\necho "usage error: bad json" >&2; exit 2\n' > "$ws/.flow-guards/scripts/flow/flow_mode.sh"
+wfrun; pick "running in warn"; expect WF-bad-state-warns 0 "::warning::flow_mode could" "$rc" "$out"
+printf '#!/usr/bin/env bash\necho block\n' > "$ws/.flow-guards/scripts/flow/flow_mode.sh"
+wfrun; pick "::error::inflow"; expect WF-block-red-fails 1 "::error::inflow (block):" "$rc" "$out"
 
 # ---------------------------------------------------------------- §2.8 schedule
 st="$tmp/flow-guards.json"

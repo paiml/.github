@@ -1636,6 +1636,10 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # `shell: bash` runs this as `bash -eo pipefail`, and `set -uo` does
+          # not clear -e: without `set +e` the first RED (exit 10) would kill the
+          # step before guard() could downgrade it to a warning.
+          set +e
           set -uo pipefail
           G=.flow-guards/scripts/flow
           STATE=docs/roadmaps/flow-guards.json
@@ -1643,8 +1647,12 @@ jobs:
           # guard <check-name> <command…>: run one guard in its §2.8 mode.
           guard() {
             local check="$1" mode out rc; shift
-            mode="$(bash "$G/flow_mode.sh" --check "$check" --state "$STATE")" || {
-              echo "::error::flow_mode could not read $STATE for $check"; rc_all=1; return; }
+            # An unreadable state file cannot promote anything: run the check in
+            # warn mode and say so, rather than failing a WARN-only job.
+            if ! mode="$(bash "$G/flow_mode.sh" --check "$check" --state "$STATE" 2>&1)"; then
+              echo "::warning::flow_mode could not read $STATE for $check ($mode) — running in warn"
+              mode=warn
+            fi
             out="$("$@" 2>&1)"; rc=$?
             echo "[$check mode=$mode] $out"
             case "$rc" in

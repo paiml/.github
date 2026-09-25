@@ -89,7 +89,12 @@ state_of() {
   fi
   n="${ref##*#}"; target="$repo"
   case "$ref" in */*#*) target="${ref%%#*}" ;; esac
-  gh issue view "$n" --repo "$target" --json state --jq .state 2>/dev/null || echo "UNKNOWN"
+  # A missing issue is UNKNOWN (RED); an API failure is ERROR (not measured) —
+  # a transient outage must not read as a PR that closes nothing.
+  if ! s="$(gh issue view "$n" --repo "$target" --json state --jq .state 2>&1)"; then
+    case "$s" in *"Could not resolve"*|*"not found"*) s=UNKNOWN ;; *) s=ERROR ;; esac
+  fi
+  printf '%s\n' "$s"
 }
 
 if [ -z "$states" ] && [ -z "$repo" ]; then
@@ -97,11 +102,18 @@ if [ -z "$states" ] && [ -z "$repo" ]; then
   exit 0
 fi
 
+errs=""
 for ref in $refs; do
-  if [ "$(state_of "$ref")" = "OPEN" ]; then
+  st="$(state_of "$ref")"
+  if [ "$st" = "OPEN" ]; then
     echo "GREEN closes open issue $ref"
     exit 0
   fi
+  [ "$st" != "ERROR" ] || errs="$errs $ref"
 done
+if [ -n "$errs" ]; then
+  echo "tool error: could not read issue state for:$errs (NOT MEASURED)" >&2
+  exit 2
+fi
 echo "RED closes-nothing-open every referenced issue is closed or unknown: $(echo "$refs" | tr '\n' ' ')"
 exit 10
