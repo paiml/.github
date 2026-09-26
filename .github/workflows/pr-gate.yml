@@ -135,7 +135,7 @@ jobs:
           # are authorized structurally, below -- adding one here is how
           # this gate hid its own blindness for four months.
           case "$PR_AUTHOR" in
-            guyernest) # pmcp lead developer -- outside collaborator, not an org member
+            guyernest|spudnic) # guyernest: pmcp lead developer; spudnic: authorized contributor (operator 2026-09-26) -- outside collaborators, not org members
               echo "allow=true"   >> "$GITHUB_OUTPUT"
               echo "reason=allowlisted external contributor" >> "$GITHUB_OUTPUT"
               echo "$PR_AUTHOR: allowlisted external contributor -- ALLOWED"
