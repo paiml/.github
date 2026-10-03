@@ -101,6 +101,12 @@ jobs:
           tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
           "$tmp/actionlint" -version
           "$tmp/actionlint" -shellcheck=
+      - name: FLOW guard case tables
+        shell: bash
+        # must-match / must-not-match rows for scripts/flow/ (rules 17-19 and
+        # the §2.8 promotion schedule). The table's ability to go RED was
+        # proven by mutation on the PR that added it.
+        run: bash scripts/flow/test_flow_guards.sh
 
   gate:
     name: gate
