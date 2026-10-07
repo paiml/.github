@@ -231,13 +231,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install extra packages
-        if: ${{ inputs.extra_pkgs != '' }}
+        if: ${{ inputs.extra_pkgs != '' && inputs.container_image != '' }}
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
-      # Bare-metal (container_image = ''): the host stands in for the image, and the
-      # install step above swallows failures by design, so prove the host has
-      # what this job needs before a gate can pass having checked less.
+      # Bare-metal (container_image = ''): the host stands in for the image. A CI job
+      # never installs a package on a host (paiml/rmedia#879, operator IC-2 L3/L6): the
+      # install step above is skipped, the host is provisioned by forjar, and this
+      # check goes red on anything missing, before a gate can pass having checked less.
       - name: Bare-metal preflight
         if: ${{ inputs.container_image == '' }}
         env:
@@ -247,11 +248,18 @@ jobs:
           missing=""
           for t in cargo rustc; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
           if [ "$USE_NEXTEST" = "true" ]; then command -v cargo-nextest >/dev/null 2>&1 || missing="$missing cargo-nextest"; fi
-          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          for p in $EXTRA_PKGS; do
+            [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" = "install ok installed" ] || missing="$missing $p"
+          done
           if [ -n "$missing" ]; then
             echo "::error::bare-metal test: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
           fi
           echo "bare-metal test preflight: host has cargo rustc${EXTRA_PKGS:+ and every extra_pkg}"
+          # What this run measured with (IC-2 L7). Comparing to a pin file is a follow-up.
+          for v in "cargo --version" "rustc --version" "cargo clippy --version" "cargo nextest --version" "cargo deny --version" "cargo llvm-cov --version"; do
+            out=$($v 2>/dev/null | head -n1) || true
+            printf 'tool-version: %-24s %s\n' "$v" "${out:-(not found)}"
+          done
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -520,13 +528,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install extra packages
-        if: ${{ inputs.extra_pkgs != '' }}
+        if: ${{ inputs.extra_pkgs != '' && inputs.container_image != '' }}
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
-      # Bare-metal (container_image = ''): the host stands in for the image, and the
-      # install step above swallows failures by design, so prove the host has
-      # what this job needs before a gate can pass having checked less.
+      # Bare-metal (container_image = ''): the host stands in for the image. A CI job
+      # never installs a package on a host (paiml/rmedia#879, operator IC-2 L3/L6): the
+      # install step above is skipped, the host is provisioned by forjar, and this
+      # check goes red on anything missing, before a gate can pass having checked less.
       - name: Bare-metal preflight
         if: ${{ inputs.container_image == '' }}
         env:
@@ -535,11 +544,18 @@ jobs:
         run: |
           missing=""
           for t in cargo rustc rustfmt cargo-clippy cargo-deny; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
-          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          for p in $EXTRA_PKGS; do
+            [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" = "install ok installed" ] || missing="$missing $p"
+          done
           if [ -n "$missing" ]; then
             echo "::error::bare-metal lint: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
           fi
           echo "bare-metal lint preflight: host has cargo rustc rustfmt cargo-clippy cargo-deny${EXTRA_PKGS:+ and every extra_pkg}"
+          # What this run measured with (IC-2 L7). Comparing to a pin file is a follow-up.
+          for v in "cargo --version" "rustc --version" "cargo clippy --version" "cargo nextest --version" "cargo deny --version" "cargo llvm-cov --version"; do
+            out=$($v 2>/dev/null | head -n1) || true
+            printf 'tool-version: %-24s %s\n' "$v" "${out:-(not found)}"
+          done
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -802,13 +818,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install extra packages
-        if: ${{ inputs.extra_pkgs != '' }}
+        if: ${{ inputs.extra_pkgs != '' && inputs.container_image != '' }}
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
-      # Bare-metal (container_image = ''): the host stands in for the image, and the
-      # install step above swallows failures by design, so prove the host has
-      # what this job needs before a gate can pass having checked less.
+      # Bare-metal (container_image = ''): the host stands in for the image. A CI job
+      # never installs a package on a host (paiml/rmedia#879, operator IC-2 L3/L6): the
+      # install step above is skipped, the host is provisioned by forjar, and this
+      # check goes red on anything missing, before a gate can pass having checked less.
       - name: Bare-metal preflight
         if: ${{ inputs.container_image == '' }}
         env:
@@ -817,11 +834,18 @@ jobs:
         run: |
           missing=""
           for t in cargo rustc cargo-llvm-cov; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
-          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          for p in $EXTRA_PKGS; do
+            [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" = "install ok installed" ] || missing="$missing $p"
+          done
           if [ -n "$missing" ]; then
             echo "::error::bare-metal coverage: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
           fi
           echo "bare-metal coverage preflight: host has cargo rustc cargo-llvm-cov${EXTRA_PKGS:+ and every extra_pkg}"
+          # What this run measured with (IC-2 L7). Comparing to a pin file is a follow-up.
+          for v in "cargo --version" "rustc --version" "cargo clippy --version" "cargo nextest --version" "cargo deny --version" "cargo llvm-cov --version"; do
+            out=$($v 2>/dev/null | head -n1) || true
+            printf 'tool-version: %-24s %s\n' "$v" "${out:-(not found)}"
+          done
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -1133,13 +1157,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Install extra packages
-        if: ${{ inputs.extra_pkgs != '' }}
+        if: ${{ inputs.extra_pkgs != '' && inputs.container_image != '' }}
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
-      # Bare-metal (container_image = ''): the host stands in for the image, and the
-      # install step above swallows failures by design, so prove the host has
-      # what this job needs before a gate can pass having checked less.
+      # Bare-metal (container_image = ''): the host stands in for the image. A CI job
+      # never installs a package on a host (paiml/rmedia#879, operator IC-2 L3/L6): the
+      # install step above is skipped, the host is provisioned by forjar, and this
+      # check goes red on anything missing, before a gate can pass having checked less.
       - name: Bare-metal preflight
         if: ${{ inputs.container_image == '' }}
         env:
@@ -1148,11 +1173,18 @@ jobs:
         run: |
           missing=""
           for t in cargo rustc; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
-          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          for p in $EXTRA_PKGS; do
+            [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" = "install ok installed" ] || missing="$missing $p"
+          done
           if [ -n "$missing" ]; then
             echo "::error::bare-metal bench: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
           fi
           echo "bare-metal bench preflight: host has cargo rustc${EXTRA_PKGS:+ and every extra_pkg}"
+          # What this run measured with (IC-2 L7). Comparing to a pin file is a follow-up.
+          for v in "cargo --version" "rustc --version" "cargo clippy --version" "cargo nextest --version" "cargo deny --version" "cargo llvm-cov --version"; do
+            out=$($v 2>/dev/null | head -n1) || true
+            printf 'tool-version: %-24s %s\n' "$v" "${out:-(not found)}"
+          done
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -1492,10 +1524,32 @@ jobs:
           [ "$bad" = 0 ] || exit 1
           echo "roadmap-fragment-parity: ok — $n fragment(s), every one named for a Pmat-Ticket on this branch"
       - name: Install extra packages
-        if: ${{ inputs.extra_pkgs != '' }}
+        if: ${{ inputs.extra_pkgs != '' && inputs.container_image != '' }}
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # Bare-metal (container_image = ''): same rule as the container jobs. No CI job
+      # installs a package on a host (paiml/rmedia#879, operator IC-2 L3/L6); the install
+      # step above is skipped and this check goes red on anything missing.
+      - name: Bare-metal preflight
+        if: ${{ inputs.container_image == '' }}
+        env:
+          EXTRA_PKGS: ${{ inputs.extra_pkgs }}
+        run: |
+          missing=""
+          for t in cargo rustc; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          for p in $EXTRA_PKGS; do
+            [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" = "install ok installed" ] || missing="$missing $p"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::bare-metal security: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
+          fi
+          echo "bare-metal security preflight: host has cargo rustc${EXTRA_PKGS:+ and every extra_pkg}"
+          # What this run measured with (IC-2 L7). Comparing to a pin file is a follow-up.
+          for v in "cargo --version" "rustc --version" "cargo clippy --version" "cargo nextest --version" "cargo deny --version" "cargo llvm-cov --version"; do
+            out=$($v 2>/dev/null | head -n1) || true
+            printf 'tool-version: %-24s %s\n' "$v" "${out:-(not found)}"
+          done
       # NOTE (paiml/.github#42, 2026-07-27): the former post-checkout step
       # "Reclaim sibling workspace ownership (defense in depth)" lived here
       # (added 2026-04-20, paiml/infra#69). It is superseded by the
@@ -1598,6 +1652,8 @@ jobs:
       # each of the 16 intel services has its own _work tree — so it keeps
       # every property this step was reaching for, and survives a reboot.
       - name: Install cargo-audit (per-runner CARGO_HOME)
+        env:
+          BARE_METAL: ${{ inputs.container_image == '' }}
         run: |
           # Fail closed: an unset RUNNER_TOOL_CACHE would root CARGO_HOME at /
           # and the mkdir would fail with a message about the wrong thing.
@@ -1605,7 +1661,14 @@ jobs:
           export CARGO_HOME="$RUNNER_TOOL_CACHE/cargo-home-security"
           mkdir -p "$CARGO_HOME"
           echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
-          cargo install cargo-audit --locked --root "$CARGO_HOME" || true
+          if [ "$BARE_METAL" = "true" ]; then
+            # A CI job never installs on a bare-metal host (paiml/rmedia#879, IC-2 L3/L18):
+            # forjar provisions cargo-audit. Check it by running it, on the PATH Audit uses; red if absent.
+            PATH="$CARGO_HOME/bin:$PATH" cargo audit --version || {
+              echo "::error::bare-metal security: cargo audit does not run here (looked in $CARGO_HOME/bin, then the runner PATH); forjar provisions it (paiml/rmedia#879)"; exit 1; }
+          else
+            cargo install cargo-audit --locked --root "$CARGO_HOME" || true
+          fi
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Audit
         env:
