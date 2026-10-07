@@ -145,27 +145,32 @@ jobs:
   test:
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-    # /system.slice/docker-*.scope (siblings of the runner service), so a
-    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-    # bench left uncapped for perf-measurement fidelity.
-    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-    # runners are on intel; paths are forjar-managed host dirs.
-    # paiml/infra#75 (2026-04-23): per-PR CARGO_TARGET_DIR isolation.
-    # Default /__w/<repo>/<repo>/target/ is shared across concurrent PR
-    # builds on the same self-hosted runner; cargo's fingerprint directory
-    # is not concurrent-safe and collides with "No such file or directory"
-    # errors (15 observed on aprender PR #1019). Mirrors the aprender
-    # workspace-test pattern (task #134).
-    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
-    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
-    # no-container form; with the default image the object below is the
-    # container this job always had: same image, options and volumes.
-    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
+    container:
+      # paiml/rmedia#879: container_image (default: this digest). An empty image
+      # runs the job on the runner host and ignores options/volumes below
+      # (measured on framework16, run 37655560551: dockerenv=no).
+      image: ${{ inputs.container_image }}
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75 (2026-04-23): per-PR CARGO_TARGET_DIR isolation.
+        # Default /__w/<repo>/<repo>/target/ is shared across concurrent PR
+        # builds on the same self-hosted runner; cargo's fingerprint directory
+        # is not concurrent-safe and collides with "No such file or directory"
+        # errors (15 observed on aprender PR #1019). Mirrors the aprender
+        # workspace-test pattern (task #134).
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
@@ -230,6 +235,23 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # Bare-metal (container_image = ''): the host stands in for the image, and the
+      # install step above swallows failures by design, so prove the host has
+      # what this job needs before a gate can pass having checked less.
+      - name: Bare-metal preflight
+        if: ${{ inputs.container_image == '' }}
+        env:
+          EXTRA_PKGS: ${{ inputs.extra_pkgs }}
+          USE_NEXTEST: ${{ inputs.use_nextest }}
+        run: |
+          missing=""
+          for t in cargo rustc; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          if [ "$USE_NEXTEST" = "true" ]; then command -v cargo-nextest >/dev/null 2>&1 || missing="$missing cargo-nextest"; fi
+          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          if [ -n "$missing" ]; then
+            echo "::error::bare-metal test: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
+          fi
+          echo "bare-metal test preflight: host has cargo rustc${EXTRA_PKGS:+ and every extra_pkg}"
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -363,7 +385,8 @@ jobs:
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Idempotent: bare-metal this is the host user's own ~/.gitconfig, not a throwaway container one.
+          git config --global --fixed-value --get safe.directory "$GITHUB_WORKSPACE" >/dev/null || git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # Phase 2 §4.3 — nextest drops ~35% off test-job wall-clock on large suites.
           # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
           # workspace-member lib tests are exercised. Default stays `--lib` (root only) for
@@ -439,22 +462,27 @@ jobs:
   lint:
     name: lint
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-    # /system.slice/docker-*.scope (siblings of the runner service), so a
-    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-    # bench left uncapped for perf-measurement fidelity.
-    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-    # runners are on intel; paths are forjar-managed host dirs.
-    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
-    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
-    # no-container form; with the default image the object below is the
-    # container this job always had: same image, options and volumes.
-    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
+    container:
+      # paiml/rmedia#879: container_image (default: this digest). An empty image
+      # runs the job on the runner host and ignores options/volumes below
+      # (measured on framework16, run 37655560551: dockerenv=no).
+      image: ${{ inputs.container_image }}
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
@@ -496,6 +524,22 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # Bare-metal (container_image = ''): the host stands in for the image, and the
+      # install step above swallows failures by design, so prove the host has
+      # what this job needs before a gate can pass having checked less.
+      - name: Bare-metal preflight
+        if: ${{ inputs.container_image == '' }}
+        env:
+          EXTRA_PKGS: ${{ inputs.extra_pkgs }}
+          USE_NEXTEST: ${{ inputs.use_nextest }}
+        run: |
+          missing=""
+          for t in cargo rustc rustfmt cargo-clippy cargo-deny; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          if [ -n "$missing" ]; then
+            echo "::error::bare-metal lint: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
+          fi
+          echo "bare-metal lint preflight: host has cargo rustc rustfmt cargo-clippy cargo-deny${EXTRA_PKGS:+ and every extra_pkg}"
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -700,22 +744,27 @@ jobs:
         || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-    # /system.slice/docker-*.scope (siblings of the runner service), so a
-    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-    # bench left uncapped for perf-measurement fidelity.
-    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-    # runners are on intel; paths are forjar-managed host dirs.
-    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
-    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
-    # no-container form; with the default image the object below is the
-    # container this job always had: same image, options and volumes.
-    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
+    container:
+      # paiml/rmedia#879: container_image (default: this digest). An empty image
+      # runs the job on the runner host and ignores options/volumes below
+      # (measured on framework16, run 37655560551: dockerenv=no).
+      image: ${{ inputs.container_image }}
+      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+      # /system.slice/docker-*.scope (siblings of the runner service), so a
+      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+      # bench left uncapped for perf-measurement fidelity.
+      options: --cpus 8
+      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+      # runners are on intel; paths are forjar-managed host dirs.
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
@@ -757,6 +806,22 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # Bare-metal (container_image = ''): the host stands in for the image, and the
+      # install step above swallows failures by design, so prove the host has
+      # what this job needs before a gate can pass having checked less.
+      - name: Bare-metal preflight
+        if: ${{ inputs.container_image == '' }}
+        env:
+          EXTRA_PKGS: ${{ inputs.extra_pkgs }}
+          USE_NEXTEST: ${{ inputs.use_nextest }}
+        run: |
+          missing=""
+          for t in cargo rustc cargo-llvm-cov; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          if [ -n "$missing" ]; then
+            echo "::error::bare-metal coverage: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
+          fi
+          echo "bare-metal coverage preflight: host has cargo rustc cargo-llvm-cov${EXTRA_PKGS:+ and every extra_pkg}"
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -882,7 +947,8 @@ jobs:
           TEST_SCOPE: ${{ inputs.test_workspace && '--workspace --lib' || '--lib' }}
         run: |
           # Mark workspace as safe for git operations inside tests (dubious ownership in containers)
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Idempotent: bare-metal this is the host user's own ~/.gitconfig, not a throwaway container one.
+          git config --global --fixed-value --get safe.directory "$GITHUB_WORKSPACE" >/dev/null || git config --global --add safe.directory "$GITHUB_WORKSPACE"
           # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
           # coverage reflects all workspace members. Default stays `--lib` (root only) — see
           # test job comment for back-compat rationale.
@@ -1022,13 +1088,17 @@ jobs:
     name: bench
     if: ${{ inputs.run_benchmarks }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    # Phase 3 §5.3 — sccache volumes (see test job for rationale).
-    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
-    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
-    # no-container form; with the default image the object below is the
-    # container this job always had: same image, options and volumes.
-    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
+    container:
+      # paiml/rmedia#879: container_image (default: this digest). An empty image
+      # runs the job on the runner host and ignores options/volumes below
+      # (measured on framework16, run 37655560551: dockerenv=no).
+      image: ${{ inputs.container_image }}
+      # Phase 3 §5.3 — sccache volumes (see test job for rationale).
+      volumes:
+        - /home/noah/data/sccache:/sccache
+        - /var/log/ci-metrics:/var/log/ci-metrics
+        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
     timeout-minutes: 60
     continue-on-error: true
     env:
@@ -1067,6 +1137,22 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || \
           sudo apt-get update -qq && sudo apt-get install -y -qq ${{ inputs.extra_pkgs }} 2>/dev/null || true
+      # Bare-metal (container_image = ''): the host stands in for the image, and the
+      # install step above swallows failures by design, so prove the host has
+      # what this job needs before a gate can pass having checked less.
+      - name: Bare-metal preflight
+        if: ${{ inputs.container_image == '' }}
+        env:
+          EXTRA_PKGS: ${{ inputs.extra_pkgs }}
+          USE_NEXTEST: ${{ inputs.use_nextest }}
+        run: |
+          missing=""
+          for t in cargo rustc; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          for p in $EXTRA_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+          if [ -n "$missing" ]; then
+            echo "::error::bare-metal bench: the runner host lacks:$missing (paiml/rmedia#879)"; exit 1
+          fi
+          echo "bare-metal bench preflight: host has cargo rustc${EXTRA_PKGS:+ and every extra_pkg}"
       - name: Checkout sibling repos (path deps)
         env:
           GITHUB_TOKEN: ${{ github.token }}
