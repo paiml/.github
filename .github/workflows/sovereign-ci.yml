@@ -76,6 +76,18 @@ on:
         required: false
         default: ''
         type: string
+      container_image:
+        description: >-
+          Image for the test, lint, coverage and bench jobs. The default is the
+          pinned sovereign-ci:stable digest, so every existing caller is unchanged.
+          An empty string runs those four jobs bare-metal on the runner host
+          (tier-2 hosts have no localhost:5000 registry; paiml/rmedia#879); the
+          host then provides the toolchain, nextest, cargo-deny, pv and extra_pkgs,
+          and the caller should pass enable_sccache: false unless the host has
+          rustc-sccache.
+        required: false
+        default: 'localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36'
+        type: string
       enable_sccache:
         description: 'sccache compiler cache (build-performance.md §5.3). Fleet-default on 2026-04-18 after Phase 3 pilot: F9 p95=100%, n=24 runs, median=100%. Set false to disable per-repo.'
         required: false
@@ -133,36 +145,35 @@ jobs:
   test:
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
-      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-      # /system.slice/docker-*.scope (siblings of the runner service), so a
-      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-      # bench left uncapped for perf-measurement fidelity.
-      options: --cpus 8
-      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-      # runners are on intel; paths are forjar-managed host dirs.
-      volumes:
-        - /home/noah/data/sccache:/sccache
-        - /var/log/ci-metrics:/var/log/ci-metrics
-        # paiml/infra#75 (2026-04-23): per-PR CARGO_TARGET_DIR isolation.
-        # Default /__w/<repo>/<repo>/target/ is shared across concurrent PR
-        # builds on the same self-hosted runner; cargo's fingerprint directory
-        # is not concurrent-safe and collides with "No such file or directory"
-        # errors (15 observed on aprender PR #1019). Mirrors the aprender
-        # workspace-test pattern (task #134).
-        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
+    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+    # /system.slice/docker-*.scope (siblings of the runner service), so a
+    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+    # bench left uncapped for perf-measurement fidelity.
+    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+    # runners are on intel; paths are forjar-managed host dirs.
+    # paiml/infra#75 (2026-04-23): per-PR CARGO_TARGET_DIR isolation.
+    # Default /__w/<repo>/<repo>/target/ is shared across concurrent PR
+    # builds on the same self-hosted runner; cargo's fingerprint directory
+    # is not concurrent-safe and collides with "No such file or directory"
+    # errors (15 observed on aprender PR #1019). Mirrors the aprender
+    # workspace-test pattern (task #134).
+    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
+    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
+    # no-container form; with the default image the object below is the
+    # container this job always had: same image, options and volumes.
+    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
     env:
-      CARGO_TARGET_DIR: /workspace/target
+      # Bare-metal (container_image = ''): the same host dir the container mounts.
+      CARGO_TARGET_DIR: ${{ inputs.container_image != '' && '/workspace/target' || format('/mnt/nvme-raid0/targets/sovereign-ci-{0}/{1}', inputs.repo, github.event.pull_request.number || github.ref_name) }}
     steps:
       # PRE-CHECKOUT SELF-HEAL — FIVE-WHYS ROOT CAUSE (2026-07-27, paiml/.github#42):
       # 1. Why did `ci / security` fail before running a single step of its own?
@@ -295,6 +306,11 @@ jobs:
           done
           if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
           if [ -z "$PV" ]; then
+            # Bare-metal: the host is provisioned for pv, so a missing one is a
+            # provisioning defect, not a skip (paiml/rmedia#879).
+            if ${{ inputs.container_image == '' }}; then
+              echo "::error::pv not found on a bare-metal runner (container_image = '')"; exit 1
+            fi
             echo "::warning::pv not found (searched /usr/local/cargo/bin /usr/local/bin PATH)"
             ls -la /usr/local/cargo/bin/ 2>/dev/null | head -5 || echo "  /usr/local/cargo/bin/ not found"
             exit 0
@@ -324,7 +340,9 @@ jobs:
           done
           # Note: generated contract macros may have unused variables (provable-contracts#64).
           # This is handled by adding -A unused-variables to the clippy step.
+      # /usr/local/cargo is the image's CARGO_HOME; bare-metal has its own.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: inputs.container_image != ''
         with:
           path: |
             /usr/local/cargo/registry
@@ -421,31 +439,30 @@ jobs:
   lint:
     name: lint
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
-      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-      # /system.slice/docker-*.scope (siblings of the runner service), so a
-      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-      # bench left uncapped for perf-measurement fidelity.
-      options: --cpus 8
-      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-      # runners are on intel; paths are forjar-managed host dirs.
-      volumes:
-        - /home/noah/data/sccache:/sccache
-        - /var/log/ci-metrics:/var/log/ci-metrics
-        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
+    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+    # /system.slice/docker-*.scope (siblings of the runner service), so a
+    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+    # bench left uncapped for perf-measurement fidelity.
+    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+    # runners are on intel; paths are forjar-managed host dirs.
+    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
+    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
+    # no-container form; with the default image the object below is the
+    # container this job always had: same image, options and volumes.
+    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
     env:
-      CARGO_TARGET_DIR: /workspace/target
+      # Bare-metal (container_image = ''): the same host dir the container mounts.
+      CARGO_TARGET_DIR: ${{ inputs.container_image != '' && '/workspace/target' || format('/mnt/nvme-raid0/targets/sovereign-ci-{0}/{1}', inputs.repo, github.event.pull_request.number || github.ref_name) }}
     steps:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
@@ -554,6 +571,11 @@ jobs:
           done
           if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
           if [ -z "$PV" ]; then
+            # Bare-metal: the host is provisioned for pv, so a missing one is a
+            # provisioning defect, not a skip (paiml/rmedia#879).
+            if ${{ inputs.container_image == '' }}; then
+              echo "::error::pv not found on a bare-metal runner (container_image = '')"; exit 1
+            fi
             echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
@@ -577,7 +599,9 @@ jobs:
           done
           # Note: generated contract macros may have unused variables (provable-contracts#64).
           # This is handled by adding -A unused-variables to the clippy step.
+      # /usr/local/cargo is the image's CARGO_HOME; bare-metal has its own.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: inputs.container_image != ''
         with:
           path: |
             /usr/local/cargo/registry
@@ -676,31 +700,30 @@ jobs:
         || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
-      # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
-      # /system.slice/docker-*.scope (siblings of the runner service), so a
-      # runner-service cgroup cap can't bound them; uncapped, a post-reboot
-      # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
-      # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
-      # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
-      # bench left uncapped for perf-measurement fidelity.
-      options: --cpus 8
-      # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
-      # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
-      # runners are on intel; paths are forjar-managed host dirs.
-      volumes:
-        - /home/noah/data/sccache:/sccache
-        - /var/log/ci-metrics:/var/log/ci-metrics
-        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
+    # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
+    # /system.slice/docker-*.scope (siblings of the runner service), so a
+    # runner-service cgroup cap can't bound them; uncapped, a post-reboot
+    # 16-runner herd thrashed 32 cores to load 283 (2026-07-05). 8 = the
+    # spec'd per-build budget (build-performance.md §4.2, old CPUQuota=800%):
+    # ample for a lone 60-min workspace build, bounds a full herd to 16x8.
+    # bench left uncapped for perf-measurement fidelity.
+    # Phase 3 §5.3 — sccache rustc cache + /var/log/ci-metrics for F9 stats.
+    # Mounted unconditionally (no-op when enable_sccache=false). Self-hosted
+    # runners are on intel; paths are forjar-managed host dirs.
+    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
+    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
+    # no-container form; with the default image the object below is the
+    # container this job always had: same image, options and volumes.
+    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","options":"--cpus 8","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
     # PMAT-159 (2026-04-20): bumped 30→60 min so workspace-mode callers
     # (test_workspace: true) have headroom to compile + test large workspaces.
     # Default --lib callers are well under 30 min; the ceiling only binds for
     # aprender-scale workspaces and is safe to extend fleet-wide.
     timeout-minutes: 60
     env:
-      CARGO_TARGET_DIR: /workspace/target
+      # Bare-metal (container_image = ''): the same host dir the container mounts.
+      CARGO_TARGET_DIR: ${{ inputs.container_image != '' && '/workspace/target' || format('/mnt/nvme-raid0/targets/sovereign-ci-{0}/{1}', inputs.repo, github.event.pull_request.number || github.ref_name) }}
     steps:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
@@ -809,6 +832,11 @@ jobs:
           done
           if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
           if [ -z "$PV" ]; then
+            # Bare-metal: the host is provisioned for pv, so a missing one is a
+            # provisioning defect, not a skip (paiml/rmedia#879).
+            if ${{ inputs.container_image == '' }}; then
+              echo "::error::pv not found on a bare-metal runner (container_image = '')"; exit 1
+            fi
             echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
@@ -832,7 +860,9 @@ jobs:
           done
           # Note: generated contract macros may have unused variables (provable-contracts#64).
           # This is handled by adding -A unused-variables to the clippy step.
+      # /usr/local/cargo is the image's CARGO_HOME; bare-metal has its own.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: inputs.container_image != ''
         with:
           path: |
             /usr/local/cargo/registry
@@ -992,18 +1022,18 @@ jobs:
     name: bench
     if: ${{ inputs.run_benchmarks }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
-      # Phase 3 §5.3 — sccache volumes (see test job for rationale).
-      volumes:
-        - /home/noah/data/sccache:/sccache
-        - /var/log/ci-metrics:/var/log/ci-metrics
-        # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
-        - /mnt/nvme-raid0/targets/sovereign-ci-${{ inputs.repo }}/${{ github.event.pull_request.number || github.ref_name }}:/workspace/target
+    # Phase 3 §5.3 — sccache volumes (see test job for rationale).
+    # paiml/infra#75: per-PR CARGO_TARGET_DIR isolation — see test job.
+    # paiml/rmedia#879: container_image = '' runs this job bare-metal on the runner
+    # host (tier-2 hosts have no localhost:5000 registry). `|| null` is the
+    # no-container form; with the default image the object below is the
+    # container this job always had: same image, options and volumes.
+    container: ${{ inputs.container_image != '' && fromJSON(format('{{"image":"{0}","volumes":["/home/noah/data/sccache:/sccache","/var/log/ci-metrics:/var/log/ci-metrics","/mnt/nvme-raid0/targets/sovereign-ci-{1}/{2}:/workspace/target"]}}', inputs.container_image, inputs.repo, github.event.pull_request.number || github.ref_name)) || null }}
     timeout-minutes: 60
     continue-on-error: true
     env:
-      CARGO_TARGET_DIR: /workspace/target
+      # Bare-metal (container_image = ''): the same host dir the container mounts.
+      CARGO_TARGET_DIR: ${{ inputs.container_image != '' && '/workspace/target' || format('/mnt/nvme-raid0/targets/sovereign-ci-{0}/{1}', inputs.repo, github.event.pull_request.number || github.ref_name) }}
     steps:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
@@ -1112,6 +1142,11 @@ jobs:
           done
           if [ -z "$PV" ]; then PV=$(which pv 2>/dev/null || true); fi
           if [ -z "$PV" ]; then
+            # Bare-metal: the host is provisioned for pv, so a missing one is a
+            # provisioning defect, not a skip (paiml/rmedia#879).
+            if ${{ inputs.container_image == '' }}; then
+              echo "::error::pv not found on a bare-metal runner (container_image = '')"; exit 1
+            fi
             echo "::warning::pv not found — skipping contract generation"
             exit 0
           fi
@@ -1135,7 +1170,9 @@ jobs:
           done
           # Note: generated contract macros may have unused variables (provable-contracts#64).
           # This is handled by adding -A unused-variables to the clippy step.
+      # /usr/local/cargo is the image's CARGO_HOME; bare-metal has its own.
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: inputs.container_image != ''
         with:
           path: |
             /usr/local/cargo/registry
