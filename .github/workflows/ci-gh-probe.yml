@@ -1,0 +1,40 @@
+name: ci-gh-probe
+
+on:
+  push:
+    branches: [probe/ci-gh-scope]
+    paths: [.github/workflows/ci-gh-probe.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, clean-room, ephemeral]
+    timeout-minutes: 5
+    steps:
+      - name: probe gh scope
+        shell: bash
+        run: |
+          set +x
+          ORG=paiml
+          unset GITHUB_TOKEN GH_TOKEN
+
+          echo "GH_CONFIG_DIR=${GH_CONFIG_DIR-<unset>}"
+          echo -n "/opt/ci-gh owner+mode: "; stat -c '%U %a' /opt/ci-gh 2>&1 || true
+
+          echo -n "gh api user login: "
+          gh api user --jq .login 2>&1 | head -n 1 || true
+
+          for user in noahgift paiml-pr-gate-sentinel-no-such-user; do
+            echo -n "membership ${user}: "
+            gh api -i "orgs/${ORG}/memberships/${user}" 2>&1 | sed -n 1p || true
+          done
+
+          echo "--- x-oauth-scopes header"
+          gh api -i user 2>&1 | grep -i '^x-oauth-scopes' || echo "(no x-oauth-scopes header)"
+
+          echo "--- gh auth status (redacted)"
+          gh auth status 2>&1 \
+            | sed -E 's/gh[pousr]_[A-Za-z0-9_]+/[REDACTED]/g; s/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
+            | grep -iE 'logged in|scopes|account' || true
