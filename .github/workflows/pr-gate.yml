@@ -44,9 +44,9 @@ jobs:
     # cancelled; forjar-cookbook #24/#27 1440 min each).
     #
     # The only group open to all repos (public included) is `Default`, and its
-    # `clean-room` + `ephemeral` runners are the yoga-build and gx10 pool
-    # containers. They carry GH_CONFIG_DIR=/opt/ci-gh, which is the ambient auth
-    # the step below relies on. If that auth cannot see private org memberships,
+    # `clean-room` + `ephemeral` runners are the Default-pool runners. They
+    # carry ambient auth on the Default-pool runners, which is the auth the
+    # step below relies on. If that auth cannot see private org memberships,
     # the instrument probe below fails RED within seconds and closes nothing — a
     # visible, immediate answer instead of a 24 h queue that answers nothing.
     timeout-minutes: 22
