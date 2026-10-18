@@ -16,7 +16,7 @@ on:
 
 jobs:
   authorize:
-    # Runs on self-hosted intel. GitHub-hosted runners are BANNED fleet-wide:
+    # Runs on the self-hosted `clean-room` + `ephemeral` pool (see WHICH pool below). GitHub-hosted runners are BANNED fleet-wide:
     # they bill on private repos, and when the Actions spending limit is reached
     # the job does not start AT ALL — it reports `failure` with ZERO steps, which
     # is indistinguishable from this gate rejecting an author. That is exactly
@@ -27,12 +27,30 @@ jobs:
     #
     # The original rationale for ubuntu-latest was that untrusted PR code must not
     # execute on self-hosted infra. That concern does not apply to THIS job: it has
-    # exactly one step, `actions/github-script`, and there is NO `actions/checkout`
+    # a single github-script step (`Close unauthorized PR`) plus a bash authorization step, and there is NO `actions/checkout`
     # anywhere in this workflow. No PR-authored code is ever fetched or run here —
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
+    #
+    # WHICH self-hosted pool: one EVERY caller is admitted to. This file is called
+    # from ~50 repos, but `runs-on` is resolved against the CALLER's runner groups.
+    # This used to be `[self-hosted, Linux, X64, clean-room, intel]`, and every
+    # runner carrying `intel` sits in a group with a repo allow-list (aprender;
+    # forjar/infra/paiml-implement/paiml-mcp-agent-toolkit; catalogue/rmedia).
+    # Any other caller (bashrs, forjar-cookbook, pmat-book, ...) had NO eligible
+    # runner, so the job sat queued for GitHub's 24 h limit and then failed or was
+    # cancelled — a 1440-minute false red on every PR of those repos, for a check
+    # whose work takes seconds (measured 2026-10-16: bashrs 8/8 queued 24 h then
+    # cancelled; forjar-cookbook #24/#27 1440 min each).
+    #
+    # The only group open to all repos (public included) is `Default`, and its
+    # `clean-room` + `ephemeral` runners are the Default-pool runners. They
+    # carry ambient auth on the Default-pool runners, which is the auth the
+    # step below relies on. If that auth cannot see private org memberships,
+    # the instrument probe below fails RED within seconds and closes nothing — a
+    # visible, immediate answer instead of a 24 h queue that answers nothing.
     timeout-minutes: 22
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    runs-on: [self-hosted, Linux, clean-room, ephemeral]
     permissions:
       pull-requests: write
     steps:
