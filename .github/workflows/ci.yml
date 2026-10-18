@@ -13,7 +13,10 @@ jobs:
     # private repos, and at the spending limit a job does not start at all,
     # reporting `failure` with zero steps. See paiml/infra#231.
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    # Default-pool runners: this repo is not on any intel runner group's allow-list,
+    # so the old label set left this required check queued forever. X64 stays
+    # because the actionlint download below is amd64-only.
+    runs-on: [self-hosted, Linux, X64, clean-room, ephemeral]
     steps:
       - uses: actions/checkout@v6
       - name: Lint workflow YAML
@@ -111,7 +114,10 @@ jobs:
     # against a gate that silently stops running on billing state, self-hosted
     # is the safer failure mode.
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    # Default-pool runners: this repo is not on any intel runner group's allow-list,
+    # so the old label set left this required check queued forever. X64 stays
+    # because the actionlint download below is amd64-only.
+    runs-on: [self-hosted, Linux, X64, clean-room, ephemeral]
     if: always()
     needs: [validate]
     steps:
