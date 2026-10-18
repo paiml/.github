@@ -1,8 +1,8 @@
-name: ci-gh-probe
+name: ci-gh-probe-arm
 
 on:
   push:
-    branches: [probe/ci-gh-scope]
+    branches: [probe/ci-gh-scope-arm]
     paths: [.github/workflows/ci-gh-probe.yml]
   workflow_dispatch:
 
@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   probe:
-    runs-on: [self-hosted, Linux, X64, clean-room, ephemeral]
+    runs-on: [self-hosted, Linux, ARM64, clean-room, ephemeral]
     timeout-minutes: 5
     steps:
       - name: probe gh scope
