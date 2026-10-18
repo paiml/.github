@@ -10,9 +10,10 @@
 # actually mean something.
 #
 # Sources, so this can be re-derived rather than guessed:
-#   gh api /orgs/paiml/actions/runners        -> clean-room, intel
+#   gh api /orgs/paiml/actions/runners        -> clean-room, intel, ephemeral (Default group: yoga-build and gx10 pool)
 #   gh api repos/paiml/aprender/actions/runners -> ada, blackwell, cuda, gb10, rtx4090
 #   grep -rhoE 'runs-on: \[[^]]*\]' .github/workflows/  -> amd, gpu, lambda-labs, yoga
+#   .github/workflows/pr-gate.yml runs-on                  -> clean-room, ephemeral (the pool every caller is admitted to)
 self-hosted-runner:
   labels:
     - clean-room

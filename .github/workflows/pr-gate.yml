@@ -16,7 +16,7 @@ on:
 
 jobs:
   authorize:
-    # Runs on self-hosted intel. GitHub-hosted runners are BANNED fleet-wide:
+    # Runs on the self-hosted `clean-room` + `ephemeral` pool (see WHICH pool below). GitHub-hosted runners are BANNED fleet-wide:
     # they bill on private repos, and when the Actions spending limit is reached
     # the job does not start AT ALL — it reports `failure` with ZERO steps, which
     # is indistinguishable from this gate rejecting an author. That is exactly
@@ -27,7 +27,7 @@ jobs:
     #
     # The original rationale for ubuntu-latest was that untrusted PR code must not
     # execute on self-hosted infra. That concern does not apply to THIS job: it has
-    # exactly one step, `actions/github-script`, and there is NO `actions/checkout`
+    # a single github-script step (`Close unauthorized PR`) plus a bash authorization step, and there is NO `actions/checkout`
     # anywhere in this workflow. No PR-authored code is ever fetched or run here —
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
