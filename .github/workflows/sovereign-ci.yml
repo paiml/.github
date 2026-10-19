@@ -122,7 +122,9 @@ on:
           own receipt verifier (aprender: scripts/ci_receipt_verify.sh; infra:
           fleet/receipts/gate-verify.sh). DEFAULT IS EMPTY -> the `receipt` job is skipped and
           every job runs exactly as before, for every caller. When set, on pull_request events
-          only, the `receipt` job runs the verifier with GITHUB_EVENT_PATH. Contract: exit 0 and
+          only, the `receipt` job runs the verifier AS IT IS ON THE BASE COMMIT (never the PR's
+          copy) with GITHUB_EVENT_PATH, FLOW009_BASE_SHA, and FLOW009_PUBKEY (the base commit's
+          .flow009/batcher.pub; the verifier must use it, not the PR tree's key). Contract: exit 0 and
           one stdout line `coverage=<float>` (from the receipt's gate_results). If the figure is
           >= the coverage floor (max(coverage_min, committed baseline), same rule as the
           coverage job; coverage_min must be set) then test, lint and coverage are skipped and
@@ -170,12 +172,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The verifier compares patch-ids over merge-base..head: it needs history.
+          fetch-depth: 0
       - name: Verify receipt (never fails; invalid => full gate)
         id: receipt
         env:
           RECEIPT_VERIFY: ${{ inputs['receipt-verify'] }}
           COVERAGE_MIN: ${{ inputs.coverage_min }}
           COVERAGE_BASELINE_FILE: ${{ inputs.coverage_baseline_file }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set +e
           fallback() {
@@ -186,10 +191,20 @@ jobs:
           case "$RECEIPT_VERIFY" in
             /*|*..*) fallback "verifier path must be repo-relative: ${RECEIPT_VERIFY}" ;;
           esac
-          if [ ! -f "$RECEIPT_VERIFY" ] || [ ! -x "$RECEIPT_VERIFY" ]; then
-            fallback "verifier ${RECEIPT_VERIFY} missing or not executable"
-          fi
-          out="$(GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" "./$RECEIPT_VERIFY")"
+          # TRUST BOUNDARY: the verifier, the batcher public key and the coverage baseline
+          # are taken from the BASE commit, never from the PR's own tree. A PR that edits its
+          # verifier to print coverage=100, or swaps .flow009/batcher.pub for its own key,
+          # must not be able to short-circuit the gate it is being judged by.
+          [ -n "$BASE_SHA" ] || fallback "no pull_request.base.sha"
+          trusted="$RUNNER_TEMP/flow009-trusted"
+          mkdir -p "$trusted"
+          git show "${BASE_SHA}:${RECEIPT_VERIFY}" > "$trusted/verify" 2>/dev/null \
+            || fallback "verifier ${RECEIPT_VERIFY} absent on base ${BASE_SHA}"
+          chmod 0755 "$trusted/verify"
+          git show "${BASE_SHA}:.flow009/batcher.pub" > "$trusted/batcher.pub" 2>/dev/null \
+            || fallback ".flow009/batcher.pub absent on base ${BASE_SHA}"
+          out="$(GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" FLOW009_BASE_SHA="$BASE_SHA" \
+            FLOW009_PUBKEY="$trusted/batcher.pub" "$trusted/verify")"
           rc=$?
           [ "$rc" -eq 0 ] || fallback "verifier exited ${rc}"
           cov="$(printf '%s\n' "$out" | sed -n 's/^coverage=\([0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\)$/\1/p' | tail -n 1)"
@@ -199,8 +214,8 @@ jobs:
             ''|*[!0-9.]*) fallback "coverage_min unset or not numeric - no threshold to check" ;;
           esac
           floor="$COVERAGE_MIN"
-          if [ -f "$COVERAGE_BASELINE_FILE" ]; then
-            base="$(tr -d '[:space:]' < "$COVERAGE_BASELINE_FILE")"
+          if git show "${BASE_SHA}:${COVERAGE_BASELINE_FILE}" > "$trusted/baseline" 2>/dev/null; then
+            base="$(tr -d '[:space:]' < "$trusted/baseline")"
             case "$base" in
               ''|*[!0-9.]*) ;;
               *) floor="$(awk -v a="$floor" -v b="$base" 'BEGIN{print (b+0>a+0)?b:a}')" ;;
