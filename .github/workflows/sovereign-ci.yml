@@ -116,6 +116,22 @@ on:
         required: false
         default: '.pmat/coverage-baseline.txt'
         type: string
+      receipt-verify:
+        description: >-
+          FLOW-009 PG-4/PG-5 (opt-in, inert by default). Caller-repo-relative path to the caller's
+          own receipt verifier (aprender: scripts/ci_receipt_verify.sh; infra:
+          fleet/receipts/gate-verify.sh). DEFAULT IS EMPTY -> the `receipt` job is skipped and
+          every job runs exactly as before, for every caller. When set, on pull_request events
+          only, the `receipt` job runs the verifier with GITHUB_EVENT_PATH. Contract: exit 0 and
+          one stdout line `coverage=<float>` (from the receipt's gate_results). If the figure is
+          >= the coverage floor (max(coverage_min, committed baseline), same rule as the
+          coverage job; coverage_min must be set) then test, lint and coverage are skipped and
+          `gate` accepts those skips. Anything else (file missing or not executable, non-zero
+          exit, unparsable output, below floor, no floor) falls back to the FULL gate (PG-3).
+          Check names are unchanged (PG-5). `security` always runs.
+        required: false
+        default: ''
+        type: string
 
 # HD-02: Least-privilege token — only escalate where needed
 permissions:
@@ -130,8 +146,75 @@ env:
   OTEL_EXPORTER_OTLP_TIMEOUT: "5000"
 
 jobs:
+  # FLOW-009 PG-4/PG-5/PG-3 — optional receipt short-circuit. INERT unless a caller passes
+  # `receipt-verify`: with the default '' this job is skipped, `needs.receipt.outputs.valid`
+  # is empty, and test/lint/coverage run exactly as before. Verification itself is the
+  # CALLER's script (not vendored or reimplemented here). The verify step never fails: every
+  # outcome is captured in shell and reported as valid=true|false (false = run the full gate).
+  receipt:
+    name: receipt
+    if: ${{ github.event_name == 'pull_request' && inputs['receipt-verify'] != '' }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 5
+    outputs:
+      valid: ${{ steps.receipt.outputs.valid }}
+    steps:
+      - name: Pre-checkout ownership restore (EACCES self-heal)
+        run: |
+          set -u
+          WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"
+          if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
+            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify receipt (never fails; invalid => full gate)
+        id: receipt
+        env:
+          RECEIPT_VERIFY: ${{ inputs['receipt-verify'] }}
+          COVERAGE_MIN: ${{ inputs.coverage_min }}
+          COVERAGE_BASELINE_FILE: ${{ inputs.coverage_baseline_file }}
+        run: |
+          set +e
+          fallback() {
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::FLOW-009 receipt not accepted ($1) - running the full gate"
+            exit 0
+          }
+          case "$RECEIPT_VERIFY" in
+            /*|*..*) fallback "verifier path must be repo-relative: ${RECEIPT_VERIFY}" ;;
+          esac
+          if [ ! -f "$RECEIPT_VERIFY" ] || [ ! -x "$RECEIPT_VERIFY" ]; then
+            fallback "verifier ${RECEIPT_VERIFY} missing or not executable"
+          fi
+          out="$(GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" "./$RECEIPT_VERIFY")"
+          rc=$?
+          [ "$rc" -eq 0 ] || fallback "verifier exited ${rc}"
+          cov="$(printf '%s\n' "$out" | sed -n 's/^coverage=\([0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\)$/\1/p' | tail -n 1)"
+          [ -n "$cov" ] || fallback "verifier printed no parsable coverage=<float> line"
+          # Floor = same rule as the coverage job: max(coverage_min, committed baseline).
+          case "$COVERAGE_MIN" in
+            ''|*[!0-9.]*) fallback "coverage_min unset or not numeric - no threshold to check" ;;
+          esac
+          floor="$COVERAGE_MIN"
+          if [ -f "$COVERAGE_BASELINE_FILE" ]; then
+            base="$(tr -d '[:space:]' < "$COVERAGE_BASELINE_FILE")"
+            case "$base" in
+              ''|*[!0-9.]*) ;;
+              *) floor="$(awk -v a="$floor" -v b="$base" 'BEGIN{print (b+0>a+0)?b:a}')" ;;
+            esac
+          fi
+          ok="$(awk -v c="$cov" -v f="$floor" 'BEGIN{print (c+0>=f+0)?1:0}')"
+          [ "$ok" = 1 ] || fallback "receipt coverage ${cov}% is below floor ${floor}%"
+          echo "valid=true" >> "$GITHUB_OUTPUT"
+          echo "FLOW-009 receipt verified: coverage ${cov}% >= floor ${floor}%"
+
   test:
     name: test
+    needs: [receipt]
+    if: ${{ !cancelled() && needs.receipt.outputs.valid != 'true' }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
@@ -420,6 +503,8 @@ jobs:
 
   lint:
     name: lint
+    needs: [receipt]
+    if: ${{ !cancelled() && needs.receipt.outputs.valid != 'true' }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
       image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
@@ -667,12 +752,13 @@ jobs:
 
   coverage:
     name: coverage
+    needs: [receipt]
     # coverage_on == 'tag': run only where coverage is owed (a v* tag push, a manual
     # dispatch). Everywhere else -- the nightly included -- the job is SKIPPED, visibly
     # not measured, and `gate` below accepts that skip only under this input and never
     # on a tag push or a dispatch.
     if: >-
-      ${{ !inputs.skip_coverage && (inputs.coverage_on != 'tag'
+      ${{ !cancelled() && needs.receipt.outputs.valid != 'true' && !inputs.skip_coverage && (inputs.coverage_on != 'tag'
         || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
@@ -1597,7 +1683,7 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     if: always()
-    needs: [test, lint, coverage, security, provenance]
+    needs: [receipt, test, lint, coverage, security, provenance]
     steps:
       # ALLOWLIST, NOT DENYLIST. Each check previously read
       #   if [ "<result>" = "failure" ]; then exit 1
@@ -1619,6 +1705,7 @@ jobs:
       - name: Check results
         env:
           COVERAGE_ON: ${{ inputs.coverage_on }}
+          RECEIPT_VALID: ${{ needs.receipt.outputs.valid }}
           EVENT_NAME: ${{ github.event_name }}
           GIT_REF: ${{ github.ref }}
         run: |
@@ -1651,6 +1738,10 @@ jobs:
               echo "coverage: NOT MEASURED on ${EVENT_NAME} (coverage_on=tag; owed on v* tags and dispatch)"
               continue
             fi
+            if [ "$RECEIPT_VALID" = true ] && [ "$res" = skipped ] && { [ "$job" = test ] || [ "$job" = lint ] || [ "$job" = coverage ]; }; then
+              echo "${job}: short-circuited by a verified FLOW-009 receipt (receipt job valid=true)"
+              continue
+            fi
             if [ "$res" != "success" ]; then
               echo "::error::${job} did not succeed (result: ${res:-<none>})"
               rc=1
@@ -1662,3 +1753,6 @@ jobs:
             exit 1
           fi
           echo "All critical jobs passed (test + lint + coverage + security)"
+      - name: Receipt short-circuit summary
+        if: ${{ needs.receipt.outputs.valid == 'true' }}
+        run: echo "FLOW-009 receipt verified; full gate short-circuited" >> "$GITHUB_STEP_SUMMARY"
