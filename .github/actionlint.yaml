@@ -28,3 +28,4 @@ self-hosted-runner:
     - yoga
     - perf-solo
     - merge-queue
+    - pr-gate

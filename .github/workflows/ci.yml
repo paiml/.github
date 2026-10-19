@@ -62,6 +62,9 @@ jobs:
           # can reproduce.
           /opt/fleet-bin/bin/yamllint --version
           /opt/fleet-bin/bin/yamllint -d relaxed .github/workflows/
+      - name: pr-gate runs-on lint
+        shell: bash
+        run: bash scripts/lint-pr-gate-runs-on.sh
       - name: actionlint
         shell: bash
         env:
