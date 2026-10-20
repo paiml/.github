@@ -66,6 +66,14 @@ on:
         required: false
         default: 'always'
         type: string
+      advisories_diff_only:
+        description: >-
+          true: the caller judges advisories itself, as a diff against its base (aprender
+          PMAT-5792), so the plain `cargo deny check advisories` in `lint` and `cargo audit`
+          in `security` are skipped; licenses and sources still run. Default false: unchanged.
+        required: false
+        default: false
+        type: boolean
       run_benchmarks:
         description: 'Run criterion benchmarks (slow, use for nightly only)'
         required: false
@@ -618,6 +626,7 @@ jobs:
         # the stricter check.
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SOV_ADVISORIES_DIFF_ONLY: ${{ inputs.advisories_diff_only }}
         run: |
           # forjar#422: the advisory-db clone is an anonymous git-over-HTTPS
           # fetch of a public repo, and GitHub answers the fleet's IP with 401
@@ -635,9 +644,9 @@ jobs:
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           if [ -f deny.toml ]; then
-            # SOV_ADVISORIES_DIFF_ONLY=1: the caller judges advisories as a diff against its
+            # advisories_diff_only: true: the caller judges advisories as a diff against its
             # base (aprender PMAT-5792), so a main-resident advisory must not stop its PRs.
-            if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = 1 ]; then
+            if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = true ]; then
               cargo deny check licenses sources
             else
               cargo deny check advisories licenses sources
@@ -1493,6 +1502,7 @@ jobs:
       - name: Audit
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SOV_ADVISORIES_DIFF_ONLY: ${{ inputs.advisories_diff_only }}
         run: |
           # forjar#422: same throttle as the cargo-deny step — authenticate the
           # advisory-db fetch with the job's own token via a url rewrite.
@@ -1533,8 +1543,8 @@ jobs:
             fi
           fi
 
-          if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = 1 ]; then
-            echo "cargo audit skipped: the caller's diff gate is the scanner of record (SOV_ADVISORIES_DIFF_ONLY=1)"
+          if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = true ]; then
+            echo "cargo audit skipped: the caller's diff gate is the scanner of record (advisories_diff_only: true)"
           else
             cargo audit $IGNORE_FLAGS
           fi
