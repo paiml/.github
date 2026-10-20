@@ -635,7 +635,13 @@ jobs:
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
           if [ -f deny.toml ]; then
-            cargo deny check advisories licenses sources
+            # SOV_ADVISORIES_DIFF_ONLY=1: the caller judges advisories as a diff against its
+            # base (aprender PMAT-5792), so a main-resident advisory must not stop its PRs.
+            if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = 1 ]; then
+              cargo deny check licenses sources
+            else
+              cargo deny check advisories licenses sources
+            fi
           else
             echo "::warning::No deny.toml — skipping supply chain audit"
           fi
@@ -1527,7 +1533,11 @@ jobs:
             fi
           fi
 
-          cargo audit $IGNORE_FLAGS
+          if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = 1 ]; then
+            echo "cargo audit skipped: the caller's diff gate is the scanner of record (SOV_ADVISORIES_DIFF_ONLY=1)"
+          else
+            cargo audit $IGNORE_FLAGS
+          fi
       # Symmetry with the container jobs (paiml/.github#42): every clean-room
       # job both tolerates poison on entry and refuses to leave any on exit,
       # so the invariant is uniform and greppable rather than per-job folklore.
