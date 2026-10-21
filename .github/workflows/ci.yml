@@ -13,7 +13,7 @@ jobs:
     # private repos, and at the spending limit a job does not start at all,
     # reporting `failure` with zero steps. See paiml/infra#231.
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    runs-on: [self-hosted, Linux, X64, clean-room]
     steps:
       - uses: actions/checkout@v6
       - name: Lint workflow YAML
@@ -111,7 +111,7 @@ jobs:
     # against a gate that silently stops running on billing state, self-hosted
     # is the safer failure mode.
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    runs-on: [self-hosted, Linux, X64, clean-room]
     if: always()
     needs: [validate]
     steps:
