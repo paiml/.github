@@ -1,0 +1,113 @@
+# Reusable keyless signing (cosign + GitHub OIDC), the ONE copy aprender and rmedia call (Noah 17:13Z ruling, item 2).
+# Extracted from paiml/aprender#5562. No stored key, no typed credential: the job's OIDC token gets a short-lived
+# Fulcio certificate and the signature lands in the Rekor transparency log.
+#
+# Signer identity: a called workflow signs as ITS OWN ref, so the certificate identity is
+#   https://github.com/paiml/.github/.github/workflows/sigstore-sign.yml@<ref the caller pinned>
+# and the issuer is https://token.actions.githubusercontent.com. Verify with scripts/sigstore-verify.sh (item 5).
+#
+# Caller (tag builds from main, in the clean-room release lane only):
+#   sign:
+#     needs: build
+#     if: github.ref_type == 'tag'
+#     permissions: { id-token: write, contents: write }
+#     uses: paiml/.github/.github/workflows/sigstore-sign.yml@<sha>
+#     with: { artifact-name: release-assets, runs-on: '["self-hosted","Linux","X64","clean-room"]' }
+name: sigstore-sign
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: 'actions/upload-artifact name holding the files to sign (the caller uploaded them)'
+        required: true
+        type: string
+      runs-on:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      upload-to-release:
+        description: 'attach each .sigstore.json bundle to the tag release (needs contents: write)'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      sha256:
+        description: 'sha256sum manifest of the signed files (one "<hex>  <name>" line each)'
+        value: ${{ jobs.sign.outputs.sha256 }}
+      bundle:
+        description: 'name of the artifact holding the <file>.sigstore.json bundles'
+        value: ${{ jobs.sign.outputs.bundle }}
+      identity:
+        description: 'the certificate identity: this workflow ref + the tag'
+        value: ${{ jobs.sign.outputs.identity }}
+      rekor-index:
+        description: 'Rekor log index of each bundle, "<name>=<index>" per line'
+        value: ${{ jobs.sign.outputs.rekor-index }}
+
+permissions: {}
+
+jobs:
+  sign:
+    name: Sign (sigstore, keyless)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      id-token: write   # the keyless OIDC identity
+      contents: write   # attach the bundles to the release
+    outputs:
+      sha256: ${{ steps.out.outputs.sha256 }}
+      bundle: ${{ steps.out.outputs.bundle }}
+      identity: ${{ steps.out.outputs.identity }}
+      rekor-index: ${{ steps.out.outputs.rekor-index }}
+    steps:
+      - name: Refuse anything but a tag build
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" != tag ]; then echo "::error::sigstore-sign signs tag builds only (ref_type=$REF_TYPE, $REF_NAME)"; exit 1; fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: sign
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
+      - name: Sign every file, keyless
+        id: out
+        working-directory: sign
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../bundles; : > ../manifest.txt; : > ../rekor.txt
+          n=0
+          while IFS= read -r f; do
+            f="${f#./}"
+            sha256sum -- "$f" >> ../manifest.txt
+            cosign sign-blob --yes --bundle "../bundles/$f.sigstore.json" -- "$f" > /dev/null
+            idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "../bundles/$f.sigstore.json")
+            [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
+            echo "$f=$idx" >> ../rekor.txt
+            n=$((n + 1))
+          done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
+          [ "$n" -ge 1 ] || { echo "::error::artifact ${{ inputs.artifact-name }} held no files to sign"; exit 1; }
+          b=$(find ../bundles -name "*.sigstore.json" | LC_ALL=C sort | head -1)
+          # the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see
+          id=$(jq -r ".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes" "$b" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o "https://[^, ]*" | head -1)
+          [ -n "$id" ] || { echo "::error::no signer identity in the certificate of $b"; exit 1; }
+          {
+            echo "sha256<<EOF_SHA"; cat ../manifest.txt; echo "EOF_SHA"
+            echo "rekor-index<<EOF_REK"; cat ../rekor.txt; echo "EOF_REK"
+            echo "bundle=sigstore-bundles-$TAG"
+            echo "identity=$id tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: sigstore-bundles-${{ github.ref_name }}
+          path: bundles/
+      - name: Attach the bundles to the release
+        if: ${{ inputs.upload-to-release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" bundles/*.sigstore.json --clobber --repo "$GITHUB_REPOSITORY"
