@@ -2,13 +2,19 @@
 # The reusable signer must stay what the 17:13Z ruling made it: workflow_call only; runs-on required with no default;
 # job permissions exactly id-token+contents write; a tag-only guard AND a main-ancestry guard that really exit 1, run
 # before anything is signed; the new bundle format; no stored key; every output wired; every action pinned to a sha.
-# PARSED, not grepped: the YAML is read with yq (comments never count), and each rule reads the field it is about.
+# PARSED, not grepped: the YAML is read with scripts/yaml2json.awk + jq (comments never count; no yq on the fleet), and each rule reads the field it is about.
 # Usage: check-sigstore-sign.sh [file] | --self-test
 set -euo pipefail
 export PATH="/opt/fleet-bin/bin:/usr/local/bin:$PATH"
-command -v yq >/dev/null || { echo "::error::yq is not on PATH — an absent parser is a NO-GO, not a pass" >&2; exit 1; }
-yq --version 2>/dev/null | grep -q "mikefarah/yq.* version v4\." || { echo "::error::yq is not mikefarah yq v4 (the parser the rules and pins are written for)" >&2; exit 1; }
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+command -v awk >/dev/null || { echo "::error::awk is not on PATH" >&2; exit 1; }
 command -v jq >/dev/null || { echo "::error::jq is not on PATH" >&2; exit 1; }
+# yq-compatible reader over scripts/yaml2json.awk + jq (no yq on the clean-room fleet). Only the flags and the one yq-only
+# function (tag == "!!map") this script uses; a file the awk subset cannot read exits 2, which every caller treats as RED.
+yq() { local -a jf=(); local f="" q
+  while [ "${1:-}" != "" ] && [[ "$1" == -* ]]; do case "$1" in -r) jf+=(-r);; -e) jf+=(-e);; -I0) jf+=(-c);; -I2|-o=json) ;; *) echo "yq shim: unsupported flag $1" >&2; return 2;; esac; shift; done
+  q="${1//tag == \"!!map\"/type == \"object\"}"; f="$2"
+  awk -f "$here/yaml2json.awk" "$f" | jq "${jf[@]}" "$q"; }
 q() { yq -r "$1" "$F"; }
 declare -A BEH_MEMO   # behaviour verdict per (guard body, ancestry body): a mutant that leaves both bodies alone costs nothing
 behav() {
@@ -338,6 +344,10 @@ if [ "${1:-}" = --self-test ]; then
   mutb "extra workflow output"          's/^permissions: {}/&/;/^      rekor-index:$/i\      extra:\n        value: x'
   mutb "extra job output"               's/^      tag: ${{ steps.out.outputs.tag }}/&\n      extra: x/'
   mutb "attach glob made recursive"     's|"$WORK"/bundles/\*.sigstore.json|"$WORK"/bundles/**/*.sigstore.json|'
+  # the yq-free reader fails CLOSED on YAML outside its subset (exit 2), and reads a known document right
+  for bad in "a: &x 1" "a: *x" "a: !!str 1" "a: [1, 2]" "a: {b: 1}"; do
+    ! printf "%s\n" "$bad" | awk -f "$here/yaml2json.awk" > /dev/null 2>&1 || { echo "FAIL yaml2json accepted: $bad"; fail=1; }; done
+  [ "$(printf "a:\n  - b: 1\n    c: |\n      x\n  - d\n" | awk -f "$here/yaml2json.awk" | jq -cS .)" = "{\"a\":[{\"b\":1,\"c\":\"x\\n\"},\"d\"]}" ] || { echo "FAIL yaml2json misread a known document"; fail=1; }
   [ "$fail" = 0 ] && echo "PASS check-sigstore-sign self-test: clean GREEN + $n mutants RED"; exit "$fail"
 fi
 chk "${1:-.github/workflows/sigstore-sign.yml}"
