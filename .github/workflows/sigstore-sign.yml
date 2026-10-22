@@ -6,6 +6,8 @@
 #   https://github.com/paiml/.github/.github/workflows/sigstore-sign.yml@<ref the caller pinned>
 # and the issuer is https://token.actions.githubusercontent.com. Verify with scripts/sigstore-verify.sh (item 5).
 #
+# Verify pins the SAN (this workflow ref), the issuer, the CALLER repo and the caller workflow name (sigstore-verify.sh):
+# paiml/.github is public, so the SAN alone is the same for any repo that calls this file.
 # Caller (tag builds from main, in the clean-room release lane only):
 #   sign:
 #     needs: build
@@ -22,10 +24,9 @@ on:
         required: true
         type: string
       runs-on:
-        description: 'JSON array of runner labels'
-        required: false
+        description: 'JSON array of runner labels; REQUIRED, no default (hosted runners are banned, so there is no safe one to assume)'
+        required: true
         type: string
-        default: '["ubuntu-latest"]'
       upload-to-release:
         description: 'attach each .sigstore.json bundle to the tag release (needs contents: write)'
         required: false
@@ -67,11 +68,26 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "$REF_TYPE" != tag ]; then echo "::error::sigstore-sign signs tag builds only (ref_type=$REF_TYPE, $REF_NAME)"; exit 1; fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Refuse a tag that is not on main
+        env:
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # checkout with fetch-depth 0 already fetched every branch; no credential is kept to fetch again
+          git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || { echo "::error::origin/main is not in the checkout"; exit 1; }
+          git merge-base --is-ancestor "$TAG_SHA" refs/remotes/origin/main \
+            || { echo "::error::$TAG_SHA is not an ancestor of origin/main; release signing is for tag builds from main only"; exit 1; }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: ${{ inputs.artifact-name }}
           path: sign
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
+        with:
+          cosign-release: v2.5.3   # pinned: sign-blob below asks for the new bundle format explicitly
       - name: Sign every file, keyless
         id: out
         working-directory: sign
@@ -84,7 +100,7 @@ jobs:
           while IFS= read -r f; do
             f="${f#./}"
             sha256sum -- "$f" >> ../manifest.txt
-            cosign sign-blob --yes --bundle "../bundles/$f.sigstore.json" -- "$f" > /dev/null
+            cosign sign-blob --yes --new-bundle-format --bundle "../bundles/$f.sigstore.json" -- "$f" > /dev/null
             idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "../bundles/$f.sigstore.json")
             [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
             echo "$f=$idx" >> ../rekor.txt
