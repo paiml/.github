@@ -40,7 +40,7 @@ on:
         description: 'name of the artifact holding the <file>.sigstore.json bundles'
         value: ${{ jobs.sign.outputs.bundle }}
       identity:
-        description: 'the certificate identity: this workflow ref + the tag'
+        description: 'the certificate identity (the SAN): this workflow at the ref the caller pinned; pass it to sigstore-verify.sh as <identity>'
         value: ${{ jobs.sign.outputs.identity }}
       rekor-index:
         description: 'Rekor log index of each bundle, "<name>=<index>" per line'
@@ -72,7 +72,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          path: caller-src
       - name: Refuse a tag that is not on main
+        working-directory: caller-src
         env:
           TAG_SHA: ${{ github.sha }}
         run: |
@@ -93,6 +95,7 @@ jobs:
         working-directory: sign
         env:
           TAG: ${{ github.ref_name }}
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
         run: |
           set -euo pipefail
           mkdir -p ../bundles; : > ../manifest.txt; : > ../rekor.txt
@@ -106,7 +109,7 @@ jobs:
             echo "$f=$idx" >> ../rekor.txt
             n=$((n + 1))
           done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
-          [ "$n" -ge 1 ] || { echo "::error::artifact ${{ inputs.artifact-name }} held no files to sign"; exit 1; }
+          [ "$n" -ge 1 ] || { echo "::error::artifact $ARTIFACT_NAME held no files to sign"; exit 1; }
           b=$(find ../bundles -name "*.sigstore.json" | LC_ALL=C sort | head -1)
           # the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see
           id=$(jq -r ".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes" "$b" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o "https://[^, ]*" | head -1)
@@ -115,7 +118,7 @@ jobs:
             echo "sha256<<EOF_SHA"; cat ../manifest.txt; echo "EOF_SHA"
             echo "rekor-index<<EOF_REK"; cat ../rekor.txt; echo "EOF_REK"
             echo "bundle=sigstore-bundles-$TAG"
-            echo "identity=$id tag=$TAG"
+            echo "identity=$id"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
