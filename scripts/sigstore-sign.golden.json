@@ -1,0 +1,135 @@
+{
+  "jobs": {
+    "sign": {
+      "name": "Sign (sigstore, keyless)",
+      "outputs": {
+        "bundle": "${{ steps.out.outputs.bundle }}",
+        "identity": "${{ steps.out.outputs.identity }}",
+        "rekor-index": "${{ steps.out.outputs.rekor-index }}",
+        "sha256": "${{ steps.out.outputs.sha256 }}",
+        "tag": "${{ steps.out.outputs.tag }}"
+      },
+      "permissions": {
+        "contents": "write",
+        "id-token": "write"
+      },
+      "runs-on": "${{ fromJSON(inputs.runs-on) }}",
+      "steps": [
+        {
+          "env": {
+            "REF_NAME": "${{ github.ref_name }}",
+            "REF_TYPE": "${{ github.ref_type }}"
+          },
+          "name": "Refuse anything but a tag build",
+          "run": "if [ \"$REF_TYPE\" != tag ]; then echo \"::error::sigstore-sign signs tag builds only (ref_type=$REF_TYPE, $REF_NAME)\"; exit 1; fi\n"
+        },
+        {
+          "uses": "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+          "with": {
+            "fetch-depth": 0,
+            "path": "caller-src",
+            "persist-credentials": false
+          }
+        },
+        {
+          "env": {
+            "TAG_SHA": "${{ github.sha }}"
+          },
+          "name": "Refuse a tag that is not on main",
+          "run": "set -euo pipefail\n# checkout with fetch-depth 0 already fetched every branch; no credential is kept to fetch again\ngit rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || { echo \"::error::origin/main is not in the checkout\"; exit 1; }\ngit merge-base --is-ancestor \"$TAG_SHA\" refs/remotes/origin/main \\\n  || { echo \"::error::$TAG_SHA is not an ancestor of origin/main; release signing is for tag builds from main only\"; exit 1; }\n",
+          "working-directory": "caller-src"
+        },
+        {
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+          "with": {
+            "name": "${{ inputs.artifact-name }}",
+            "path": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign"
+          }
+        },
+        {
+          "uses": "sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159",
+          "with": {
+            "cosign-release": "v2.5.3",
+            "install-dir": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bin"
+          }
+        },
+        {
+          "env": {
+            "ARTIFACT_NAME": "${{ inputs.artifact-name }}",
+            "TAG": "${{ github.ref_name }}",
+            "TUF_ROOT": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/tuf",
+            "WORK": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"
+          },
+          "id": "out",
+          "name": "Sign every file, keyless",
+          "run": "set -euo pipefail\n# flat, regular, unsigned inputs only: nothing is silently skipped, and the attach glob below sees every bundle\nx=$(find . -mindepth 1 \\( -type d -o ! -type f -o -name \"*.sigstore.json\" \\) -print -quit)\n[ -z \"$x\" ] || { echo \"::error::artifact $ARTIFACT_NAME holds a nested path, a non-regular file or a *.sigstore.json ($x); refusing before anything is signed\"; exit 1; }\ncase \"$TAG\" in */*) echo \"::error::tag $TAG contains a slash\"; exit 1;; esac\nmkdir \"$WORK/bundles\"; : > \"$WORK/manifest.txt\"; : > \"$WORK/rekor.txt\"\nn=0\nwhile IFS= read -r f; do\n  f=\"${f#./}\"\n  sha256sum -- \"$f\" >> \"$WORK/manifest.txt\"\n  cosign sign-blob --yes --new-bundle-format --bundle \"$WORK/bundles/$f.sigstore.json\" -- \"$f\" > /dev/null\n  idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' \"$WORK/bundles/$f.sigstore.json\")\n  [ -n \"$idx\" ] || { echo \"::error::no Rekor log index in the bundle for $f\"; exit 1; }\n  echo \"$f=$idx\" >> \"$WORK/rekor.txt\"\n  n=$((n + 1))\ndone < <(find . -type f | LC_ALL=C sort)\n[ \"$n\" -ge 1 ] || { echo \"::error::artifact $ARTIFACT_NAME held no files to sign\"; exit 1; }\nb=$(find \"$WORK/bundles\" -name \"*.sigstore.json\" | LC_ALL=C sort | head -1)\n# the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see\nid=$(jq -r \".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes\" \"$b\" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o \"https://[^, ]*\" | head -1)\n[ -n \"$id\" ] || { echo \"::error::no signer identity in the certificate of $b\"; exit 1; }\n{\n  echo \"sha256<<EOF_SHA\"; cat \"$WORK/manifest.txt\"; echo \"EOF_SHA\"\n  echo \"rekor-index<<EOF_REK\"; cat \"$WORK/rekor.txt\"; echo \"EOF_REK\"\n  echo \"bundle=sigstore-bundles-$TAG\"\n  echo \"tag=$TAG\"\n  echo \"identity=$id\"\n} >> \"$GITHUB_OUTPUT\"\n",
+          "working-directory": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign"
+        },
+        {
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "sigstore-bundles-${{ github.ref_name }}",
+            "path": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bundles/"
+          }
+        },
+        {
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "TAG": "${{ github.ref_name }}",
+            "WORK": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"
+          },
+          "if": "${{ inputs.upload-to-release }}",
+          "name": "Attach the bundles to the release",
+          "run": "gh release upload \"$TAG\" \"$WORK\"/bundles/*.sigstore.json --clobber --repo \"$GITHUB_REPOSITORY\""
+        }
+      ],
+      "timeout-minutes": 15
+    }
+  },
+  "name": "sigstore-sign",
+  "on": {
+    "workflow_call": {
+      "inputs": {
+        "artifact-name": {
+          "description": "actions/upload-artifact name holding the files to sign (the caller uploaded them)",
+          "required": true,
+          "type": "string"
+        },
+        "runs-on": {
+          "description": "JSON array of runner labels; REQUIRED, no default (hosted runners are banned, so there is no safe one to assume)",
+          "required": true,
+          "type": "string"
+        },
+        "upload-to-release": {
+          "default": true,
+          "description": "attach each .sigstore.json bundle to the tag release (needs contents: write)",
+          "required": false,
+          "type": "boolean"
+        }
+      },
+      "outputs": {
+        "bundle": {
+          "description": "name of the artifact holding the <file>.sigstore.json bundles",
+          "value": "${{ jobs.sign.outputs.bundle }}"
+        },
+        "identity": {
+          "description": "the certificate identity (the SAN): this workflow at the ref the caller pinned; pass it to sigstore-verify.sh as <identity>",
+          "value": "${{ jobs.sign.outputs.identity }}"
+        },
+        "rekor-index": {
+          "description": "Rekor log index of each bundle, \"<name>=<index>\" per line",
+          "value": "${{ jobs.sign.outputs.rekor-index }}"
+        },
+        "sha256": {
+          "description": "sha256sum manifest of the signed files (one \"<hex>  <name>\" line each)",
+          "value": "${{ jobs.sign.outputs.sha256 }}"
+        },
+        "tag": {
+          "description": "the tag that was signed (github.ref_name)",
+          "value": "${{ jobs.sign.outputs.tag }}"
+        }
+      }
+    }
+  },
+  "permissions": {}
+}

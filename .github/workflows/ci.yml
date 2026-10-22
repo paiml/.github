@@ -16,6 +16,8 @@ jobs:
     runs-on: [self-hosted, Linux, X64, clean-room, intel]
     steps:
       - uses: actions/checkout@v6
+      - name: Sigstore signer guards (RED->GREEN)
+        run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: Lint workflow YAML
         shell: bash
         run: |
