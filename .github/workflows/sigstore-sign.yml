@@ -94,6 +94,7 @@ jobs:
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
         with:
           cosign-release: v2.5.3   # pinned: sign-blob below asks for the new bundle format explicitly
+          install-dir: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bin   # per-run: nothing is installed under the runner's $HOME
       - name: Sign every file, keyless
         id: out
         working-directory: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign
@@ -109,6 +110,7 @@ jobs:
           while IFS= read -r f; do
             f="${f#./}"
             sha256sum -- "$f" >> "$WORK/manifest.txt"
+            mkdir -p "$(dirname "$WORK/bundles/$f")"
             cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
             idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
             [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }

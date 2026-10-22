@@ -36,7 +36,7 @@ if [ "${1:-}" = --self-test ]; then
       --new-bundle-format) nb=1;; --bundle) b="$2"; shift;; --certificate-identity) i="$2"; shift;;
       --certificate-oidc-issuer) o="$2"; shift;; --certificate-github-workflow-repository) r="$2"; shift;;
       --certificate-github-workflow-name) w="$2"; shift;; --certificate-github-workflow-ref) g="$2"; shift;;
-      --) f="$2"; shift;; esac; shift; done
+      --) f="$2"; shift;; *) return 1;; esac; shift; done   # an unknown flag is a refusal, never ignored
     local s bi bo br bw bg; read -r s bi bo br bw bg < "$b"
     [ "$nb" = 1 ] && [ "$s" = "$(sha256sum "$f" | cut -d' ' -f1)" ] && { [ -z "$i" ] || [ "$bi" = "$i" ]; } && { [ -z "$o" ] || [ "$bo" = "$o" ]; } \
       && { [ -z "$r" ] || [ "$br" = "$r" ]; } && { [ -z "$w" ] || [ "$bw" = "$w" ]; } && { [ -z "$g" ] || [ "$bg" = "$g" ]; }
@@ -68,8 +68,13 @@ if [ "${1:-}" = --self-test ]; then
   printf '%s %s %s %s %s %s\n' "$(sha256sum "$t/bin" | cut -d' ' -f1)" "$GOOD" "https://evil.example/issuer" "$REPO" "$WF" "$REF" > "$t/wi.sigstore.json"
   want refuse "wrong issuer in the cert" "$t/bin" "$t/wi.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
   want refuse "missing bundle"        "$t/bin" "$t/none.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
-  want refuse "unknown flag as the file"     "--insecure-ignore-tlog" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
-  want refuse "unknown flag as a pin"       "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "--certificate-identity-regexp=.*"
+  # unknown flags: real files named like flags with valid pins (only the flag refusal can stop these), and a 7th flag
+  cp "$t/bin" "$t/--insecure-ignore-tlog"; cp "$t/bin.sigstore.json" "$t/--trusted-root"
+  ( cd "$t" && verify -- --insecure-ignore-tlog "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" ) > /dev/null 2>&1 && { echo 'FAIL a flag-named file must refuse'; fail=1; }
+  want refuse "flag as the file"         "--insecure-ignore-tlog" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF"
+  want refuse "flag as the bundle"       "$t/bin" "--trusted-root" "$GOOD" "$REPO" "$WF"
+  want refuse "7th arg is a flag"        "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF" --insecure-ignore-tlog
+  want refuse "flag as the ref pin"      "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" --certificate-identity-regexp=.*
   # the verifier cannot be swapped from the environment: COSIGN=true must not make a bad file verify
   cat > "$t/true" <<'S'
 #!/usr/bin/env bash

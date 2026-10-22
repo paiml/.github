@@ -93,11 +93,13 @@ chk() { local F="$1" nog="${2:-}" bad=0 r i g a k
   [ "$nog" = nogolden ] || [ "$(yq -o=json -I2 '.' "$F" | jq -S . | sha256sum)" = "$(sha256sum < "$here/sigstore-sign.golden.json")" ] || red "workflow differs from scripts/sigstore-sign.golden.json"
   # LITERAL PINS (Q-GH91c): every executable body and every step's non-run keys are compared with text written in THIS
   # file, comment lines aside. There is no hash and nothing to regenerate: changing a body means editing the literal
-  # below, and CODEOWNERS makes that a second reviewer's act. (The golden below stays as a belt over the braces.)
+  # below. The independent pin is the non-author quorum sign-off on the final commit, not a file in this PR. (The golden stays as a belt.)
   want_run() { # step ; expected body on stdin
     local got; got=$(q ".jobs.sign.steps[$1].run" | grep -v '^ *#'); [ "$got" = "$(cat)" ] || red "step $1 run body differs from the pinned literal"; }
   want_step() { # step ; expected JSON of the step without its run key, on stdin
     local got; got=$(yq -o=json -I0 ".jobs.sign.steps[$1] | del(.run)" "$F" | jq -cS .); [ "$got" = "$(jq -cS . <<< "$(cat)")" ] || red "step $1 keys differ from the pinned literal"; }
+  # GitHub expands ${{ }} inside '#' comment lines of a run body, so comments are not inert: no run may contain one
+  [ "$(yq -o=json '[.. | select(tag == "!!map") | select(has("run")) | .run | select(test("[$][{][{]"))] | length' "$F")" = 0 ] || red "a run body contains an expression (comments included)"
   want_run 0 <<'PIN'
 if [ "$REF_TYPE" != tag ]; then echo "::error::sigstore-sign signs tag builds only (ref_type=$REF_TYPE, $REF_NAME)"; exit 1; fi
 PIN
@@ -114,6 +116,7 @@ n=0
 while IFS= read -r f; do
   f="${f#./}"
   sha256sum -- "$f" >> "$WORK/manifest.txt"
+  mkdir -p "$(dirname "$WORK/bundles/$f")"
   cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
   idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
   [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
@@ -148,7 +151,7 @@ PIN
 {"uses":"actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093","with":{"name":"${{ inputs.artifact-name }}","path":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign"}}
 PIN
   want_step 4 <<'PIN'
-{"uses":"sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159","with":{"cosign-release":"v2.5.3"}}
+{"uses":"sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159","with":{"cosign-release":"v2.5.3","install-dir":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bin"}}
 PIN
   want_step 5 <<'PIN'
 {"name":"Sign every file, keyless","id":"out","working-directory":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
@@ -303,7 +306,6 @@ if [ "${1:-}" = --self-test ]; then
   mutb "download extra run-id"         '/uses: actions\/download-artifact@/,/path:/s/^          path: .*/&\n          run-id: 1/'
   mutb "download extra repository"     '/uses: actions\/download-artifact@/,/path:/s/^          path: .*/&\n          repository: evil\/fork\n          github-token: x/'
   mutb "checkout other repository"     '/uses: actions\/checkout@/,/path: caller-src/s/^          path: caller-src/&\n          repository: evil\/fork/'
-  mutb "installer install-dir"         's/^          cosign-release: v2.5.3.*/&\n          install-dir: \/tmp\/cosign-bin/'
   mutb "upload extra with"             '/uses: actions\/upload-artifact@/,/path:/s/^          path: .*/&\n          retention-days: 90\n          overwrite: true/'
   mutb "attach retargeted repo"        's/--repo "$GITHUB_REPOSITORY"/--repo evil\/fork/'
   mutb "attach extra flag"             's/--clobber --repo/--clobber --draft --repo/'
@@ -311,6 +313,12 @@ if [ "${1:-}" = --self-test ]; then
   mutb "job env added"                 's/^    timeout-minutes: 15/&\n    env:\n      BASH_ENV: \/tmp\/x/'
   mutb "WORK not per-run"              's|^          WORK: .*|          WORK: ${{ runner.temp }}/sigstore-sign|'
   mutb "tag output unwired"            's/^      tag: ${{ steps.out.outputs.tag }}/      tag: x/'
+  # Q-GH91d
+  mutb "expression in a guard comment"  's/^          if \[ "$REF_TYPE" != tag \]/          # ${{ fromJSON(\x27"\\nexit 0"\x27) }}\n&/'
+  mutb "expression in sign comment"     's/^          n=0$/          # ${{ github.sha }}\n&/'
+  mutb "installer to HOME"              '/^          install-dir:/d'
+  mutb "installer install-dir elsewhere" 's|^          install-dir: .*|          install-dir: /usr/local/bin|'
+  mutb "nested dir mkdir dropped"       '/mkdir -p "$(dirname/d'
   [ "$fail" = 0 ] && echo "PASS check-sigstore-sign self-test: clean GREEN + $n mutants RED"; exit "$fail"
 fi
 chk "${1:-.github/workflows/sigstore-sign.yml}"
