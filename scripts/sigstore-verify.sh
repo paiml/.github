@@ -68,13 +68,39 @@ if [ "${1:-}" = --self-test ]; then
   printf '%s %s %s %s %s %s\n' "$(sha256sum "$t/bin" | cut -d' ' -f1)" "$GOOD" "https://evil.example/issuer" "$REPO" "$WF" "$REF" > "$t/wi.sigstore.json"
   want refuse "wrong issuer in the cert" "$t/bin" "$t/wi.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
   want refuse "missing bundle"        "$t/bin" "$t/none.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
-  # unknown flags: real files named like flags with valid pins (only the flag refusal can stop these), and a 7th flag
+  # unknown flags, with VALID pins and files that exist (cwd = $t), so ONLY the flag refusal can stop them (Q-GH91e)
   cp "$t/bin" "$t/--insecure-ignore-tlog"; cp "$t/bin.sigstore.json" "$t/--trusted-root"
-  ( cd "$t" && verify -- --insecure-ignore-tlog "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" ) > /dev/null 2>&1 && { echo 'FAIL a flag-named file must refuse'; fail=1; }
-  want refuse "flag as the file"         "--insecure-ignore-tlog" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF"
-  want refuse "flag as the bundle"       "$t/bin" "--trusted-root" "$GOOD" "$REPO" "$WF"
-  want refuse "7th arg is a flag"        "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF" --insecure-ignore-tlog
-  want refuse "flag as the ref pin"      "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" --certificate-identity-regexp=.*
+  wantcd() { local w="$1" n="$2"; shift 2; rows=$((rows + 1)); if ( cd "$t" && verify "$@" ) > /dev/null 2>&1; then [ "$w" = ok ] || { echo "FAIL $n must refuse"; fail=1; }; else [ "$w" = refuse ] || { echo "FAIL $n must install"; fail=1; }; fi; }
+  wantcd refuse "bare flag-named file"          --insecure-ignore-tlog bin.sigstore.json "$GOOD" "$REPO" "$WF"
+  wantcd refuse "flag-named bundle"             bin --trusted-root "$GOOD" "$REPO" "$WF"
+  wantcd refuse "7th arg is a flag"             bin bin.sigstore.json "$GOOD" "$REPO" "$WF" "$REF" --insecure-ignore-tlog
+  wantcd refuse "flag in the ref slot"          bin bin.sigstore.json "$GOOD" "$REPO" "$WF" --certificate-identity-regexp=.*
+  wantcd ok     "same files, no flags"          bin bin.sigstore.json "$GOOD" "$REPO" "$WF" "$REF"
+  rows=$((rows + 1)); ( run_cosign verify-blob --new-bundle-format --bundle "$t/bin.sigstore.json" --bogus-flag -- "$t/bin" ) > /dev/null 2>&1 && { echo 'FAIL the cosign model must refuse an unknown flag'; fail=1; }
+  # THE REAL ARGV: the unshadowed script runs a recording fake `cosign` and the argv must equal this list exactly, so a
+  # dropped pin, an added --insecure-*/--*-regexp/--trusted-root, or a reordered flag is RED whatever the model says
+  mkdir "$t/fb"; printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$REC"\n' > "$t/fb/cosign"; chmod +x "$t/fb/cosign"
+  argv() { REC="$t/argv" PATH="$t/fb:$PATH" bash "$0" "$@" > /dev/null 2>&1 && cat "$t/argv"; }
+  exp_base="verify-blob
+--new-bundle-format
+--bundle
+$t/bin.sigstore.json
+--certificate-identity
+$GOOD
+--certificate-oidc-issuer
+https://token.actions.githubusercontent.com
+--certificate-github-workflow-repository
+$REPO
+--certificate-github-workflow-name
+$WF"
+  rows=$((rows + 1)); [ "$(argv "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF")" = "$exp_base
+--certificate-github-workflow-ref
+$REF
+--
+$t/bin" ] || { echo "FAIL real argv (with ref) is not the exact pinned list"; fail=1; }
+  rows=$((rows + 1)); [ "$(argv "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF")" = "$exp_base
+--
+$t/bin" ] || { echo "FAIL real argv (no ref) is not the exact pinned list"; fail=1; }
   # the verifier cannot be swapped from the environment: COSIGN=true must not make a bad file verify
   cat > "$t/true" <<'S'
 #!/usr/bin/env bash

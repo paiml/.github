@@ -101,22 +101,26 @@ jobs:
         env:
           # per-run, per-attempt scratch: a reused runner never carries a previous run's files or bundles into this one
           WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}
+          TUF_ROOT: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/tuf   # cosign's TUF cache stays in the per-run dir, not $HOME
           TAG: ${{ github.ref_name }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
         run: |
           set -euo pipefail
+          # flat, regular, unsigned inputs only: nothing is silently skipped, and the attach glob below sees every bundle
+          x=$(find . -mindepth 1 \( -type d -o ! -type f -o -name "*.sigstore.json" \) -print -quit)
+          [ -z "$x" ] || { echo "::error::artifact $ARTIFACT_NAME holds a nested path, a non-regular file or a *.sigstore.json ($x); refusing before anything is signed"; exit 1; }
+          case "$TAG" in */*) echo "::error::tag $TAG contains a slash"; exit 1;; esac
           mkdir "$WORK/bundles"; : > "$WORK/manifest.txt"; : > "$WORK/rekor.txt"
           n=0
           while IFS= read -r f; do
             f="${f#./}"
             sha256sum -- "$f" >> "$WORK/manifest.txt"
-            mkdir -p "$(dirname "$WORK/bundles/$f")"
             cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
             idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
             [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
             echo "$f=$idx" >> "$WORK/rekor.txt"
             n=$((n + 1))
-          done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
+          done < <(find . -type f | LC_ALL=C sort)
           [ "$n" -ge 1 ] || { echo "::error::artifact $ARTIFACT_NAME held no files to sign"; exit 1; }
           b=$(find "$WORK/bundles" -name "*.sigstore.json" | LC_ALL=C sort | head -1)
           # the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see

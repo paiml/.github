@@ -111,18 +111,20 @@ git merge-base --is-ancestor "$TAG_SHA" refs/remotes/origin/main \
 PIN
   want_run 5 <<'PIN'
 set -euo pipefail
+x=$(find . -mindepth 1 \( -type d -o ! -type f -o -name "*.sigstore.json" \) -print -quit)
+[ -z "$x" ] || { echo "::error::artifact $ARTIFACT_NAME holds a nested path, a non-regular file or a *.sigstore.json ($x); refusing before anything is signed"; exit 1; }
+case "$TAG" in */*) echo "::error::tag $TAG contains a slash"; exit 1;; esac
 mkdir "$WORK/bundles"; : > "$WORK/manifest.txt"; : > "$WORK/rekor.txt"
 n=0
 while IFS= read -r f; do
   f="${f#./}"
   sha256sum -- "$f" >> "$WORK/manifest.txt"
-  mkdir -p "$(dirname "$WORK/bundles/$f")"
   cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
   idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
   [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
   echo "$f=$idx" >> "$WORK/rekor.txt"
   n=$((n + 1))
-done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
+done < <(find . -type f | LC_ALL=C sort)
 [ "$n" -ge 1 ] || { echo "::error::artifact $ARTIFACT_NAME held no files to sign"; exit 1; }
 b=$(find "$WORK/bundles" -name "*.sigstore.json" | LC_ALL=C sort | head -1)
 id=$(jq -r ".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes" "$b" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o "https://[^, ]*" | head -1)
@@ -154,7 +156,7 @@ PIN
 {"uses":"sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159","with":{"cosign-release":"v2.5.3","install-dir":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bin"}}
 PIN
   want_step 5 <<'PIN'
-{"name":"Sign every file, keyless","id":"out","working-directory":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
+{"name":"Sign every file, keyless","id":"out","working-directory":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}","TUF_ROOT":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/tuf","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
 PIN
   want_step 6 <<'PIN'
 {"uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"sigstore-bundles-${{ github.ref_name }}","path":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bundles/"}}
@@ -163,6 +165,11 @@ PIN
 {"name":"Attach the bundles to the release","if":"${{ inputs.upload-to-release }}","env":{"GH_TOKEN":"${{ github.token }}","TAG":"${{ github.ref_name }}","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
 PIN
   [ "$(q '.jobs.sign | has("env")')" = false ] || red "job carries env (the per-run WORK dir is set per step: the runner context is not allowed at job level)"
+  # exact key sets and types, as literals (Q-GH91e): a regenerated golden cannot widen the interface
+  [ "$(yq -o=json -I0 '.on.workflow_call.inputs | to_entries | map(.key + ":" + .value.type + ":" + (.value.required | tostring)) | sort | join(",")' "$F" | jq -r .)" = 'artifact-name:string:true,runs-on:string:true,upload-to-release:boolean:false' ] || red "workflow inputs are not exactly artifact-name,runs-on,upload-to-release with their types"
+  [ "$(q '.on.workflow_call.outputs | keys | sort | join(",")')" = bundle,identity,rekor-index,sha256,tag ] || red "workflow outputs are not exactly bundle,identity,rekor-index,sha256,tag"
+  [ "$(q '.on.workflow_call | keys | sort | join(",")')" = inputs,outputs ] || red "workflow_call keys are not exactly inputs,outputs"
+  [ "$(q '.jobs.sign.outputs | keys | sort | join(",")')" = bundle,identity,rekor-index,sha256,tag ] || red "job outputs are not exactly bundle,identity,rekor-index,sha256,tag"
   [ "$(q '.on.workflow_call.inputs."upload-to-release".default')" = true ] || red "upload-to-release default drifted"
   # BEHAVIOUR (Q-GH91c): the two guard bodies are RUN the way Actions runs them — empty environment plus realistic
   # Actions variables, the production shell flags, a clone of a bare origin — and must pass/fail the same under every
@@ -176,7 +183,7 @@ PIN
   [ "$(q '[.jobs.sign.steps[] | has("shell")] | any')" = false ] || red "a step sets shell"
   [ "$(q '[.jobs.sign.steps[] | has("container") or has("services")] | any')" = false ] || red "a step sets container/services"
   for i in 0 2 5 7; do
-    case $i in 0) want=REF_NAME,REF_TYPE;; 2) want=TAG_SHA;; 5) want=ARTIFACT_NAME,TAG,WORK;; 7) want=GH_TOKEN,TAG,WORK;; esac
+    case $i in 0) want=REF_NAME,REF_TYPE;; 2) want=TAG_SHA;; 5) want=ARTIFACT_NAME,TAG,TUF_ROOT,WORK;; 7) want=GH_TOKEN,TAG,WORK;; esac
     [ "$(q ".jobs.sign.steps[$i].env | keys | sort | join(\",\")")" = "$want" ] || red "step $i env keys are not exactly $want"
   done
   for i in 1 3 4 6; do [ "$(q ".jobs.sign.steps[$i] | has(\"env\")")" = false ] || red "step $i carries env"; done
@@ -299,7 +306,7 @@ if [ "${1:-}" = --self-test ]; then
   mutb "extra manifest line"           's/echo "EOF_SHA"$/echo "EOF_SHA"; echo "deadbeef  forged"/'
   mutb "zero files not refused"        's/^          \[ "$n" -ge 1 \] || .*/          true/'
   mutb "forged bundle path"            's/^          b=$(find .*/          b=\/tmp\/forged.json/'
-  mutb "narrowed find"                 "s/find . -type f ! -name '\*.sigstore.json'/find . -maxdepth 1 -type f ! -name '*.sigstore.json'/"
+  mutb "narrowed find"                 's/find . -type f | LC_ALL/find . -maxdepth 0 -type f | LC_ALL/'
   mutb "second cosign via shadow"      's/^          n=0$/          cosign() { command cosign "$@"; command cosign "$@"; }\n&/'
   mutb "stale workspace reused"        's/mkdir "$WORK\/bundles"/mkdir -p "$WORK\/bundles"/'
   mutb "GITHUB_ENV write earlier"      '/Refuse a tag that is not on main/,/merge-base/s/^          set -euo pipefail/&\n          echo "BASH_ENV=\/tmp\/x" >> "$GITHUB_ENV"/'
@@ -318,7 +325,19 @@ if [ "${1:-}" = --self-test ]; then
   mutb "expression in sign comment"     's/^          n=0$/          # ${{ github.sha }}\n&/'
   mutb "installer to HOME"              '/^          install-dir:/d'
   mutb "installer install-dir elsewhere" 's|^          install-dir: .*|          install-dir: /usr/local/bin|'
-  mutb "nested dir mkdir dropped"       '/mkdir -p "$(dirname/d'
+  # Q-GH91e
+  mutb "nested files allowed"           '/-mindepth 1 \\( -type d/d'
+  mutb "sigstore.json inputs allowed"   's/ -o -name "\*.sigstore.json" \\)/ \\)/'
+  mutb "symlinks allowed"               's/-type d -o ! -type f -o/-type d -o/'
+  mutb "refusal not exit"               's/(\$x); refusing before anything is signed"; exit 1; }/($x); refusing before anything is signed"; }/'
+  mutb "slash tag allowed"              '/case "$TAG" in \*\/\*)/d'
+  mutb "TUF_ROOT dropped"               '/^          TUF_ROOT:/d'
+  mutb "TUF_ROOT to HOME"               's|^          TUF_ROOT: .*|          TUF_ROOT: ~/.sigstore|'
+  mutb "upload-to-release string"       '/^      upload-to-release:/,/^    outputs:/s/type: boolean/type: string/'
+  mutb "extra input"                    's/^    outputs:/      extra:\n        type: string\n&/'
+  mutb "extra workflow output"          's/^permissions: {}/&/;/^      rekor-index:$/i\      extra:\n        value: x'
+  mutb "extra job output"               's/^      tag: ${{ steps.out.outputs.tag }}/&\n      extra: x/'
+  mutb "attach glob made recursive"     's|"$WORK"/bundles/\*.sigstore.json|"$WORK"/bundles/**/*.sigstore.json|'
   [ "$fail" = 0 ] && echo "PASS check-sigstore-sign self-test: clean GREEN + $n mutants RED"; exit "$fail"
 fi
 chk "${1:-.github/workflows/sigstore-sign.yml}"
