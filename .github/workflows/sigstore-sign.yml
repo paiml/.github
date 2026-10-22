@@ -59,9 +59,6 @@ jobs:
     permissions:
       id-token: write   # the keyless OIDC identity
       contents: write   # attach the bundles to the release
-    env:
-      # per-run, per-attempt scratch: a reused runner never carries a previous run's files or bundles into this one
-      WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
       sha256: ${{ steps.out.outputs.sha256 }}
       tag: ${{ steps.out.outputs.tag }}
@@ -93,14 +90,16 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: ${{ inputs.artifact-name }}
-          path: ${{ env.WORK }}/sign
+          path: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
         with:
           cosign-release: v2.5.3   # pinned: sign-blob below asks for the new bundle format explicitly
       - name: Sign every file, keyless
         id: out
-        working-directory: ${{ env.WORK }}/sign
+        working-directory: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign
         env:
+          # per-run, per-attempt scratch: a reused runner never carries a previous run's files or bundles into this one
+          WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}
           TAG: ${{ github.ref_name }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
         run: |
@@ -131,10 +130,11 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: sigstore-bundles-${{ github.ref_name }}
-          path: ${{ env.WORK }}/bundles/
+          path: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bundles/
       - name: Attach the bundles to the release
         if: ${{ inputs.upload-to-release }}
         env:
           GH_TOKEN: ${{ github.token }}
+          WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}
           TAG: ${{ github.ref_name }}
         run: gh release upload "$TAG" "$WORK"/bundles/*.sigstore.json --clobber --repo "$GITHUB_REPOSITORY"

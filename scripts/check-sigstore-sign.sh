@@ -145,21 +145,21 @@ PIN
 {"name":"Refuse a tag that is not on main","working-directory":"caller-src","env":{"TAG_SHA":"${{ github.sha }}"}}
 PIN
   want_step 3 <<'PIN'
-{"uses":"actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093","with":{"name":"${{ inputs.artifact-name }}","path":"${{ env.WORK }}/sign"}}
+{"uses":"actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093","with":{"name":"${{ inputs.artifact-name }}","path":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign"}}
 PIN
   want_step 4 <<'PIN'
 {"uses":"sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159","with":{"cosign-release":"v2.5.3"}}
 PIN
   want_step 5 <<'PIN'
-{"name":"Sign every file, keyless","id":"out","working-directory":"${{ env.WORK }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}"}}
+{"name":"Sign every file, keyless","id":"out","working-directory":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
 PIN
   want_step 6 <<'PIN'
-{"uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"sigstore-bundles-${{ github.ref_name }}","path":"${{ env.WORK }}/bundles/"}}
+{"uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"sigstore-bundles-${{ github.ref_name }}","path":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bundles/"}}
 PIN
   want_step 7 <<'PIN'
-{"name":"Attach the bundles to the release","if":"${{ inputs.upload-to-release }}","env":{"GH_TOKEN":"${{ github.token }}","TAG":"${{ github.ref_name }}"}}
+{"name":"Attach the bundles to the release","if":"${{ inputs.upload-to-release }}","env":{"GH_TOKEN":"${{ github.token }}","TAG":"${{ github.ref_name }}","WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}}
 PIN
-  [ "$(yq -o=json -I0 '.jobs.sign.env' "$F")" = '{"WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}' ] || red "job env is not exactly the per-run WORK dir"
+  [ "$(q '.jobs.sign | has("env")')" = false ] || red "job carries env (the per-run WORK dir is set per step: the runner context is not allowed at job level)"
   [ "$(q '.on.workflow_call.inputs."upload-to-release".default')" = true ] || red "upload-to-release default drifted"
   # BEHAVIOUR (Q-GH91c): the two guard bodies are RUN the way Actions runs them — empty environment plus realistic
   # Actions variables, the production shell flags, a clone of a bare origin — and must pass/fail the same under every
@@ -169,11 +169,11 @@ PIN
   [ -z "${BEH_MEMO[$k]}" ] || { printf '%s\n' "${BEH_MEMO[$k]}"; bad=1; }
   # nothing may change HOW a step runs: no shell/defaults/container/job env, and env key sets are exact
   [ "$(q 'keys | sort | join(",")')" = jobs,name,on,permissions ] || red "top-level keys are not exactly name,on,permissions,jobs"
-  [ "$(q '.jobs.sign | keys | sort | join(",")')" = env,name,outputs,permissions,runs-on,steps,timeout-minutes ] || red "job keys are not exactly env,name,outputs,permissions,runs-on,steps,timeout-minutes"
+  [ "$(q '.jobs.sign | keys | sort | join(",")')" = name,outputs,permissions,runs-on,steps,timeout-minutes ] || red "job keys are not exactly name,outputs,permissions,runs-on,steps,timeout-minutes"
   [ "$(q '[.jobs.sign.steps[] | has("shell")] | any')" = false ] || red "a step sets shell"
   [ "$(q '[.jobs.sign.steps[] | has("container") or has("services")] | any')" = false ] || red "a step sets container/services"
   for i in 0 2 5 7; do
-    case $i in 0) want=REF_NAME,REF_TYPE;; 2) want=TAG_SHA;; 5) want=ARTIFACT_NAME,TAG;; 7) want=GH_TOKEN,TAG;; esac
+    case $i in 0) want=REF_NAME,REF_TYPE;; 2) want=TAG_SHA;; 5) want=ARTIFACT_NAME,TAG,WORK;; 7) want=GH_TOKEN,TAG,WORK;; esac
     [ "$(q ".jobs.sign.steps[$i].env | keys | sort | join(\",\")")" = "$want" ] || red "step $i env keys are not exactly $want"
   done
   for i in 1 3 4 6; do [ "$(q ".jobs.sign.steps[$i] | has(\"env\")")" = false ] || red "step $i carries env"; done
@@ -192,7 +192,7 @@ PIN
   [ "$(q '.jobs.sign | has("if")')" = false ] || red "job is conditional"
   # the sign step
   [ "$(q '.jobs.sign.steps[5].id')" = out ] || red "step 5 is not the signing step"
-  [ "$(q '.jobs.sign.steps[5]."working-directory"')" = '${{ env.WORK }}/sign' ] || red "signing step is not in the downloaded dir"
+  [ "$(q '.jobs.sign.steps[5]."working-directory"')" = '${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/sign' ] || red "signing step is not in the downloaded dir"
   r=$(q '.jobs.sign.steps[5].run' | grep -v '^ *#')
   printf '%s\n' "$r" | head -1 | grep -qF 'set -euo pipefail' || red "signing step is not strict (set -euo pipefail first)"
   printf '%s\n' "$r" | grep -qE 'cosign sign-blob --yes --new-bundle-format --bundle "\$WORK/bundles/\$f\.sigstore\.json" -- "\$f" > /dev/null$' || red "sign-blob is not the new-bundle-format keyless call, un-masked"
@@ -206,7 +206,7 @@ PIN
   # the bundles reach the caller, and the release only when asked
   [ "$(q '.jobs.sign.steps[6].uses | test("^actions/upload-artifact@[0-9a-f]{40}$")')" = true ] || red "step 6 is not the pinned bundle upload"
   [ "$(q '.jobs.sign.steps[6].with.name')" = 'sigstore-bundles-${{ github.ref_name }}' ] || red "bundle artifact name drifted from the bundle output"
-  [ "$(q '.jobs.sign.steps[6].with.path')" = '${{ env.WORK }}/bundles/' ] || red "bundle upload path is not the per-run bundles dir"
+  [ "$(q '.jobs.sign.steps[6].with.path')" = '${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}/bundles/' ] || red "bundle upload path is not the per-run bundles dir"
   [ "$(q '.jobs.sign.steps[7].if')" = '${{ inputs.upload-to-release }}' ] || red "release attach is not gated on upload-to-release"
   [ "$bad" = 0 ] && echo "ok sigstore-sign.yml"; return "$bad"; }
 if [ "${1:-}" = --self-test ]; then
@@ -308,8 +308,8 @@ if [ "${1:-}" = --self-test ]; then
   mutb "attach retargeted repo"        's/--repo "$GITHUB_REPOSITORY"/--repo evil\/fork/'
   mutb "attach extra flag"             's/--clobber --repo/--clobber --draft --repo/'
   mutb "upload-to-release default off" "/^      upload-to-release:/,/^    outputs:/s/default: true/default: false/"
-  mutb "job env extra"                 's/^      WORK: .*/&\n      BASH_ENV: \/tmp\/x/'
-  mutb "WORK not per-run"              's|WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}|WORK: ${{ runner.temp }}/sigstore-sign|'
+  mutb "job env added"                 's/^    timeout-minutes: 15/&\n    env:\n      BASH_ENV: \/tmp\/x/'
+  mutb "WORK not per-run"              's|^          WORK: .*|          WORK: ${{ runner.temp }}/sigstore-sign|'
   mutb "tag output unwired"            's/^      tag: ${{ steps.out.outputs.tag }}/      tag: x/'
   [ "$fail" = 0 ] && echo "PASS check-sigstore-sign self-test: clean GREEN + $n mutants RED"; exit "$fail"
 fi
