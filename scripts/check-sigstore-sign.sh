@@ -7,8 +7,45 @@
 set -euo pipefail
 export PATH="/opt/fleet-bin/bin:/usr/local/bin:$PATH"
 command -v yq >/dev/null || { echo "::error::yq is not on PATH — an absent parser is a NO-GO, not a pass" >&2; exit 1; }
+yq --version 2>/dev/null | grep -q "mikefarah/yq.* version v4\." || { echo "::error::yq is not mikefarah yq v4 (the parser the rules and pins are written for)" >&2; exit 1; }
+command -v jq >/dev/null || { echo "::error::jq is not on PATH" >&2; exit 1; }
 q() { yq -r "$1" "$F"; }
-chk() { local F="$1" nog="${2:-}" bad=0 r i
+declare -A BEH_MEMO   # behaviour verdict per (guard body, ancestry body): a mutant that leaves both bodies alone costs nothing
+behav() {
+  local g="$1" a="$2" w
+  w=$(mktemp -d)
+  printf '%s\n' "$g" > "$w/g.sh"; printf '%s\n' "$a" > "$w/a.sh"
+  ( cd "$w" && git init -q --bare o.git && git init -q seed && cd seed && git config user.email t@t && git config user.name t \
+    && git checkout -q -b main && git commit -q --allow-empty -m a && git commit -q --allow-empty -m b && git checkout -q -b side \
+    && git commit -q --allow-empty -m c && git push -q "$w/o.git" main side && cd .. && git clone -q o.git r ) > /dev/null 2>&1
+  local A B C; A=$(git -C "$w/r" rev-parse origin/main~1); B=$(git -C "$w/r" rev-parse origin/main); C=$(git -C "$w/r" rev-parse origin/side)
+  : > "$w/ghenv"; : > "$w/ghpath"
+  runb() { # script cwd env... : production flags, empty environment
+    local s="$1" d="$2"; shift 2
+    ( cd "$d" && env -i PATH="$PATH" HOME="$w" CI=true GITHUB_ACTIONS=true GITHUB_WORKFLOW=Release GITHUB_RUN_ID=1 GITHUB_RUN_ATTEMPT=1 \
+        GITHUB_ENV="$w/ghenv" GITHUB_PATH="$w/ghpath" GITHUB_OUTPUT="$w/ghout" RUNNER_TEMP="$w" "$@" \
+        bash --noprofile --norc -eo pipefail "$s" ) > /dev/null 2>&1; }
+  local job nm
+  for job in sign build x; do for nm in v1.0 main release/1 x; do
+    runb "$w/g.sh" "$w/r" GITHUB_JOB=$job REF_TYPE=tag REF_NAME=$nm || echo "RED tag guard body: a tag must pass ($job/$nm)"
+    ! runb "$w/g.sh" "$w/r" GITHUB_JOB=$job REF_TYPE=branch REF_NAME=$nm || echo "RED tag guard body: a branch must fail ($job/$nm)"
+    ! runb "$w/g.sh" "$w/r" GITHUB_JOB=$job REF_TYPE= REF_NAME=$nm || echo "RED tag guard body: an empty ref type must fail ($job/$nm)"
+    ! runb "$w/g.sh" "$w/r" GITHUB_JOB=$job REF_NAME=$nm || echo "RED tag guard body: an unset ref type must fail ($job/$nm)"
+    runb "$w/a.sh" "$w/r" GITHUB_JOB=$job TAG_SHA="$B" || echo "RED ancestry body: the tip of main must pass ($job)"
+    runb "$w/a.sh" "$w/r" GITHUB_JOB=$job TAG_SHA="$A" || echo "RED ancestry body: a commit on main must pass ($job)"
+    ! runb "$w/a.sh" "$w/r" GITHUB_JOB=$job TAG_SHA="$C" || echo "RED ancestry body: an off-main commit must fail ($job)"
+    ! runb "$w/a.sh" "$w/r" GITHUB_JOB=$job TAG_SHA=deadbeef || echo "RED ancestry body: a garbage sha must fail ($job)"
+    ! runb "$w/a.sh" "$w/r" GITHUB_JOB=$job TAG_SHA= || echo "RED ancestry body: an empty sha must fail ($job)"
+    ! runb "$w/a.sh" "$w/r" GITHUB_JOB=$job || echo "RED ancestry body: an unset sha must fail ($job)"
+  done; done
+  # off Actions entirely: the verdicts must not depend on GITHUB_ACTIONS either
+  ! ( cd "$w/r" && env -i PATH="$PATH" HOME="$w" REF_TYPE=branch REF_NAME=x bash --noprofile --norc -eo pipefail "$w/g.sh" ) > /dev/null 2>&1 || echo "RED tag guard body: a branch must fail off Actions"
+  ! ( cd "$w/r" && env -i PATH="$PATH" HOME="$w" TAG_SHA="$C" bash --noprofile --norc -eo pipefail "$w/a.sh" ) > /dev/null 2>&1 || echo "RED ancestry body: off-main must fail off Actions"
+  ( cd "$w/r" && git update-ref -d refs/remotes/origin/main && ! runb "$w/a.sh" "$w/r" GITHUB_JOB=sign TAG_SHA="$B" ) || echo "RED ancestry body: missing origin/main must fail"
+  [ ! -s "$w/ghenv" ] && [ ! -s "$w/ghpath" ] && [ ! -e "$w/ghout" ] || echo "RED a guard wrote GITHUB_ENV / GITHUB_PATH / GITHUB_OUTPUT"
+  rm -rf -- "${w:?}"
+}
+chk() { local F="$1" nog="${2:-}" bad=0 r i g a k
   red() { echo "RED $1"; bad=1; }
   yq -e '.' "$F" > /dev/null 2>&1 || { echo "RED not parseable YAML"; return 1; }
   [ "$(q '.on | keys | join(",")')" = workflow_call ] || red "trigger is not workflow_call only"
@@ -20,13 +57,13 @@ chk() { local F="$1" nog="${2:-}" bad=0 r i
   [ "$(q '.jobs.sign.permissions | to_entries | map(.key + "=" + .value) | sort | join(",")')" = 'contents=write,id-token=write' ] \
     || red "job permissions are not exactly contents+id-token write"
   [ "$(q '.jobs | keys | join(",")')" = sign ] || red "jobs are not exactly sign"
-  for i in sha256 bundle identity rekor-index; do
+  for i in sha256 tag bundle identity rekor-index; do
     [ "$(q ".on.workflow_call.outputs.\"$i\".value")" = "\${{ jobs.sign.outputs.$i }}" ] || red "workflow output $i not wired to the job"
     [ "$(q ".jobs.sign.outputs.\"$i\"")" = "\${{ steps.out.outputs.$i }}" ] || red "job output $i not wired to step out"
   done
   # the step named out must actually write each output it advertises
   r=$(q '.jobs.sign.steps[] | select(.id == "out") | .run')
-  for i in sha256 rekor-index bundle identity; do
+  for i in sha256 rekor-index bundle identity tag; do
     printf '%s\n' "$r" | grep -v '^ *#' | grep -qE "(echo \"$i(<<|=))" || red "step out never writes output $i"
   done
   # step order: tag guard, checkout, main-ancestry, download, installer, sign
@@ -54,23 +91,85 @@ chk() { local F="$1" nog="${2:-}" bad=0 r i
   # scripts/sigstore-sign.golden.json in the same PR, which is the review.
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   [ "$nog" = nogolden ] || [ "$(yq -o=json -I2 '.' "$F" | jq -S . | sha256sum)" = "$(sha256sum < "$here/sigstore-sign.golden.json")" ] || red "workflow differs from scripts/sigstore-sign.golden.json"
-  # BEHAVIOUR: the two guard bodies are run, not read. tag + on-main passes; branch, empty, off-main, unreachable main fail.
-  local g a w
-  g=$(q '.jobs.sign.steps[0].run'); a=$(q '.jobs.sign.steps[2].run'); w=$(mktemp -d)
-  ( cd "$w" && git init -q r && cd r && git config user.email t@t && git config user.name t \
-    && git commit -q --allow-empty -m a && git commit -q --allow-empty -m b \
-    && git update-ref refs/remotes/origin/main HEAD && git checkout -q -b side HEAD~1 && git commit -q --allow-empty -m c ) > /dev/null 2>&1
-  local A B C; A=$(git -C "$w/r" rev-parse main~1 2>/dev/null || git -C "$w/r" rev-parse refs/remotes/origin/main~1); B=$(git -C "$w/r" rev-parse refs/remotes/origin/main); C=$(git -C "$w/r" rev-parse side)
-  gt() { REF_TYPE="$1" REF_NAME=x bash -c "$g" > /dev/null 2>&1; }
-  at() { ( cd "$w/r" && TAG_SHA="$1" bash -c "$a" ) > /dev/null 2>&1; }
-  gt tag && ! gt branch && ! gt "" || red "tag guard body: tag must pass, branch/empty must fail"
-  at "$B" && at "$A" || red "ancestry body: a commit on main must pass"
-  ! at "$C" && ! at "deadbeef" && ! at "" || red "ancestry body: off-main/garbage/empty sha must fail"
-  ( cd "$w/r" && git update-ref -d refs/remotes/origin/main && ! TAG_SHA="$B" bash -c "$a" > /dev/null 2>&1 ) || red "ancestry body: missing origin/main must fail"
-  rm -rf -- "${w:?}"
+  # LITERAL PINS (Q-GH91c): every executable body and every step's non-run keys are compared with text written in THIS
+  # file, comment lines aside. There is no hash and nothing to regenerate: changing a body means editing the literal
+  # below, and CODEOWNERS makes that a second reviewer's act. (The golden below stays as a belt over the braces.)
+  want_run() { # step ; expected body on stdin
+    local got; got=$(q ".jobs.sign.steps[$1].run" | grep -v '^ *#'); [ "$got" = "$(cat)" ] || red "step $1 run body differs from the pinned literal"; }
+  want_step() { # step ; expected JSON of the step without its run key, on stdin
+    local got; got=$(yq -o=json -I0 ".jobs.sign.steps[$1] | del(.run)" "$F" | jq -cS .); [ "$got" = "$(jq -cS . <<< "$(cat)")" ] || red "step $1 keys differ from the pinned literal"; }
+  want_run 0 <<'PIN'
+if [ "$REF_TYPE" != tag ]; then echo "::error::sigstore-sign signs tag builds only (ref_type=$REF_TYPE, $REF_NAME)"; exit 1; fi
+PIN
+  want_run 2 <<'PIN'
+set -euo pipefail
+git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || { echo "::error::origin/main is not in the checkout"; exit 1; }
+git merge-base --is-ancestor "$TAG_SHA" refs/remotes/origin/main \
+  || { echo "::error::$TAG_SHA is not an ancestor of origin/main; release signing is for tag builds from main only"; exit 1; }
+PIN
+  want_run 5 <<'PIN'
+set -euo pipefail
+mkdir "$WORK/bundles"; : > "$WORK/manifest.txt"; : > "$WORK/rekor.txt"
+n=0
+while IFS= read -r f; do
+  f="${f#./}"
+  sha256sum -- "$f" >> "$WORK/manifest.txt"
+  cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
+  idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
+  [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
+  echo "$f=$idx" >> "$WORK/rekor.txt"
+  n=$((n + 1))
+done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
+[ "$n" -ge 1 ] || { echo "::error::artifact $ARTIFACT_NAME held no files to sign"; exit 1; }
+b=$(find "$WORK/bundles" -name "*.sigstore.json" | LC_ALL=C sort | head -1)
+id=$(jq -r ".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes" "$b" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o "https://[^, ]*" | head -1)
+[ -n "$id" ] || { echo "::error::no signer identity in the certificate of $b"; exit 1; }
+{
+  echo "sha256<<EOF_SHA"; cat "$WORK/manifest.txt"; echo "EOF_SHA"
+  echo "rekor-index<<EOF_REK"; cat "$WORK/rekor.txt"; echo "EOF_REK"
+  echo "bundle=sigstore-bundles-$TAG"
+  echo "tag=$TAG"
+  echo "identity=$id"
+} >> "$GITHUB_OUTPUT"
+PIN
+  want_run 7 <<'PIN'
+gh release upload "$TAG" "$WORK"/bundles/*.sigstore.json --clobber --repo "$GITHUB_REPOSITORY"
+PIN
+  want_step 0 <<'PIN'
+{"name":"Refuse anything but a tag build","env":{"REF_TYPE":"${{ github.ref_type }}","REF_NAME":"${{ github.ref_name }}"}}
+PIN
+  want_step 1 <<'PIN'
+{"uses":"actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683","with":{"fetch-depth":0,"persist-credentials":false,"path":"caller-src"}}
+PIN
+  want_step 2 <<'PIN'
+{"name":"Refuse a tag that is not on main","working-directory":"caller-src","env":{"TAG_SHA":"${{ github.sha }}"}}
+PIN
+  want_step 3 <<'PIN'
+{"uses":"actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093","with":{"name":"${{ inputs.artifact-name }}","path":"${{ env.WORK }}/sign"}}
+PIN
+  want_step 4 <<'PIN'
+{"uses":"sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159","with":{"cosign-release":"v2.5.3"}}
+PIN
+  want_step 5 <<'PIN'
+{"name":"Sign every file, keyless","id":"out","working-directory":"${{ env.WORK }}/sign","env":{"TAG":"${{ github.ref_name }}","ARTIFACT_NAME":"${{ inputs.artifact-name }}"}}
+PIN
+  want_step 6 <<'PIN'
+{"uses":"actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02","with":{"name":"sigstore-bundles-${{ github.ref_name }}","path":"${{ env.WORK }}/bundles/"}}
+PIN
+  want_step 7 <<'PIN'
+{"name":"Attach the bundles to the release","if":"${{ inputs.upload-to-release }}","env":{"GH_TOKEN":"${{ github.token }}","TAG":"${{ github.ref_name }}"}}
+PIN
+  [ "$(yq -o=json -I0 '.jobs.sign.env' "$F")" = '{"WORK":"${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"}' ] || red "job env is not exactly the per-run WORK dir"
+  [ "$(q '.on.workflow_call.inputs."upload-to-release".default')" = true ] || red "upload-to-release default drifted"
+  # BEHAVIOUR (Q-GH91c): the two guard bodies are RUN the way Actions runs them — empty environment plus realistic
+  # Actions variables, the production shell flags, a clone of a bare origin — and must pass/fail the same under every
+  # job name, REF_NAME and GITHUB_ACTIONS value, so a body that detects a fixture or a job name cannot survive.
+  g=$(q '.jobs.sign.steps[0].run'); a=$(q '.jobs.sign.steps[2].run'); k=$(printf '%s\0%s' "$g" "$a" | sha256sum)
+  [ -n "${BEH_MEMO[$k]+x}" ] || BEH_MEMO[$k]=$(behav "$g" "$a")
+  [ -z "${BEH_MEMO[$k]}" ] || { printf '%s\n' "${BEH_MEMO[$k]}"; bad=1; }
   # nothing may change HOW a step runs: no shell/defaults/container/job env, and env key sets are exact
   [ "$(q 'keys | sort | join(",")')" = jobs,name,on,permissions ] || red "top-level keys are not exactly name,on,permissions,jobs"
-  [ "$(q '.jobs.sign | keys | sort | join(",")')" = name,outputs,permissions,runs-on,steps,timeout-minutes ] || red "job keys are not exactly name,outputs,permissions,runs-on,steps,timeout-minutes"
+  [ "$(q '.jobs.sign | keys | sort | join(",")')" = env,name,outputs,permissions,runs-on,steps,timeout-minutes ] || red "job keys are not exactly env,name,outputs,permissions,runs-on,steps,timeout-minutes"
   [ "$(q '[.jobs.sign.steps[] | has("shell")] | any')" = false ] || red "a step sets shell"
   [ "$(q '[.jobs.sign.steps[] | has("container") or has("services")] | any')" = false ] || red "a step sets container/services"
   for i in 0 2 5 7; do
@@ -82,7 +181,7 @@ chk() { local F="$1" nog="${2:-}" bad=0 r i
   printf '%s\n' "$r" | grep -qE '(^|[;&| ])exit 0' && red "signing step can exit 0 early"
   [ "$(printf '%s\n' "$r" | grep -cE '^ *id=')" = 1 ] && printf '%s\n' "$r" | grep -qE '^ *id=\$\(jq -r "\.verificationMaterial' || red "identity is not read from the certificate"
   printf '%s\n' "$r" | grep -qF "logIndex // empty" || red "Rekor index has a default"
-  printf '%s\n' "$r" | grep -qF 'sha256sum -- "$f" >> ../manifest.txt' || red "manifest is not computed from the files"
+  printf '%s\n' "$r" | grep -qF 'sha256sum -- "$f" >> "$WORK/manifest.txt"' || red "manifest is not computed from the files"
   [ "$(printf '%s\n' "$r" | grep -c 'cosign ')" = 1 ] || red "more than one cosign call in the signing step"
   # no guard or signing step may be skipped or soft-failed
   for i in 0 1 2 3 4 5; do
@@ -93,21 +192,21 @@ chk() { local F="$1" nog="${2:-}" bad=0 r i
   [ "$(q '.jobs.sign | has("if")')" = false ] || red "job is conditional"
   # the sign step
   [ "$(q '.jobs.sign.steps[5].id')" = out ] || red "step 5 is not the signing step"
-  [ "$(q '.jobs.sign.steps[5]."working-directory"')" = sign ] || red "signing step is not in the downloaded dir"
+  [ "$(q '.jobs.sign.steps[5]."working-directory"')" = '${{ env.WORK }}/sign' ] || red "signing step is not in the downloaded dir"
   r=$(q '.jobs.sign.steps[5].run' | grep -v '^ *#')
   printf '%s\n' "$r" | head -1 | grep -qF 'set -euo pipefail' || red "signing step is not strict (set -euo pipefail first)"
-  printf '%s\n' "$r" | grep -qE 'cosign sign-blob --yes --new-bundle-format --bundle "\.\./bundles/\$f\.sigstore\.json" -- "\$f" > /dev/null$' || red "sign-blob is not the new-bundle-format keyless call, un-masked"
+  printf '%s\n' "$r" | grep -qE 'cosign sign-blob --yes --new-bundle-format --bundle "\$WORK/bundles/\$f\.sigstore\.json" -- "\$f" > /dev/null$' || red "sign-blob is not the new-bundle-format keyless call, un-masked"
   printf '%s\n' "$r" | grep -qE '\|\| *(true|:)|; *true *$|set \+e' && red "a failure is masked in the signing step"
   printf '%s\n' "$r" | grep -qF 'no Rekor log index' || red "signing step does not require a Rekor index"
   # nothing in the parsed document (comments are gone) may name a stored key or a secret
   yq -o=json '.' "$F" | grep -qiE 'secrets|--key|cosign_(private_)?key|signing_key|private.?key|\.pem|\.key\b' && red "a stored key or secret is named"
   # every action is a sha pin
-  r=$(yq -r '.. | select(tag == "!!map") | select(has("uses")) | .uses' "$F" | grep -vE '@[0-9a-f]{40}$' || true)
+  r=$(yq -r '.. | select(tag == "!!map") | select(has("uses")) | .uses' "$F" | awk '!/@[0-9a-f]{40}$/')
   [ -z "$r" ] || red "unpinned action: $r"
   # the bundles reach the caller, and the release only when asked
   [ "$(q '.jobs.sign.steps[6].uses | test("^actions/upload-artifact@[0-9a-f]{40}$")')" = true ] || red "step 6 is not the pinned bundle upload"
   [ "$(q '.jobs.sign.steps[6].with.name')" = 'sigstore-bundles-${{ github.ref_name }}' ] || red "bundle artifact name drifted from the bundle output"
-  [ "$(q '.jobs.sign.steps[6].with.path')" = 'bundles/' ] || red "bundle upload path is not bundles/"
+  [ "$(q '.jobs.sign.steps[6].with.path')" = '${{ env.WORK }}/bundles/' ] || red "bundle upload path is not the per-run bundles dir"
   [ "$(q '.jobs.sign.steps[7].if')" = '${{ inputs.upload-to-release }}' ] || red "release attach is not gated on upload-to-release"
   [ "$bad" = 0 ] && echo "ok sigstore-sign.yml"; return "$bad"; }
 if [ "${1:-}" = --self-test ]; then
@@ -170,12 +269,48 @@ if [ "${1:-}" = --self-test ]; then
   mutb "sign step early exit 0"        '/Sign every file, keyless/,/mkdir -p/s/^          set -euo pipefail/&\n          exit 0/'
   mutb "typed identity"                's/^          \[ -n "$id" \] || .*/          id=https:\/\/github.com\/paiml\/.github\/.github\/workflows\/sigstore-sign.yml@refs\/heads\/main/'
   mutb "logIndex defaults to 0"        "s|logIndex // empty|logIndex // 0|"
-  mutb "second keyed sign-blob"        's/^            sha256sum -- "$f" >> ..\/manifest.txt/&\n            cosign sign-blob -k k.pem --tlog-upload=false -- "$f" > \/dev\/null/'
+  mutb "second keyed sign-blob"        's/^            sha256sum -- "$f" >> "$WORK\/manifest.txt"/&\n            cosign sign-blob -k k.pem --tlog-upload=false -- "$f" > \/dev\/null/'
   mutb "ninth step"                    '$a\      - run: "true"'
   mutb "attach step if false"          's/if: ${{ inputs.upload-to-release }}/if: false/'
   mutb "upload step continue-on-error" '/uses: actions\/upload-artifact@/i\        continue-on-error: true'
   mutb "SIGSTORE_ID_TOKEN env"         's/^          TAG: ${{ github.ref_name }}$/&\n          SIGSTORE_ID_TOKEN: x/'
   mutb "PATH env on sign"              's/^          ARTIFACT_NAME: .*/&\n          PATH: \/tmp/'
+  # Q-GH91c: bypasses that detect the job name / Actions / a ref shape, bare exits, PATH games, free `with:` keys,
+  # a stale-workspace reuse, and a step-7 retarget. All run without the golden: the literal pins and the realistic
+  # behaviour run must kill them on their own.
+  mutb "guard gated on GITHUB_JOB"     's/^          if \[ "$REF_TYPE" != tag \]/          [ "${GITHUB_JOB:-}" = sign ] \&\& exit 0\n&/'
+  mutb "guard gated on GITHUB_ACTIONS" 's/^          if \[ "$REF_TYPE" != tag \]/          [ -z "${GITHUB_ACTIONS:-}" ] || REF_TYPE=tag\n&/'
+  mutb "guard release/* case bypass"   's/^          if \[ "$REF_TYPE" != tag \]/          case "$REF_NAME" in release\/*) exit 0;; esac\n&/'
+  mutb "guard bare exit"               's/^          if \[ "$REF_TYPE" != tag \]/          exit\n&/'
+  mutb "guard exit quoted 0"           's/^          if \[ "$REF_TYPE" != tag \]/          exit "0"\n&/'
+  mutb "guard exit arith 0"            's/^          if \[ "$REF_TYPE" != tag \]/          exit $((0))\n&/'
+  mutb "ancestry export PATH"          '/Refuse a tag that is not on main/,/merge-base/s/^          set -euo pipefail/&\n          export PATH=\/tmp\/shadow:$PATH/'
+  mutb "ancestry GITHUB_PATH write"    '/Refuse a tag that is not on main/,/merge-base/s/^          set -euo pipefail/&\n          echo \/tmp\/shadow >> "$GITHUB_PATH"/'
+  mutb "ancestry exit on GITHUB_JOB"   '/Refuse a tag that is not on main/,/merge-base/s/^          set -euo pipefail/&\n          [ "${GITHUB_JOB:-}" = sign ] \&\& exit 0/'
+  mutb "sign export SIGSTORE var"      '/Sign every file, keyless/,/mkdir/s/^          set -euo pipefail/&\n          export SIGSTORE_REKOR_URL=http:\/\/evil/'
+  mutb "sign export COSIGN var"        '/Sign every file, keyless/,/mkdir/s/^          set -euo pipefail/&\n          export COSIGN_EXPERIMENTAL=0/'
+  mutb "sign printf -v id"             's/^          \[ -n "$id" \] || .*/          printf -v id "%s" https:\/\/x/'
+  mutb "sign typed echo identity"      's/^            echo "identity=$id"/            echo "identity=https:\/\/x"/'
+  mutb "logIndex default 7"            "s|logIndex // empty|logIndex // empty // 7|"
+  mutb "forced idx"                    's/^            \[ -n "$idx" \] || .*/            idx=1/'
+  mutb "extra manifest line"           's/echo "EOF_SHA"$/echo "EOF_SHA"; echo "deadbeef  forged"/'
+  mutb "zero files not refused"        's/^          \[ "$n" -ge 1 \] || .*/          true/'
+  mutb "forged bundle path"            's/^          b=$(find .*/          b=\/tmp\/forged.json/'
+  mutb "narrowed find"                 "s/find . -type f ! -name '\*.sigstore.json'/find . -maxdepth 1 -type f ! -name '*.sigstore.json'/"
+  mutb "second cosign via shadow"      's/^          n=0$/          cosign() { command cosign "$@"; command cosign "$@"; }\n&/'
+  mutb "stale workspace reused"        's/mkdir "$WORK\/bundles"/mkdir -p "$WORK\/bundles"/'
+  mutb "GITHUB_ENV write earlier"      '/Refuse a tag that is not on main/,/merge-base/s/^          set -euo pipefail/&\n          echo "BASH_ENV=\/tmp\/x" >> "$GITHUB_ENV"/'
+  mutb "download extra run-id"         '/uses: actions\/download-artifact@/,/path:/s/^          path: .*/&\n          run-id: 1/'
+  mutb "download extra repository"     '/uses: actions\/download-artifact@/,/path:/s/^          path: .*/&\n          repository: evil\/fork\n          github-token: x/'
+  mutb "checkout other repository"     '/uses: actions\/checkout@/,/path: caller-src/s/^          path: caller-src/&\n          repository: evil\/fork/'
+  mutb "installer install-dir"         's/^          cosign-release: v2.5.3.*/&\n          install-dir: \/tmp\/cosign-bin/'
+  mutb "upload extra with"             '/uses: actions\/upload-artifact@/,/path:/s/^          path: .*/&\n          retention-days: 90\n          overwrite: true/'
+  mutb "attach retargeted repo"        's/--repo "$GITHUB_REPOSITORY"/--repo evil\/fork/'
+  mutb "attach extra flag"             's/--clobber --repo/--clobber --draft --repo/'
+  mutb "upload-to-release default off" "/^      upload-to-release:/,/^    outputs:/s/default: true/default: false/"
+  mutb "job env extra"                 's/^      WORK: .*/&\n      BASH_ENV: \/tmp\/x/'
+  mutb "WORK not per-run"              's|WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}|WORK: ${{ runner.temp }}/sigstore-sign|'
+  mutb "tag output unwired"            's/^      tag: ${{ steps.out.outputs.tag }}/      tag: x/'
   [ "$fail" = 0 ] && echo "PASS check-sigstore-sign self-test: clean GREEN + $n mutants RED"; exit "$fail"
 fi
 chk "${1:-.github/workflows/sigstore-sign.yml}"

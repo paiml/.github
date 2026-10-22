@@ -39,6 +39,9 @@ on:
       bundle:
         description: 'name of the artifact holding the <file>.sigstore.json bundles'
         value: ${{ jobs.sign.outputs.bundle }}
+      tag:
+        description: 'the tag that was signed (github.ref_name)'
+        value: ${{ jobs.sign.outputs.tag }}
       identity:
         description: 'the certificate identity (the SAN): this workflow at the ref the caller pinned; pass it to sigstore-verify.sh as <identity>'
         value: ${{ jobs.sign.outputs.identity }}
@@ -56,8 +59,12 @@ jobs:
     permissions:
       id-token: write   # the keyless OIDC identity
       contents: write   # attach the bundles to the release
+    env:
+      # per-run, per-attempt scratch: a reused runner never carries a previous run's files or bundles into this one
+      WORK: ${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
       sha256: ${{ steps.out.outputs.sha256 }}
+      tag: ${{ steps.out.outputs.tag }}
       bundle: ${{ steps.out.outputs.bundle }}
       identity: ${{ steps.out.outputs.identity }}
       rekor-index: ${{ steps.out.outputs.rekor-index }}
@@ -86,47 +93,48 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: ${{ inputs.artifact-name }}
-          path: sign
+          path: ${{ env.WORK }}/sign
       - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159  # v3.9.2
         with:
           cosign-release: v2.5.3   # pinned: sign-blob below asks for the new bundle format explicitly
       - name: Sign every file, keyless
         id: out
-        working-directory: sign
+        working-directory: ${{ env.WORK }}/sign
         env:
           TAG: ${{ github.ref_name }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
         run: |
           set -euo pipefail
-          mkdir -p ../bundles; : > ../manifest.txt; : > ../rekor.txt
+          mkdir "$WORK/bundles"; : > "$WORK/manifest.txt"; : > "$WORK/rekor.txt"
           n=0
           while IFS= read -r f; do
             f="${f#./}"
-            sha256sum -- "$f" >> ../manifest.txt
-            cosign sign-blob --yes --new-bundle-format --bundle "../bundles/$f.sigstore.json" -- "$f" > /dev/null
-            idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "../bundles/$f.sigstore.json")
+            sha256sum -- "$f" >> "$WORK/manifest.txt"
+            cosign sign-blob --yes --new-bundle-format --bundle "$WORK/bundles/$f.sigstore.json" -- "$f" > /dev/null
+            idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$WORK/bundles/$f.sigstore.json")
             [ -n "$idx" ] || { echo "::error::no Rekor log index in the bundle for $f"; exit 1; }
-            echo "$f=$idx" >> ../rekor.txt
+            echo "$f=$idx" >> "$WORK/rekor.txt"
             n=$((n + 1))
           done < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)
           [ "$n" -ge 1 ] || { echo "::error::artifact $ARTIFACT_NAME held no files to sign"; exit 1; }
-          b=$(find ../bundles -name "*.sigstore.json" | LC_ALL=C sort | head -1)
+          b=$(find "$WORK/bundles" -name "*.sigstore.json" | LC_ALL=C sort | head -1)
           # the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see
           id=$(jq -r ".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes" "$b" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o "https://[^, ]*" | head -1)
           [ -n "$id" ] || { echo "::error::no signer identity in the certificate of $b"; exit 1; }
           {
-            echo "sha256<<EOF_SHA"; cat ../manifest.txt; echo "EOF_SHA"
-            echo "rekor-index<<EOF_REK"; cat ../rekor.txt; echo "EOF_REK"
+            echo "sha256<<EOF_SHA"; cat "$WORK/manifest.txt"; echo "EOF_SHA"
+            echo "rekor-index<<EOF_REK"; cat "$WORK/rekor.txt"; echo "EOF_REK"
             echo "bundle=sigstore-bundles-$TAG"
+            echo "tag=$TAG"
             echo "identity=$id"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: sigstore-bundles-${{ github.ref_name }}
-          path: bundles/
+          path: ${{ env.WORK }}/bundles/
       - name: Attach the bundles to the release
         if: ${{ inputs.upload-to-release }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release upload "$TAG" bundles/*.sigstore.json --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" "$WORK"/bundles/*.sigstore.json --clobber --repo "$GITHUB_REPOSITORY"

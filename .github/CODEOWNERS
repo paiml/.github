@@ -1,0 +1,7 @@
+# The signer, its checker, its pinned golden and the verifier are one review unit: a change to any of them needs
+# an owner who did not write it (Q-GH91c — the golden alone is not an independent pin when it is co-edited).
+/.github/workflows/sigstore-sign.yml  @noahgift
+/scripts/check-sigstore-sign.sh       @noahgift
+/scripts/sigstore-sign.golden.json    @noahgift
+/scripts/sigstore-verify.sh           @noahgift
+/.github/CODEOWNERS                   @noahgift

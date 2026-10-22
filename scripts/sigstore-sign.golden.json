@@ -1,12 +1,16 @@
 {
   "jobs": {
     "sign": {
+      "env": {
+        "WORK": "${{ runner.temp }}/sigstore-sign-${{ github.run_id }}-${{ github.run_attempt }}"
+      },
       "name": "Sign (sigstore, keyless)",
       "outputs": {
         "bundle": "${{ steps.out.outputs.bundle }}",
         "identity": "${{ steps.out.outputs.identity }}",
         "rekor-index": "${{ steps.out.outputs.rekor-index }}",
-        "sha256": "${{ steps.out.outputs.sha256 }}"
+        "sha256": "${{ steps.out.outputs.sha256 }}",
+        "tag": "${{ steps.out.outputs.tag }}"
       },
       "permissions": {
         "contents": "write",
@@ -42,7 +46,7 @@
           "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
             "name": "${{ inputs.artifact-name }}",
-            "path": "sign"
+            "path": "${{ env.WORK }}/sign"
           }
         },
         {
@@ -58,14 +62,14 @@
           },
           "id": "out",
           "name": "Sign every file, keyless",
-          "run": "set -euo pipefail\nmkdir -p ../bundles; : > ../manifest.txt; : > ../rekor.txt\nn=0\nwhile IFS= read -r f; do\n  f=\"${f#./}\"\n  sha256sum -- \"$f\" >> ../manifest.txt\n  cosign sign-blob --yes --new-bundle-format --bundle \"../bundles/$f.sigstore.json\" -- \"$f\" > /dev/null\n  idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' \"../bundles/$f.sigstore.json\")\n  [ -n \"$idx\" ] || { echo \"::error::no Rekor log index in the bundle for $f\"; exit 1; }\n  echo \"$f=$idx\" >> ../rekor.txt\n  n=$((n + 1))\ndone < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)\n[ \"$n\" -ge 1 ] || { echo \"::error::artifact $ARTIFACT_NAME held no files to sign\"; exit 1; }\nb=$(find ../bundles -name \"*.sigstore.json\" | LC_ALL=C sort | head -1)\n# the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see\nid=$(jq -r \".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes\" \"$b\" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o \"https://[^, ]*\" | head -1)\n[ -n \"$id\" ] || { echo \"::error::no signer identity in the certificate of $b\"; exit 1; }\n{\n  echo \"sha256<<EOF_SHA\"; cat ../manifest.txt; echo \"EOF_SHA\"\n  echo \"rekor-index<<EOF_REK\"; cat ../rekor.txt; echo \"EOF_REK\"\n  echo \"bundle=sigstore-bundles-$TAG\"\n  echo \"identity=$id\"\n} >> \"$GITHUB_OUTPUT\"\n",
-          "working-directory": "sign"
+          "run": "set -euo pipefail\nmkdir \"$WORK/bundles\"; : > \"$WORK/manifest.txt\"; : > \"$WORK/rekor.txt\"\nn=0\nwhile IFS= read -r f; do\n  f=\"${f#./}\"\n  sha256sum -- \"$f\" >> \"$WORK/manifest.txt\"\n  cosign sign-blob --yes --new-bundle-format --bundle \"$WORK/bundles/$f.sigstore.json\" -- \"$f\" > /dev/null\n  idx=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' \"$WORK/bundles/$f.sigstore.json\")\n  [ -n \"$idx\" ] || { echo \"::error::no Rekor log index in the bundle for $f\"; exit 1; }\n  echo \"$f=$idx\" >> \"$WORK/rekor.txt\"\n  n=$((n + 1))\ndone < <(find . -type f ! -name '*.sigstore.json' | LC_ALL=C sort)\n[ \"$n\" -ge 1 ] || { echo \"::error::artifact $ARTIFACT_NAME held no files to sign\"; exit 1; }\nb=$(find \"$WORK/bundles\" -name \"*.sigstore.json\" | LC_ALL=C sort | head -1)\n# the identity is READ from the Fulcio certificate, never typed: it is what a verifier will see\nid=$(jq -r \".verificationMaterial.certificate.rawBytes // .verificationMaterial.x509CertificateChain.certificates[0].rawBytes\" \"$b\" | base64 -d | openssl x509 -inform DER -noout -ext subjectAltName | grep -o \"https://[^, ]*\" | head -1)\n[ -n \"$id\" ] || { echo \"::error::no signer identity in the certificate of $b\"; exit 1; }\n{\n  echo \"sha256<<EOF_SHA\"; cat \"$WORK/manifest.txt\"; echo \"EOF_SHA\"\n  echo \"rekor-index<<EOF_REK\"; cat \"$WORK/rekor.txt\"; echo \"EOF_REK\"\n  echo \"bundle=sigstore-bundles-$TAG\"\n  echo \"tag=$TAG\"\n  echo \"identity=$id\"\n} >> \"$GITHUB_OUTPUT\"\n",
+          "working-directory": "${{ env.WORK }}/sign"
         },
         {
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "name": "sigstore-bundles-${{ github.ref_name }}",
-            "path": "bundles/"
+            "path": "${{ env.WORK }}/bundles/"
           }
         },
         {
@@ -75,7 +79,7 @@
           },
           "if": "${{ inputs.upload-to-release }}",
           "name": "Attach the bundles to the release",
-          "run": "gh release upload \"$TAG\" bundles/*.sigstore.json --clobber --repo \"$GITHUB_REPOSITORY\""
+          "run": "gh release upload \"$TAG\" \"$WORK\"/bundles/*.sigstore.json --clobber --repo \"$GITHUB_REPOSITORY\""
         }
       ],
       "timeout-minutes": 15
@@ -118,6 +122,10 @@
         "sha256": {
           "description": "sha256sum manifest of the signed files (one \"<hex>  <name>\" line each)",
           "value": "${{ jobs.sign.outputs.sha256 }}"
+        },
+        "tag": {
+          "description": "the tag that was signed (github.ref_name)",
+          "value": "${{ jobs.sign.outputs.tag }}"
         }
       }
     }

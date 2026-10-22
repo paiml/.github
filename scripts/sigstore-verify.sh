@@ -13,6 +13,8 @@ ISSUER="https://token.actions.githubusercontent.com"
 run_cosign() { command cosign "$@"; }
 verify() { # file bundle identity repo workflow [ref]
   [ "$#" -ge 5 ] || { echo "REFUSE: need file bundle identity caller-repo caller-workflow-name" >&2; return 1; }
+  # an unknown flag is not a positional pin: it must never be read as an identity, repo or workflow
+  local x; for x in "$@"; do case "$x" in -*) echo "REFUSE: unknown flag $x" >&2; return 1;; esac; done
   # cosign skips an EMPTY pin, so an empty one must never reach it
   local a; for a in "$@"; do [ -n "$a" ] || { echo "REFUSE: an empty argument (cosign would skip that pin)" >&2; return 1; }; done
   [ -f "$1" ] && [ -f "$2" ] || { echo "REFUSE: file or bundle missing" >&2; return 1; }
@@ -66,6 +68,8 @@ if [ "${1:-}" = --self-test ]; then
   printf '%s %s %s %s %s %s\n' "$(sha256sum "$t/bin" | cut -d' ' -f1)" "$GOOD" "https://evil.example/issuer" "$REPO" "$WF" "$REF" > "$t/wi.sigstore.json"
   want refuse "wrong issuer in the cert" "$t/bin" "$t/wi.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
   want refuse "missing bundle"        "$t/bin" "$t/none.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
+  want refuse "unknown flag as the file"     "--insecure-ignore-tlog" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "$REF"
+  want refuse "unknown flag as a pin"       "$t/bin" "$t/bin.sigstore.json" "$GOOD" "$REPO" "$WF" "--certificate-identity-regexp=.*"
   # the verifier cannot be swapped from the environment: COSIGN=true must not make a bad file verify
   cat > "$t/true" <<'S'
 #!/usr/bin/env bash
