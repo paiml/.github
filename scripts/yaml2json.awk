@@ -42,8 +42,9 @@ function scalar(v,   q, e, s, i, c) {
 }
 function sep(   f) { f = sp; if (cnt[f]++) out = out ","; }
 function closeto(n) { while (sp > 0 && ind[sp] > n) { out = out (typ[sp] == "o" ? "}" : "]"); sp-- } }
-function openframe(t, n) { sp++; ind[sp] = n; typ[sp] = t; cnt[sp] = 0; out = out (t == "o" ? "{" : "[") }
+function openframe(t, n) { sp++; ind[sp] = n; typ[sp] = t; cnt[sp] = 0; fid[sp] = ++nfid; out = out (t == "o" ? "{" : "[") }
 function block(parent_n, hdr,   chomp, j, l, bi, body, txt, nl, k, fold, line) {
+  if (hdr !~ /^[|]-?[ ]*$/) die("only literal block scalars (pipe, pipe-minus) are read; folded, keep and indentation indicators are refused")
   chomp = (hdr ~ /-/) ? "-" : (hdr ~ /\+/ ? "+" : ""); fold = (substr(hdr, 1, 1) == ">")
   body = ""; nl = 0; bi = -1
   for (j = i + 1; j <= N; j++) {
@@ -102,6 +103,7 @@ END {
       closeto(n)
       if (sp == 0 || ind[sp] != n || typ[sp] != "o") { if (sp == 0 && out != "") die("second root"); openframe("o", n) ; if (isseq) cnt[sp] = 0 }
       if (!isseq || cnt[sp] > 0) sep(); else cnt[sp]++
+      if ((fid[sp] SUBSEP kt) in seen) die("duplicate key " kt); seen[fid[sp] SUBSEP kt] = 1
       out = out jstr(kt) ":"
       sub(/^[ ]+/, "", v)
       if (v == "" || v ~ /^#/) { pending = 1; pn = (isseq ? n : n) }

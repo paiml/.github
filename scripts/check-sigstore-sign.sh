@@ -345,6 +345,8 @@ if [ "${1:-}" = --self-test ]; then
   mutb "extra job output"               's/^      tag: ${{ steps.out.outputs.tag }}/&\n      extra: x/'
   mutb "attach glob made recursive"     's|"$WORK"/bundles/\*.sigstore.json|"$WORK"/bundles/**/*.sigstore.json|'
   # the yq-free reader fails CLOSED on YAML outside its subset (exit 2), and reads a known document right
+  for bad in "a: >\n  x" "a: |+\n  x" "a: |2\n  x" "a: 1\na: 2" "a:\n  b: 1\n  b: 2"; do
+    ! printf "$bad\n" | awk -f "$here/yaml2json.awk" > /dev/null 2>&1 || { echo "FAIL yaml2json accepted: $bad"; fail=1; }; done
   for bad in "a: &x 1" "a: *x" "a: !!str 1" "a: [1, 2]" "a: {b: 1}"; do
     ! printf "%s\n" "$bad" | awk -f "$here/yaml2json.awk" > /dev/null 2>&1 || { echo "FAIL yaml2json accepted: $bad"; fail=1; }; done
   [ "$(printf "a:\n  - b: 1\n    c: |\n      x\n  - d\n" | awk -f "$here/yaml2json.awk" | jq -cS .)" = "{\"a\":[{\"b\":1,\"c\":\"x\\n\"},\"d\"]}" ] || { echo "FAIL yaml2json misread a known document"; fail=1; }
