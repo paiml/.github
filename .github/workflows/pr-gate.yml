@@ -84,23 +84,65 @@ jobs:
           # instrument this whole file exists to route around.
           unset GITHUB_TOKEN GH_TOKEN
 
-          # Returns: member | notmember | indeterminate
+          # membership USER -> sets MEMBERSHIP_RESULT (member | notmember |
+          # indeterminate) and MEMBERSHIP_DETAIL (the HTTP status / error that
+          # produced it). Called directly, not in $(...), so both survive.
+          #
           # `indeterminate` is a THIRD answer and must never collapse into
           # `notmember` -- conflating "they are not a member" with "I could
           # not ask" is the exact defect that closed two owners' PRs.
+          #
+          # The previous version threw the error text away, so a probe that
+          # failed in 90 ms on a runner with no usable gh (aprender#5951:
+          # gx10-blackwell, both controls indeterminate) left no evidence of
+          # WHY. Now every non-definitive outcome names its status.
+          #
+          # Only TRANSIENT failures are retried (5xx, 429, secondary rate
+          # limit, timeouts/connection errors), 3 attempts, backoff 5/10/20 s.
+          # Auth failures, a missing gh, 302 and unparseable replies are
+          # deterministic: retrying them only delays the same answer.
+          BACKOFF="${PRGATE_BACKOFF:-5 10 20}"
           membership() {
-            local user="$1" resp rc state
-            resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
-            if [ "$rc" -eq 0 ]; then
-              state=$(printf '%s' "$resp" | jq -r '.state // "unknown"')
-              # "pending" = invited, not accepted. Not a member yet.
-              if [ "$state" = "active" ]; then echo member; else echo notmember; fi
+            local user="$1" resp rc state attempt=0 delay
+            MEMBERSHIP_RESULT=indeterminate
+            MEMBERSHIP_DETAIL="no attempt made"
+            if ! command -v gh >/dev/null 2>&1; then
+              MEMBERSHIP_DETAIL="gh not found on this runner (PATH=${PATH})"
               return 0
             fi
-            case "$resp" in
-              *"HTTP 404"*) echo notmember ;;
-              *)            echo indeterminate ;;
-            esac
+            for delay in $BACKOFF; do
+              attempt=$((attempt + 1))
+              resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                state=$(printf '%s' "$resp" | jq -r '.state // "unknown"' 2>/dev/null) || state=unparseable
+                case "$state" in
+                  active)      MEMBERSHIP_RESULT=member;    MEMBERSHIP_DETAIL="HTTP 200 state=active" ;;
+                  pending)     MEMBERSHIP_RESULT=notmember; MEMBERSHIP_DETAIL="HTTP 200 state=pending (invited, not accepted)" ;;
+                  unparseable) MEMBERSHIP_DETAIL="HTTP 200 but reply is not JSON: $(printf '%s' "$resp" | head -c 200)" ;;
+                  *)           MEMBERSHIP_DETAIL="HTTP 200 with unexpected state=${state}" ;;
+                esac
+                return 0
+              fi
+              resp=$(printf '%s' "$resp" | tr '\n' ' ' | head -c 300)
+              case "$resp" in
+                *"HTTP 404"*)
+                  # Definitive ONLY because this call runs with org-admin auth;
+                  # with a token that cannot see private members a 404 would be
+                  # a lie, which is what the instrument probe below detects.
+                  MEMBERSHIP_RESULT=notmember; MEMBERSHIP_DETAIL="HTTP 404"; return 0 ;;
+                *"HTTP 5"[0-9][0-9]*|*"HTTP 429"*|*"rate limit"*|*"secondary"*|*[Tt]imeout*|*"timed out"*|*"connection"*|*"EOF"*|*"dial tcp"*)
+                  MEMBERSHIP_DETAIL="transient (attempt ${attempt}/3, rc=${rc}): ${resp}"
+                  if [ "$attempt" -lt 3 ]; then
+                    echo "membership(${user}): ${MEMBERSHIP_DETAIL}; retrying in ${delay}s" >&2
+                    sleep "$delay"
+                  fi ;;
+                *)
+                  MEMBERSHIP_DETAIL="non-retryable (rc=${rc}): ${resp}"
+                  return 0 ;;
+              esac
+            done
+            MEMBERSHIP_RESULT=indeterminate
+            return 0
           }
 
           # --------------------------------------------------------------
@@ -114,12 +156,12 @@ jobs:
           PROBE_MEMBER=noahgift                          # org owner, private membership
           PROBE_STRANGER=paiml-pr-gate-sentinel-no-such-user
 
-          probe_pos=$(membership "$PROBE_MEMBER")
-          probe_neg=$(membership "$PROBE_STRANGER")
-          echo "instrument probe: ${PROBE_MEMBER}=${probe_pos} (want member), ${PROBE_STRANGER}=${probe_neg} (want notmember)"
+          membership "$PROBE_MEMBER";   probe_pos=$MEMBERSHIP_RESULT; detail_pos=$MEMBERSHIP_DETAIL
+          membership "$PROBE_STRANGER"; probe_neg=$MEMBERSHIP_RESULT; detail_neg=$MEMBERSHIP_DETAIL
+          echo "instrument probe: ${PROBE_MEMBER}=${probe_pos} [${detail_pos}] (want member), ${PROBE_STRANGER}=${probe_neg} [${detail_neg}] (want notmember)"
 
           if [ "$probe_pos" != "member" ] || [ "$probe_neg" != "notmember" ]; then
-            echo "::error::pr-gate instrument probe FAILED (${PROBE_MEMBER}=${probe_pos}, ${PROBE_STRANGER}=${probe_neg}) -- refusing to judge anyone with a check that cannot demonstrate both answers"
+            echo "::error::pr-gate instrument probe FAILED (${PROBE_MEMBER}=${probe_pos} [${detail_pos}], ${PROBE_STRANGER}=${probe_neg} [${detail_neg}]) -- refusing to judge anyone with a check that cannot demonstrate both answers"
             # Fail RED and leave the PR OPEN. The harm is asymmetric and
             # measured: auto-closing a legitimate owner's PR has happened
             # repeatedly and is invisible to them, while an unauthorized PR
@@ -150,8 +192,8 @@ jobs:
             exit 0
           fi
 
-          author_state=$(membership "$PR_AUTHOR")
-          echo "author=${PR_AUTHOR} type=${PR_AUTHOR_TYPE} membership=${author_state}"
+          membership "$PR_AUTHOR"; author_state=$MEMBERSHIP_RESULT
+          echo "author=${PR_AUTHOR} type=${PR_AUTHOR_TYPE} membership=${author_state} [${MEMBERSHIP_DETAIL}]"
 
           case "$author_state" in
             member)
@@ -164,7 +206,7 @@ jobs:
               echo "$PR_AUTHOR: not a member -- REJECTED" ;;
             *)
               # Could not ask. Not a verdict. Never close on this.
-              echo "::error::could not determine ${ORG} membership for ${PR_AUTHOR} -- leaving the PR open for a human"
+              echo "::error::could not determine ${ORG} membership for ${PR_AUTHOR} [${MEMBERSHIP_DETAIL}] -- leaving the PR open for a human"
               exit 1 ;;
           esac
 
