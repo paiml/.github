@@ -40,178 +40,95 @@ jobs:
         id: authz
         shell: bash
         env:
+          # Everything the decision reads comes from the event payload and is
+          # passed through env:, never interpolated into the script body.
+          EVENT_NAME: ${{ github.event_name }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           set -uo pipefail
 
           # ==============================================================
-          # WHY THIS USES THE RUNNER'S AMBIENT ORG AUTH
+          # DECISION COMES FROM THE EVENT PAYLOAD ONLY (aprender#5951).
           #
-          # Two different APIs have now been caught giving this gate a
-          # confidently wrong answer, both for the same underlying reason:
-          # the default GITHUB_TOKEN cannot see PRIVATE org memberships,
-          # and every paiml owner's membership is private.
+          # Operator: "the fix belongs in the job, not on gx10" and "have
+          # authorize read author_association from the event". Standing
+          # rule: no workflow may use credentials that live on a host.
+          # This step therefore makes NO API call and never invokes `gh`:
+          # the earlier membership probe depended on the runner's ambient
+          # `gh` login, and a runner without one (gx10-blackwell) turned
+          # every PR red with "indeterminate".
           #
-          #   1. `orgs.checkMembershipForUser` with GITHUB_TOKEN answers 404
-          #      for a private member -- byte-for-byte identical to "not a
-          #      member". This closed @noahgift's PRs until he was
-          #      allowlisted by name (#12), then closed @alfredodeza's
-          #      paiml/infra#340 twice while `gate` and `validate` were
-          #      green on the same commit.
+          # Known limitation, accepted: GitHub reports a PRIVATE org
+          # member's association as COLLABORATOR rather than MEMBER. That
+          # is why COLLABORATOR is on the allow-list. The cost is that an
+          # outside collaborator is indistinguishable from a private
+          # member; collaborators already hold repo access granted by an
+          # owner, so this does not widen who can open PRs.
           #
-          #   2. `author_association` from the payload looked like the fix
-          #      -- the REST API reports MEMBER for those same PRs. It is
-          #      NOT the fix. MEASURED on the live webhook for #340:
-          #      author_association=COLLABORATOR. GitHub downgrades the
-          #      payload's association for private members too, so a real
-          #      org owner is indistinguishable from an outside
-          #      collaborator. That attempt (#54) is what this replaces.
-          #
-          # The runner's ambient `gh` auth holds admin:org and therefore
-          # sees the truth. This is the same decision, for the same reason,
-          # already taken by lane-liveness.sh (CLAUDE.md: "Uses the
-          # runner's ambient org gh auth -- never github.token").
-          #
-          # Safe here: this job has exactly ONE input it does not control,
-          # a login string, and there is NO actions/checkout anywhere in
-          # this workflow. No PR-authored code is fetched or run.
+          # FAIL-CLOSED: anything not on the allow-list -- including an
+          # empty, missing or unknown value -- fails. A missing value never
+          # passes on a PR event.
+          # Allow-list: OWNER MEMBER COLLABORATOR.
           # ==============================================================
 
-          ORG=paiml
+          # Strip anything that could forge a workflow command before echoing.
+          clean() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '?' | head -c 64; }
 
-          # Deliberately NOT the workflow token: that token is the blind
-          # instrument this whole file exists to route around.
-          unset GITHUB_TOKEN GH_TOKEN
-
-          # membership USER -> sets MEMBERSHIP_RESULT (member | notmember |
-          # indeterminate) and MEMBERSHIP_DETAIL (the HTTP status / error that
-          # produced it). Called directly, not in $(...), so both survive.
-          #
-          # `indeterminate` is a THIRD answer and must never collapse into
-          # `notmember` -- conflating "they are not a member" with "I could
-          # not ask" is the exact defect that closed two owners' PRs.
-          #
-          # The previous version threw the error text away, so a probe that
-          # failed in 90 ms on a runner with no usable gh (aprender#5951:
-          # gx10-blackwell, both controls indeterminate) left no evidence of
-          # WHY. Now every non-definitive outcome names its status.
-          #
-          # Only TRANSIENT failures are retried (5xx, 429, secondary rate
-          # limit, timeouts/connection errors), 3 attempts, backoff 5/10/20 s.
-          # Auth failures, a missing gh, 302 and unparseable replies are
-          # deterministic: retrying them only delays the same answer.
-          BACKOFF="${PRGATE_BACKOFF:-5 10 20}"
-          membership() {
-            local user="$1" resp rc state attempt=0 delay
-            MEMBERSHIP_RESULT=indeterminate
-            MEMBERSHIP_DETAIL="no attempt made"
-            if ! command -v gh >/dev/null 2>&1; then
-              MEMBERSHIP_DETAIL="gh not found on this runner (PATH=${PATH})"
-              return 0
-            fi
-            for delay in $BACKOFF; do
-              attempt=$((attempt + 1))
-              resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
-              if [ "$rc" -eq 0 ]; then
-                state=$(printf '%s' "$resp" | jq -r '.state // "unknown"' 2>/dev/null) || state=unparseable
-                case "$state" in
-                  active)      MEMBERSHIP_RESULT=member;    MEMBERSHIP_DETAIL="HTTP 200 state=active" ;;
-                  pending)     MEMBERSHIP_RESULT=notmember; MEMBERSHIP_DETAIL="HTTP 200 state=pending (invited, not accepted)" ;;
-                  unparseable) MEMBERSHIP_DETAIL="HTTP 200 but reply is not JSON: $(printf '%s' "$resp" | head -c 200)" ;;
-                  *)           MEMBERSHIP_DETAIL="HTTP 200 with unexpected state=${state}" ;;
-                esac
-                return 0
-              fi
-              resp=$(printf '%s' "$resp" | tr '\n' ' ' | head -c 300)
-              case "$resp" in
-                *"HTTP 404"*)
-                  # Definitive ONLY because this call runs with org-admin auth;
-                  # with a token that cannot see private members a 404 would be
-                  # a lie, which is what the instrument probe below detects.
-                  MEMBERSHIP_RESULT=notmember; MEMBERSHIP_DETAIL="HTTP 404"; return 0 ;;
-                *"HTTP 5"[0-9][0-9]*|*"HTTP 429"*|*"rate limit"*|*"secondary"*|*[Tt]imeout*|*"timed out"*|*"connection"*|*"EOF"*|*"dial tcp"*)
-                  MEMBERSHIP_DETAIL="transient (attempt ${attempt}/3, rc=${rc}): ${resp}"
-                  if [ "$attempt" -lt 3 ]; then
-                    echo "membership(${user}): ${MEMBERSHIP_DETAIL}; retrying in ${delay}s" >&2
-                    sleep "$delay"
-                  fi ;;
-                *)
-                  MEMBERSHIP_DETAIL="non-retryable (rc=${rc}): ${resp}"
-                  return 0 ;;
-              esac
-            done
-            MEMBERSHIP_RESULT=indeterminate
-            return 0
+          allow() {
+            echo "allow=true" >> "$GITHUB_OUTPUT"
+            echo "reason=$1"  >> "$GITHUB_OUTPUT"
+            echo "${2:-$PR_AUTHOR}: $1 -- ALLOWED"
           }
 
-          # --------------------------------------------------------------
-          # PROBE THE INSTRUMENT BEFORE TRUSTING ITS VERDICT.
-          # A membership check that cannot see members reports everyone as
-          # an outsider, and that is precisely how this gate failed twice.
-          # So it must answer a known member and a known non-member
-          # correctly, right now, on this runner, before it is allowed to
-          # judge anybody.
-          # --------------------------------------------------------------
-          PROBE_MEMBER=noahgift                          # org owner, private membership
-          PROBE_STRANGER=paiml-pr-gate-sentinel-no-such-user
+          case "${EVENT_NAME:-}" in
+            pull_request_target|pull_request) ;;
+            merge_group|push)
+              # No PR author exists on these events. They are reachable only
+              # by someone who already passed this gate on the PR (merge
+              # queue entry / push to a protected branch need write access),
+              # and the Close step below acts on a PR that does not exist
+              # here. Allowing is safe; documented decision, not a default.
+              allow "no PR author on ${EVENT_NAME:-} event (already gated at PR time)" "${EVENT_NAME:-}"
+              exit 0 ;;
+            *)
+              echo "::error::pr-gate authorize: unsupported event '$(clean "${EVENT_NAME:-}")' -- refusing (fail-closed)"
+              exit 1 ;;
+          esac
 
-          membership "$PROBE_MEMBER";   probe_pos=$MEMBERSHIP_RESULT; detail_pos=$MEMBERSHIP_DETAIL
-          membership "$PROBE_STRANGER"; probe_neg=$MEMBERSHIP_RESULT; detail_neg=$MEMBERSHIP_DETAIL
-          echo "instrument probe: ${PROBE_MEMBER}=${probe_pos} [${detail_pos}] (want member), ${PROBE_STRANGER}=${probe_neg} [${detail_neg}] (want notmember)"
-
-          if [ "$probe_pos" != "member" ] || [ "$probe_neg" != "notmember" ]; then
-            echo "::error::pr-gate instrument probe FAILED (${PROBE_MEMBER}=${probe_pos} [${detail_pos}], ${PROBE_STRANGER}=${probe_neg} [${detail_neg}]) -- refusing to judge anyone with a check that cannot demonstrate both answers"
-            # Fail RED and leave the PR OPEN. The harm is asymmetric and
-            # measured: auto-closing a legitimate owner's PR has happened
-            # repeatedly and is invisible to them, while an unauthorized PR
-            # left open under a red required check is visible to every
-            # human on the repo.
-            exit 1
-          fi
-
-          # --------------------------------------------------------------
-          # Decision.
-          # --------------------------------------------------------------
-          # Explicitly allowlisted EXTERNAL contributors only. Org members
-          # are authorized structurally, below -- adding one here is how
-          # this gate hid its own blindness for four months.
-          case "$PR_AUTHOR" in
-            guyernest|spudnic) # guyernest: pmcp lead developer; spudnic: authorized contributor (operator 2026-09-26) -- outside collaborators, not org members
-              echo "allow=true"   >> "$GITHUB_OUTPUT"
-              echo "reason=allowlisted external contributor" >> "$GITHUB_OUTPUT"
-              echo "$PR_AUTHOR: allowlisted external contributor -- ALLOWED"
+          # Explicitly allowlisted EXTERNAL contributors (outside collaborators).
+          case "${PR_AUTHOR:-}" in
+            guyernest|spudnic) # guyernest: pmcp lead developer; spudnic: authorized contributor (operator 2026-09-26)
+              allow "allowlisted external contributor"
               exit 0 ;;
           esac
 
           # Bots (dependabot, renovate, actions-user) are always allowed.
-          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
-            echo "allow=true" >> "$GITHUB_OUTPUT"
-            echo "reason=bot"  >> "$GITHUB_OUTPUT"
-            echo "$PR_AUTHOR: bot -- ALLOWED"
+          if [ "${PR_AUTHOR_TYPE:-}" = "Bot" ]; then
+            allow "bot"
             exit 0
           fi
 
-          membership "$PR_AUTHOR"; author_state=$MEMBERSHIP_RESULT
-          echo "author=${PR_AUTHOR} type=${PR_AUTHOR_TYPE} membership=${author_state} [${MEMBERSHIP_DETAIL}]"
-
-          case "$author_state" in
-            member)
-              echo "allow=true" >> "$GITHUB_OUTPUT"
-              echo "reason=active ${ORG} org member" >> "$GITHUB_OUTPUT"
-              echo "$PR_AUTHOR: active ${ORG} org member -- ALLOWED" ;;
-            notmember)
+          case "${PR_ASSOCIATION:-}" in
+            OWNER|MEMBER|COLLABORATOR)
+              allow "author_association=${PR_ASSOCIATION}"
+              exit 0 ;;
+            CONTRIBUTOR|FIRST_TIMER|FIRST_TIME_CONTRIBUTOR|MANNEQUIN|NONE)
               echo "allow=false" >> "$GITHUB_OUTPUT"
-              echo "reason=not an active ${ORG} org member and not allowlisted" >> "$GITHUB_OUTPUT"
-              echo "$PR_AUTHOR: not a member -- REJECTED" ;;
+              echo "reason=author_association=${PR_ASSOCIATION} is not OWNER/MEMBER/COLLABORATOR and author is not allowlisted" >> "$GITHUB_OUTPUT"
+              echo "::error::pr-gate: author_association=${PR_ASSOCIATION} for $(clean "${PR_AUTHOR:-}") -- REJECTED"
+              exit 1 ;;
             *)
-              # Could not ask. Not a verdict. Never close on this.
-              echo "::error::could not determine ${ORG} membership for ${PR_AUTHOR} [${MEMBERSHIP_DETAIL}] -- leaving the PR open for a human"
+              # Empty, missing or unknown: could not establish who this is.
+              # Fail red, leave the PR open for a human (no allow=false, so
+              # the Close step does not run).
+              echo "::error::pr-gate: author_association='$(clean "${PR_ASSOCIATION:-}")' is empty or unknown -- refusing (fail-closed)"
               exit 1 ;;
           esac
 
       - name: Close unauthorized PR
-        if: steps.authz.outputs.allow != 'true'
+        if: ${{ !cancelled() && steps.authz.outputs.allow == 'false' }}
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
           REASON: ${{ steps.authz.outputs.reason }}
