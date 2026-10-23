@@ -245,17 +245,29 @@ jobs:
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -463,17 +475,29 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
 
   lint:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
@@ -529,17 +553,29 @@ jobs:
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -741,17 +777,29 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
 
   coverage:
     name: coverage
@@ -813,17 +861,29 @@ jobs:
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1086,17 +1146,29 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
 
   bench:
     name: bench
@@ -1138,17 +1210,29 @@ jobs:
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1328,17 +1412,29 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # its temp dir (the runner process creates it), never a hard-coded 1000.
-          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
-          case "$OWNER_UG" in
-            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
-            *) echo "runner owner from temp dir: $OWNER_UG" ;;
-          esac
-          if command -v find >/dev/null 2>&1; then
-            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
-          else
-            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          # the stat of the runner's temp dir. No literal uid and no fallback: unreadable = fail.
+          OWNER_UG=""
+          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do
+            [ -n "$P" ] || continue
+            OWNER_UG="$(stat -c '%u:%g' "$P")" && break
+            OWNER_UG=""
+          done
+          if [ -z "$OWNER_UG" ]; then
+            echo "::error::cannot read the runner owner: stat failed on '${RUNNER_TEMP:-<RUNNER_TEMP unset>}', '$WORK_ROOT/_temp', '$WORK_ROOT'"
+            exit 1
           fi
+          echo "runner owner (stat of runner temp dir): $OWNER_UG"
+          export OWNER_UG
+          CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
+          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+            || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
+          if [ "$CHOWN_N" -gt 0 ]; then
+            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+            rm -f "${CHOWN_FAILED:?}"
+            exit 1
+          fi
+          rm -f "${CHOWN_FAILED:?}"
 
   security:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
