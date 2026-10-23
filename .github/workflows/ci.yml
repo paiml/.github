@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: NO-FORK-1 guard test (RED->GREEN)
         run: bash scripts/test-no-fork-guard.sh --self-test && bash scripts/test-no-fork-guard.sh
+      - name: uid-agnostic chown guard (infra#2349, RED->GREEN)
+        run: bash scripts/test-uid-agnostic-chown.sh --self-test && bash scripts/test-uid-agnostic-chown.sh
       - name: Sigstore signer guards (RED->GREEN)
         run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: Lint workflow YAML
