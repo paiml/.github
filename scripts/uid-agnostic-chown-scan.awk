@@ -12,6 +12,8 @@ function fail(tag, ln, msg) { print "FAIL[" tag "] " F ":" ln ": " msg; bad = 1 
 BEGIN {
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
+  if (K == "") K = F
+  loadallow(ENVIRON["OPAQUE_ALLOW"])
   sn = 0; total = 0; container = 0
 }
 # --- NORMALISE a command word the way the shell would, then match CLASSES, not spellings ---------
@@ -59,12 +61,32 @@ function cmdword(s,   n, a, i, m, T, j, st, w) {
     m = split(st, T, /[ \t]+/); j = skipwrap(T, m, 1)
     if (j > m) continue
     w = T[j]
-    if (w ~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) return w
+    if (w ~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/ || w ~ /^\$[0-9@*#?!]/ || w ~ /^\007/) return w
   }
   return ""
 }
 # nonlit(a): is the argument of eval / sh -c / source something the scanner cannot read? A word that
 # starts with a single quote is literal text; otherwise any $, ` or $( ) outside single quotes is not.
+# maskall(s): hide the shell separators that sit inside quotes (echo "... ($x) ...") so cmdword() does not
+# read quoted text as a statement; a quoted word that STARTS with one ("$(tool)", "`tool`") stays visible.
+function maskall(s,   i, c, q, o, sp, SQ, PD) {
+  q = ""; o = ""; sp = 0
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (q == "'") { if (c == "'") q = ""; else if (c ~ /[;&|(){}`<>]/) c = "\007" }
+    else if (q == "\"") {
+      if (c == "\"") q = ""
+      else if (c == "$" && substr(s, i + 1, 1) == "(") { sp++; SQ[sp] = q; PD[sp] = 1; q = ""; o = o c "("; i++; continue }   # "$(...)": a fresh context
+      else if (c ~ /[;&|(){}`<>]/) c = "\007"
+    } else if (c == "'" || c == "\"") q = c
+    else if (sp > 0) {
+      if (c == "(") PD[sp]++
+      else if (c == ")") { PD[sp]--; if (PD[sp] == 0) { q = SQ[sp]; sp-- } }
+    }
+    o = o c
+  }
+  return o
+}
 function nonlit(a) {
   a = trim(a); if (a ~ /^'/) return 0
   gsub(/'[^']*'/, "", a)
@@ -73,20 +95,53 @@ function nonlit(a) {
 # walk(s, d): s is a kq() line (quotes kept). Sets PRIM (ownership primitive other than chown/chgrp,
 # which the command-word regex already catches) and OPAQ (eval / sh -c / source with a non-literal
 # argument). A literal eval / sh -c argument is scanned again, one level down.
-function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
+#
+# CLASS RULE (applies to EVERY run step, ownership or not). OPAQ is set for:
+#   (a) a shell (sh bash dash zsh ksh ash) given -c anywhere among its flags (-o pipefail -c,
+#       -eo pipefail -c, -lc ...) whose command string is not a literal;
+#   (b) any pipe into a shell, into eval, into `xargs sh`, or into source /dev/stdin;
+#   (c) eval, source or . with a non-literal argument (or reading /dev/stdin / a process substitution);
+#   (d) a command word that is not a literal after normalisation: $'...' ANSI-C (here), and
+#       $( ) / ` ` / $VAR words (cmdword() in flush()).
+# unmask(): put back the | that maskpipe() hid inside quotes. maskpipe(): a | inside '...' or "..." is
+# text (grep -E 'a|b'), not a pipe.
+function unmask(s) { gsub(/\004/, "|", s); return s }
+function maskpipe(s,   i, c, q, o) {
+  q = ""; o = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (q == "" && (c == "'" || c == "\"")) q = c
+    else if (q != "" && c == q) q = ""
+    else if (q != "" && c == "|") c = "\004"
+    o = o c
+  }
+  return o
+}
+# firstword(a): the first shell word of a (quote-aware): a '...' or "..." word runs to its closing quote.
+function firstword(a,   q, e) {
+  a = trim(a); q = substr(a, 1, 1)
+  if (q == "'" || q == "\"") { e = index(substr(a, 2), q); return (e ? substr(a, 1, e + 1) : a) }
+  sub(/[ \t].*$/, "", a); return a
+}
+function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc, piped, f) {
   if (d > 3) return
+  s = maskpipe(unmask(s))
+  if (s ~ /(^|[;&|({ \t])(source|\.)[ \t]+<\(/) OPAQ = 1                      # (c) source <(cmd)
   gsub(/(^|[ \t])-(exec|execdir|ok|okdir)[ \t]/, " ; ", s)
   gsub(/\{\}/, "@@", s)
   gsub(/\$\(|`/, " \001; ", s); gsub(/\$\{/, "$", s); gsub(/[<>]\(/, ";", s)
-  n = split(s, a, /;|&&|\|\||\||&|\(|\{|\)/)
+  gsub(/\|\|/, ";", s); gsub(/\|&?/, ";\002", s)
+  n = split(s, a, /;|&&|&|\(|\{|\)/)
   for (i = 1; i <= n; i++) {
-    st = trim(a[i]); if (st == "") continue
+    st = a[i]; piped = (substr(st, 1, 1) == "\002"); if (piped) st = substr(st, 2)
+    st = trim(st); if (st == "") continue
     m = split(st, R, /[ \t]+/)
     for (j = 1; j <= m; j++) N[j] = qs(R[j])
     j = skipwrap(N, m, 1)
     while (j <= m && N[j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) j++
     if (j > m) continue
     w = bn(N[j])
+    if (R[j] ~ /^\$'/ || R[j] ~ /^\$"/) OPAQ = 1          # (d) $'\x63hown' ANSI-C word
     if (w == "install") {
       for (k = j + 1; k <= m; k++) if (N[k] ~ /^-[A-Za-z]*[og]([^A-Za-z-].*)?$/ || N[k] ~ /^--(owner|group)(=|$)/) { addprim(w " " N[k], st); break }
     } else if (w == "cp" || w == "rsync" || w == "tar" || w == "mv") {
@@ -94,19 +149,43 @@ function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
     } else if (w == "setfacl") addprim(w, st)
     else if (w == "eval" || w == "source" || w == ".") {
       args = ""; for (k = j + 1; k <= m; k++) args = args " " R[k]
-      if (nonlit(args)) OPAQ = 1
-      else if (w == "eval") walk(qs(args), d + 1)
+      if (piped) OPAQ = 1          # (b) | eval, | source; source <(...)
+      else if (args ~ /\/dev\/(stdin|fd\/|tty)|\/proc\/self\/fd|[ \t]-([ \t]|$)/) OPAQ = 1   # source /dev/stdin
+      else if (w != "eval" && nonlit(args)) OPAQ = 1
+      else if (w == "eval") { if (nonlit(args)) OPAQ = 1; else walk(qs(args), d + 1) }
     } else if (w ~ /^(sh|bash|dash|zsh|ksh|ash)$/) {
       sc = 0
-      for (k = j + 1; k <= m && N[k] ~ /^-/; k++) if (N[k] ~ /^-[A-Za-z]*c$/) { sc = k + 1; break }
+      # (a) -c may follow any flags, including option arguments: -o pipefail -c, -eo pipefail -c
+      for (k = j + 1; k <= m && N[k] ~ /^[-+]/; k++) {
+        f = N[k]
+        if (f == "--") break
+        if (f ~ /^-[A-Za-z]*c[A-Za-z]*$/) { sc = k + 1; break }
+        if (f ~ /^[-+][A-Za-z]*[oO]$/ || f ~ /^--(rcfile|init-file)$/) k++
+      }
       if (sc) {
         args = ""; for (k = sc; k <= m; k++) args = args " " R[k]
-        if (nonlit(args)) OPAQ = 1
+        args = firstword(args)
+        if (sc > m || nonlit(args)) OPAQ = 1
         else walk(qs(args), d + 1)
-      }
+      } else if (piped) OPAQ = 1                    # (b) | sh, | bash -s, | xargs sh
     }
   }
 }
+# The allowlist (scripts/uid-agnostic-opaque-allow.txt, path in OPAQUE_ALLOW): `key:exact-line-text  # reason`,
+# key = the workflow file name (actions: actions/NAME/action.yml), text = the trimmed logical line.
+# The shell guard validates the file and fails a stale entry; the awk reports each entry it used.
+function loadallow(file,   line, p, q, key) {
+  if (file == "") return
+  while ((getline line < file) > 0) {
+    if (line ~ /^[ \t]*(#|$)/) continue
+    p = 0; q = 0
+    while ((q = index(substr(line, p + 1), " # ")) > 0) p += q
+    if (p == 0) continue
+    key = trim(substr(line, 1, p - 1)); ALLOW[key] = 1
+  }
+  close(file)
+}
+function allowed(lg,   k) { k = K ":" lg; if (k in ALLOW) { USED[k] = 1; return 1 } return 0 }
 # a primitive aimed at the uid-agnostic owner_ug form is the only approved one
 function addprim(what, st) { if (st !~ /OWNER_UG/) PRIM = (PRIM == "" ? "" : PRIM "; ") what }
 # does the (normalised) step text deal with ownership at all?
@@ -129,18 +208,21 @@ function resolves(w, text,   nm, n, L, i, v, found) {
   }
   return found
 }
-function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
+function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl, rm, runind, ind, startrun, LR, isown) {
   if (sn == 0) return
-  n = 0; acc = ""; start = 0; text = ""
+  n = 0; acc = ""; start = 0; text = ""; rm = 0; runind = 0
   for (i = 1; i <= sn; i++) {
     raw = S[i]; t = trim(raw); text = text "\n" raw
+    ind = match(raw, /[^ \t]/) ? RSTART : 0
+    if (raw ~ /^[ \t]*(- )?run:/) { match(raw, /run:/); runind = RSTART; rm = 1 }
+    else if (rm && t != "" && t !~ /^#/ && ind <= runind) rm = 0
     if (t ~ /^#/) continue
-    if (acc == "") start = SN[i]
+    if (acc == "") { start = SN[i]; startrun = rm }
     if (t ~ /\\$/) { sub(/[ \t]*\\$/, "", t); acc = (acc == "" ? t : acc " " t); continue }
     acc = (acc == "" ? t : acc " " t)
-    n++; LG[n] = acc; LN[n] = start; acc = ""
+    n++; LG[n] = acc; LN[n] = start; LR[n] = startrun; acc = ""
   }
-  if (acc != "") { n++; LG[n] = acc; LN[n] = start }
+  if (acc != "") { n++; LG[n] = acc; LN[n] = start; LR[n] = startrun }
   textn = qs(kq(text))
   nc = 0; siteA = 0; ownother = 0; haveown = 0
   for (i = 1; i <= n; i++) {
@@ -161,19 +243,29 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
       walk(ku, 0)
       opaq = OPAQ
       if (!cmd && PRIM != "") { cmd = 1; prim = 1 }
-      if (!cmd && u !~ /^(echo|printf)[ \t]/) { vw = cmdword(nu); if (vw != "") { vcmd = 1; cmd = 1 } }
+      if (!cmd && u !~ /^(echo|printf)[ \t]/) {
+        pre = u; gsub(/\\"/, "\005", pre); gsub(/\\'/, "\006", pre)
+        vw = cmdword(qs(maskall(kq(pre)))); if (vw != "") { vcmd = 1; cmd = 1 }
+      }
     }
-    if (opaq && owns_step(textn)) fail("OPAQUE", ln, "eval / sh -c / source with a non-literal argument in a step that deals with ownership: the scanner cannot see what will run: " lg)
+    # CLASS RULE: no owns_step gate. Every run step is held to it; the only exemption is the allowlist file.
+    if (opaq && LR[i] && !allowed(lg)) fail("OPAQUE", ln, "opaque shell (non-literal -c string, pipe into a shell / eval / source, eval or source of a non-literal, ANSI-C word): the scanner cannot see what will run: " lg)
     if (lg == OWN) haveown = 1
     if (u ~ /(^|[ \t;])OWNER=/ && lg != OWN) ownother = 1
     if (!cmd) continue
     nc++; total++
     if (prim) { fail("TARGET", ln, "ownership primitive (" PRIM ") is not the uid-agnostic owner_ug form: " lg); continue }
     if (vcmd) {
-      # enforced only in a step that deals with ownership (names chown/chgrp/OWNER_UG/OWNER=/an ownership
-      # primitive); another step's variable commands ("$PV" codegen, ...) are not an ownership question
-      if ((tolower(textn) !~ /chown|chgrp|owner_ug|owner=/ && !owns_step(textn)) || resolves(vw, text)) { nc--; total-- }
-      else fail("VARCMD", ln, "command word " vw " is a variable whose value cannot be resolved to a non-chown command: " lg)
+      # (d) a command word that is not a literal. A variable that every assignment in the step resolves
+      # to a static non-chown word is a literal in effect; any other is OPAQUE in every run step (no
+      # ownership-step gate), exempt only through the allowlist file.
+      isown = (tolower(textn) ~ /chown|chgrp|owner_ug|owner=/ || owns_step(textn))
+      if (resolves(vw, text)) { nc--; total-- }
+      else {
+        if (isown) fail("VARCMD", ln, "command word " vw " is a variable whose value cannot be resolved to a non-chown command: " lg)
+        else { nc--; total-- }
+        if ((LR[i] || isown) && !allowed(lg)) fail("OPAQUE", ln, "command word " vw " is not a literal after normalisation (variable / $( ) / printf-built): " lg)
+      }
       continue
     }
     if (index(lg, "-exec sh -c") && index(lg, "chown -h \"$OWNER_UG\"")) {
@@ -208,4 +300,4 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
 /^    container:/ { container = 1 }
 /^[ \t]*- (name|uses|run|id|if):/ { flush() }
 { sn++; S[sn] = $0; SN[sn] = NR }
-END { flush(); print "SCAN " total; exit 0 }
+END { flush(); for (k in USED) print "ALLOWUSED\t" k; print "SCAN " total; exit 0 }

@@ -43,6 +43,7 @@ export FIND_A='find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWN
 export FIND_TAIL=' || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }'
 export OWNER_LINE='OWNER="$(id -un):$(id -gn)"'
 export CHOWN_B="$CH -R \"\$OWNER\" \"\$WORK_ROOT\""
+export OPAQUE_ALLOW="${OPAQUE_ALLOW:-$(dirname "$0")/uid-agnostic-opaque-allow.txt}"
 SCAN_AWK="${SCAN_AWK:-$(dirname "$0")/uid-agnostic-chown-scan.awk}"
 
 extract_sites() { # file outdir -> writes outdir/site.N
@@ -51,6 +52,31 @@ extract_sites() { # file outdir -> writes outdir/site.N
     on { print > f }
     on && $0 == "          rm -f \"${CHOWN_FAILED:?}\"" { on=0; close(f) }
   ' "$1"
+}
+
+# The allowlist key of a scanned file: the workflow file name, or actions/NAME/action.yml for a composite action.
+allow_key() {
+  case "$1" in
+    "$WF"/*) echo "${1#"$WF"/}" ;;
+    "$ACT"/*) echo "actions/${1#"$ACT"/}" ;;
+    *) echo "$1" ;;
+  esac
+}
+# scripts/uid-agnostic-opaque-allow.txt: `key:exact-line-text  # reason`, one entry per opaque run line the
+# class rule may not flag. Each entry needs a reason (>= 12 chars) and must still be USED (its line is
+# present and still opaque); an entry whose line is gone is RED [ALLOWLIST] (stale), never skipped.
+check_allowlist() { # usedfile -> prints FAIL[ALLOWLIST] lines; returns 1 if any
+  local used="$1" af="$OPAQUE_ALLOW" line reason key bad=0 n=0
+  [ -f "$af" ] || { echo "FAIL[ALLOWLIST] the allowlist file $af is missing"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*|[[:space:]]*'#'*) continue ;; esac
+    n=$((n + 1))
+    case "$line" in *' # '*) reason="${line##* # }"; key="${line%" # $reason"}"; key="${key%"${key##*[![:space:]]}"}" ;; *) reason=""; key="$line" ;; esac
+    if [ "${#reason}" -lt 12 ]; then echo "FAIL[ALLOWLIST] entry has no specific reason (' # <12+ chars>'): $line"; bad=1; continue; fi
+    grep -qxF -- "$key" "$used" || { echo "FAIL[ALLOWLIST] stale entry (its line is gone or no longer opaque): $key"; bad=1; }
+  done < "$af"
+  echo "allowlist: $n entr(y/ies) checked against the scan"
+  return $bad
 }
 
 check_files() { # prints FAIL[tag] lines; returns 1 if any
@@ -64,14 +90,18 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
   done | sort -u > "$tmp/global"
   [ -s "$tmp/global" ] && { cat "$tmp/global"; fails=1; }
   # Whole-file scan: every chown/chgrp in every workflow, sites or not.
-  local nfiles=0 nchown=0 out
+  local nfiles=0 nchown=0 out key used="$tmp/allow-used"
+  : > "$used"
   for f in $(list_files); do
     nfiles=$((nfiles + 1))
-    out="$(awk -v F="$f" -f "$SCAN_AWK" "$f")" || { echo "FAIL[NOSCAN] scan of $f errored"; fails=1; continue; }
+    key="$(allow_key "$f")"
+    out="$(awk -v F="$f" -v K="$key" -f "$SCAN_AWK" "$f")" || { echo "FAIL[NOSCAN] scan of $f errored"; fails=1; continue; }
     printf '%s\n' "$out" | grep '^FAIL' && fails=1
     nchown=$((nchown + $(printf '%s\n' "$out" | sed -n 's/^SCAN //p' | head -n 1)))
+    printf '%s\n' "$out" | sed -n 's/^ALLOWUSED\t//p' >> "$used"
   done
   { [ "$nfiles" -eq 0 ] || [ "$nchown" -eq 0 ]; } && { echo "FAIL[NOSCAN] scanned $nfiles file(s) and $nchown chown command(s) under $WF"; fails=1; }
+  check_allowlist "$used" || fails=1
   for f in $(list_files); do
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
     for s in "$tmp"/d/site.*; do
@@ -408,10 +438,90 @@ if [ "${1:-}" = "--self-test" ]; then
   keep "ctl: source ./file literal"          'source ./env.sh'
   keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
   keep "ctl: install -o from OWNER_UG"       'install -o "${OWNER_UG%%:*}" a b'
-  # eval in a step that does not deal with ownership is not an ownership question
-  cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
-  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
+  # --- infra#2349 reviewer points (infra-PR-cull, paiml/.github#95 @ 52b0c9d): the OPAQUE CLASS rule ---
+  # Applies to EVERY run step. Each mutant runs in a step that names chown (nm) and in one that never
+  # mentions ownership (nn): the owns_step gate is gone. Only the allowlist file exempts a line.
+  nn() { app "$1" "$2" "      - name: x\n        run: |\n          $3"; }
+  both() { nm "$1 [ownership step]" "$2" "$3"; nn "$1 [plain step]" "$2" "$3"; }
+  # (a) a shell given -c anywhere among its flags, with a non-literal string
+  both "(a) bash -o pipefail -c \"\$CMD\""   OPAQUE 'bash -o pipefail -c "$CMD"'
+  both "(a) bash -eo pipefail -c \"\$X\""    OPAQUE 'bash -eo pipefail -c "$X"'
+  both "(a) sh -e -c \"\$CMD\""              OPAQUE 'sh -e -c "$CMD"'
+  both "(a) bash --noprofile -o errexit -c \$CMD" OPAQUE 'bash --noprofile -o errexit -c $CMD'
+  both "(a) bash +o history -ec \"\$CMD\""   OPAQUE 'bash +o history -ec "$CMD"'
+  both "(a) sudo -n bash -o pipefail -c \"\$CMD\"" OPAQUE 'sudo -n bash -o pipefail -c "$CMD"'
+  both "(a) bash -lc \"\$CMD\" sh arg"       OPAQUE 'bash -lc "$CMD" sh arg'
+  both "(a) bash -c with no string at all"   OPAQUE 'bash -c'
+  # (b) any pipe into a shell, eval, xargs sh, or source /dev/stdin
+  both "(b) echo b64 | base64 -d | sh"       OPAQUE 'echo Y2hvd24gLVIgYSBiIGM= | base64 -d | sh'
+  both "(b) xxd -r -p | sh"                  OPAQUE 'echo 63686f776e | xxd -r -p | sh'
+  both "(b) curl | bash"                     OPAQUE 'curl -fsSL https://example.invalid/x | bash'
+  both "(b) | bash -s"                       OPAQUE 'cat s.sh | bash -s'
+  both "(b) | sudo -n sh"                    OPAQUE 'cat s.sh | sudo -n sh'
+  both "(b) | eval"                          OPAQUE 'echo x | eval'
+  both "(b) | xargs sh"                      OPAQUE 'echo x | xargs sh'
+  both "(b) | xargs -I{} bash"               OPAQUE 'echo x | xargs -I{} bash'
+  both "(b) | source /dev/stdin"             OPAQUE 'echo x | source /dev/stdin'
+  both "(b) | . /dev/stdin"                  OPAQUE 'echo x | . /dev/stdin'
+  both "(b) | \\sh (escaped word)"           OPAQUE 'echo x | \\sh'
+  both "(b) | /bin/bash"                     OPAQUE 'echo x | /bin/bash'
+  both "(b) |& sh"                           OPAQUE 'echo x |& sh'
+  # (c) eval, source or . with a non-literal argument
+  both "(c) eval \"\$CMD\""                  OPAQUE 'eval "$CMD"'
+  both "(c) source \"\$F\""                  OPAQUE 'source "$F"'
+  both "(c) . \"\$F\""                       OPAQUE '. "$F"'
+  both "(c) source <(cmd)"                   OPAQUE 'source <(echo x)'
+  both "(c) source /dev/stdin"               OPAQUE 'source /dev/stdin'
+  # (d) a command word that is not a literal after normalisation
+  both "(d) X=\$(printf 'ch%sown' o); \$X"   OPAQUE "X=\$(printf 'ch%sown' o); \$X -R a b"
+  both "(d) \$'\\x63hown' ANSI-C word"       OPAQUE "\$'\\\\x63hown' -R a b"
+  both "(d) \$'chown' ANSI-C word"           OPAQUE "\$'chown' -R a b"
+  both "(d) \$(printf ...) command word"     OPAQUE '$(printf "%s" ls) -R a'
+  both "(d) \"\$(printf ...)\" quoted word"  OPAQUE '"$(printf "%s" ls)" -R a'
+  both "(d) \$CMD command word"              OPAQUE '$CMD -R a b'
+  both "(d) \"\$@\" command word"            OPAQUE 'exec "$@"'
+  both "(d) backtick command word"           OPAQUE '`printf ls` -R a'
+  both "(d) after a pipe: | \$X"             OPAQUE 'ls | $X'
+  # the old gate-shaped step: eval and sh -c "$BUILD" in a step with NO ownership text are now RED too
+  nn "gate removed: eval in a step with no ownership text" OPAQUE 'eval "$(ssh-agent -s)"\n          sh -c "$BUILD"'
+  # controls: literal and ordinary shapes stay GREEN, in an ownership step (keep) and a plain one (keepn)
+  keepn() { # name line : append a step that never mentions ownership, demand a clean run
+    cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          $2" >> "$tmp/$F"
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
+  }
+  both_keep() { keep "$1 [ownership step]" "$2"; keepn "$1 [plain step]" "$2"; }
+  both_keep "ctl: literal bash -c 'ls'"            "bash -c 'ls'"
+  both_keep "ctl: bash -o pipefail -c 'ls' literal" "bash -o pipefail -c 'ls -l'"
+  both_keep "ctl: bash -eo pipefail -c \"ls\" literal" 'bash -eo pipefail -c "ls -l"'
+  both_keep "ctl: sh -c 'ls' with a \$var after the string" "sh -c 'ls \"\$1\"' sh \"\$p\""
+  both_keep "ctl: ordinary pipes into grep"        'ls -l | grep -E "a|b" | wc -l'
+  both_keep "ctl: pipe into grep -E 'sh|bash'"     "ps | grep -E 'sh|bash' | head -n 1"
+  both_keep "ctl: cat file | sort | uniq"          'cat a | sort | uniq -c'
+  both_keep "ctl: a pipe in an echo"               'echo "a | sh" | tee out'
+  both_keep "ctl: bash script.sh (no -c, not piped)" 'bash ./scripts/build.sh --fast'
+  both_keep "ctl: prose with (\$x) inside quotes"  '[ -z "$x" ] || { echo "refusing ($x); no"; exit 1; }'
+  both_keep "ctl: quoted ; and & inside a string"  'git commit -m "fix; tidy & test (x)"'
+  both_keep "ctl: jq program as one line"          "jq -r 'map(\"\\(.k)=\\(.v)\") | join(\" \")' f.json"
+  both_keep "ctl: x=\$(cmd) assignment"            'x=$(find . -type f -print -quit)'
+  both_keep "ctl: static var resolved to ls"       'LS=/bin/ls\n          $LS -R a'
+  # the allowlist is the only exemption, and it is exact
+  allow_run() { # name allowfile-content expect(green|tag) ; the step is appended to the real workflow copy
+    cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          eval \"\$CMD\"" >> "$tmp/$F"
+    cp "$OPAQUE_ALLOW" "$tmp/allow.txt"; printf '%b\n' "$2" >> "$tmp/allow.txt"
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions OPAQUE_ALLOW=$tmp/allow.txt SITE_COPY= bash "$0" 2>&1 || true)"
+    if [ "$3" = green ]; then
+      if echo "$out" | grep -q 'FAIL\['; then miss "'$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
+    else
+      echo "$out" | grep -q "FAIL\[$3\]" && echo "  caught [$3] $1" || miss "'$1' not caught as [$3]"
+    fi
+  }
+  allow_run "allowlist: an exact entry exempts its line"       'sovereign-ci.yml:eval "$CMD"  # test fixture: a specific, written reason' green
+  allow_run "allowlist: a near-miss entry does not exempt"     'sovereign-ci.yml:eval "$CMD2"  # test fixture: a specific, written reason' OPAQUE
+  allow_run "allowlist: another file name does not exempt"     'ci.yml:eval "$CMD"  # test fixture: a specific, written reason' OPAQUE
+  allow_run "allowlist: a stale entry (line gone) is RED"      'sovereign-ci.yml:eval "$CMD"  # test fixture: a specific, written reason\nci.yml:eval "$GONE"  # test fixture: this line no longer exists' ALLOWLIST
+  allow_run "allowlist: an entry with no reason is RED"        'sovereign-ci.yml:eval "$CMD"' ALLOWLIST
+  allow_run "allowlist: an entry with a one-word reason is RED" 'sovereign-ci.yml:eval "$CMD"  # todo' ALLOWLIST
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

@@ -1,0 +1,10 @@
+# infra#2349 allowlist for the OPAQUE class rule (scripts/uid-agnostic-chown-scan.awk).
+# Format: `<workflow file name>:<exact trimmed logical line>  # <specific reason>` (composite actions: actions/NAME/action.yml).
+# The ONLY exemption from the rule. A stale entry (line gone, or no longer opaque) is RED [ALLOWLIST]. One entry covers
+# every identical line in that file. Add nothing here that can be fixed in the workflow.
+ci.yml:| map("\(.key)=\(.value.result)")  # line inside a multi-line single-quoted jq program: jq text, not shell; the scanner reads one logical line at a time and cannot see the opening quote
+sovereign-ci.yml:"$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true  # $PV is the provable-contracts pv binary, a path found by a -f test over fixed candidate dirs or by which pv, run with the codegen subcommand; never a shell and never an ownership tool
+sovereign-ci.yml:"$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true  # $PV is the provable-contracts pv binary, a path found by a -f test over fixed candidate dirs or by which pv, run with the codegen subcommand; never a shell and never an ownership tool
+sovereign-ci.yml:"$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true  # $PV is the provable-contracts pv binary, a path found by a -f test over fixed candidate dirs or by which pv, run with the codegen subcommand; never a shell and never an ownership tool
+sovereign-ci.yml:"$PV" codegen contracts/ -o src/generated_contracts.rs || true  # $PV is the provable-contracts pv binary, a path found by a -f test over fixed candidate dirs or by which pv, run with the codegen subcommand; never a shell and never an ownership tool
+sovereign-ci.yml:/^DA:/ { total++; if ($3 > 0) covered++ }  # line inside a multi-line single-quoted awk program (the $3 is awk field 3, not a shell variable); the scanner cannot see the opening quote on an earlier line
