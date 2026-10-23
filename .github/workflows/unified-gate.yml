@@ -39,8 +39,31 @@ env:
   SCCACHE_CACHE_SIZE: "50G"
 
 jobs:
+  # NO-FORK-1 (operator ruling 2026-10-23 07:20Z): paiml accepts no fork contributions.
+  # This job exists ONLY for a fork-head PR. It runs on a GitHub-hosted runner (no
+  # self-hosted capacity is ever spent on fork code, and no PR code is checked out),
+  # and it FAILS. A SKIPPED required check counts as passing, so the fork case is made
+  # red explicitly here and again in `gate`. Same-repo PRs, push, merge_group,
+  # schedule and workflow_dispatch skip this job and are otherwise unaffected.
+  fork-guard:
+    name: fork-guard
+    if: ${{ startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Refuse fork-head pull request
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          echo "::error::NO-FORK-1: head repo '${HEAD_REPO}' is not '${BASE_REPO}'. paiml does not accept fork contributions; see CONTRIBUTING.md in paiml/.github (request collaborator access, then push a branch in the repo)."
+          exit 1
+
   # ── Lint Gate (fast feedback: fmt → clippy → deny → pmat) ──
   lint-gate:
+    # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
+    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 30
     runs-on: [self-hosted, clean-room]
     steps:
@@ -320,6 +343,8 @@ jobs:
 
   # ── CPU Gates (Mode A + Mode B) ─────────────────────────
   cpu-gates:
+    # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
+    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) }}
     # 90, not 30, and the number is measured rather than chosen. `clean-room-pmat`
     # on an IDLE box (paiml/paiml-mcp-agent-toolkit@v3.40.1, 2026-09-14):
     #
@@ -473,6 +498,7 @@ jobs:
     # APR-MONO: realizar/trueno/entrenar merged into aprender/crates/aprender-{compute,serve,train-*}.
     # GPU surface now lives under the aprender monorepo; this gate targets aprender directly.
     if: >-
+      (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) &&
       !inputs.skip_gpu &&
       contains(fromJson('["aprender"]'),
       inputs.repo)
@@ -584,10 +610,16 @@ jobs:
   # Single stable check name for branch protection: "unified / gate"
   gate:
     timeout-minutes: 15
-    runs-on: [self-hosted, clean-room]
+    # NO-FORK-1: a fork-head PR runs this gate on a hosted runner (never self-hosted).
+    runs-on: ${{ (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","clean-room"]') }}
     needs: [lint-gate, cpu-gates, gpu-gates]
     if: always()
     steps:
+      - name: NO-FORK-1 refuse fork head (skipped is not passing)
+        if: ${{ startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "::error::NO-FORK-1: fork-head pull request; paiml accepts no fork contributions (see CONTRIBUTING.md in paiml/.github)"
+          exit 1
       # Pre-checkout EACCES self-heal (paiml/.github#42, 2026-07-27). A
       # hard-killed container job skips even its `if: always()` cleanup, leaving
       # root-owned files in the runner's _work tree; the next job then dies
