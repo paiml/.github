@@ -95,6 +95,8 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
+          # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -393,6 +395,8 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
+          # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -533,6 +537,8 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
+          # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -653,6 +659,8 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
+          # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }

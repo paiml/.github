@@ -244,18 +244,24 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -473,18 +479,24 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -550,18 +562,24 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -773,18 +791,24 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -856,18 +880,24 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1140,18 +1170,24 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1203,18 +1239,24 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1404,18 +1446,24 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
-          # the stat of $RUNNER_TEMP only (the runner creates it as itself; $WORK_ROOT is the tree being
-          # repaired, so it is never an owner source). No literal uid and no fallback: unreadable = fail.
-          OWNER_UG=""
-          if [ -n "${RUNNER_TEMP:-}" ]; then
-            OWNER_UG="$(stat -c '%u:%g' "$RUNNER_TEMP")" || OWNER_UG=""
-          fi
+          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
+          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
+          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
+          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
+          # beside _work and created by the runner install as the runner user. Never a path inside the
+          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
+          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
+          # uid 0 = fail, so this step never chowns anything to root.
+          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
           if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: RUNNER_TEMP '${RUNNER_TEMP:-<unset>}' is unset or unreadable"
+            echo "::error::cannot read the runner owner: /__e is unreadable"
             exit 1
           fi
-          echo "runner owner (stat of $RUNNER_TEMP): $OWNER_UG"
+          if [ "${OWNER_UG%%:*}" = "0" ]; then
+            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            exit 1
+          fi
+          echo "runner owner (stat of /__e): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1463,7 +1511,10 @@ jobs:
           # privilege. `sudo -n` never prompts, and `$(id -un):$(id -gn)` keeps
           # the invocation inside the narrow /etc/sudoers.d/runner-chown grant
           # (`chown -R noah:noah *`) instead of relying on a blanket rule.
-          # Never fails the job: an unprivileged chown fixes whatever we own.
+          # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
+          # when neither sudo -n nor a plain chown can repair the tree the step exits 1 with an
+          # ::error::, and the post-condition find below re-checks the result. A bare-metal runner
+          # without the sudoers grant fails here on purpose, never silently.
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }

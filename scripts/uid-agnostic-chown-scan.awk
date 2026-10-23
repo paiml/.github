@@ -149,6 +149,11 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
     if (u ~ /^(echo|printf)[ \t]/) u = unquote(u)
     vcmd = 0; prim = 0; opaq = 0; PRIM = ""; OPAQ = 0
     ku = kq(u); nu = qs(ku)
+    # INTREE (r6): the owner is never read from the tree being chowned. Any stat command, in any step of
+    # any file, whose operand is a path inside the _work tree (RUNNER_TEMP, WORK_ROOT, the workspaces,
+    # HOME, _temp, /__w, /github/*) is a failure; echo / printf text is not a command.
+    if (lg !~ /^(- )?(name|if|uses):/ && u !~ /^(echo|printf)[ \t]/ && lg ~ /(^|[^A-Za-z_-])stat[ \t]/ && (lg ~ /RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|\/__w|\/github\//))
+      fail("INTREE", ln, "stat of a path inside the chowned tree: " lg)
     if (lg ~ /^(- )?(name|if|uses):/) cmd = 0
     else {
       CHOWN_RE = "(^|[;&|({`\"'/[:space:]])(chown|chgrp)([ \t;&|)\"']|$)"

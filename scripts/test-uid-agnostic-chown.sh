@@ -16,6 +16,9 @@
 #   [SWALLOW]  `|| true` `|| :` `|| /bin/true` `|| echo` `; true` `2>/dev/null` `&>/dev/null`
 #              on a chown or find line, `set +e`, or continue-on-error, in a step with a chown
 #   [UNMARKED] a self-heal site without the marker comment
+#   [OWNER_SRC] the owner is not read by the one stat of /__e (outside the chowned tree)
+#   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp)
+#   [NOUID0]   no uid-0 check (error + exit 1, before the find) on the owner
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
 #   [DRIFT]    sites not byte-identical, or an unterminated site
 #   [NOSITE]   no site found; [NOSCAN] no workflow file or no chown command scanned
@@ -26,8 +29,11 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 WF=${WF_DIR:-.github/workflows}
 MARK='uid-agnostic (infra#2349)'
-STAT_LINE='            OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
-LOOP_LINE='          if [ -n "${RUNNER_TEMP:-}" ]; then'
+# The owner source (r6): the step runs as uid 0 inside the job container, so the owner is the stat of
+# /__e (the runner's externals dir, outside the chowned _work tree) and uid 0 is refused.
+STAT_LINE='          OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
+UID0_LINE='          if [ "${OWNER_UG%%:*}" = "0" ]; then'
+INTREE_RE='RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
 ACT=${ACT_DIR:-.github/actions}   # composite actions: scanned like workflows (their run steps are shell)
 list_files() { local f; for f in "$WF"/*.yml "$WF"/*.yaml "$ACT"/*/action.yml "$ACT"/*/action.yaml "$ACT"/action.yml; do [ -e "$f" ] && echo "$f"; done; }
 # Constants for the whole-file scan (logical lines are trimmed and continuation-joined).
@@ -72,13 +78,19 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       [ -e "$s" ] || continue
       sites=$((sites + 1)); cp "$s" "$tmp/all.$sites"
       grep -q '^          rm -f "${CHOWN_FAILED:?}"$' "$s" || { echo "FAIL[DRIFT] $f: unterminated site"; fails=1; }
-      # ASSIGN: only OWNER_UG="" and the stat line, plus the stat loop over exactly the runner paths
-      bad="$(grep -nE '(^|[[:space:];])OWNER_UG=' "$s" | grep -vE ':[[:space:]]+OWNER_UG=""$' | grep -vF "$STAT_LINE" | grep -vE 'export OWNER_UG' || true)"
-      [ -n "$bad" ] && { echo "FAIL[ASSIGN] $f: OWNER_UG not from stat of runner paths: $bad"; fails=1; }
-      grep -qxF "$STAT_LINE" "$s" && grep -qxF "$LOOP_LINE" "$s" || { echo "FAIL[ASSIGN] $f: the \$RUNNER_TEMP-only stat is missing or altered"; fails=1; }
-      # the owner source is the stat of $RUNNER_TEMP and nothing else: exactly one stat, no _temp/WORK_ROOT source
-      [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -cE '\$\(stat[[:space:]]+-')" -eq 1 ] || { echo "FAIL[ASSIGN] $f: the site must have exactly one stat (of \$RUNNER_TEMP)"; fails=1; }
-      grep -vE '^[[:space:]]*#' "$s" | grep -qE 'WORK_ROOT/_temp|stat[^|]*WORK_ROOT|for P in' && { echo "FAIL[ASSIGN] $f: owner read from a path other than \$RUNNER_TEMP"; fails=1; }
+      # ASSIGN: OWNER_UG is assigned only by the one stat line (and exported); nothing else
+      bad="$(grep -nE '(^|[[:space:];])OWNER_UG=' "$s" | grep -vF "$STAT_LINE" | grep -vE 'export OWNER_UG' || true)"
+      [ -n "$bad" ] && { echo "FAIL[ASSIGN] $f: OWNER_UG assigned other than by the stat of /__e: $bad"; fails=1; }
+      # OWNER_SRC: the new owner source is present, unaltered, and the ONLY stat in the site
+      grep -qxF "$STAT_LINE" "$s" || { echo "FAIL[OWNER_SRC] $f: the owner is not read by the stat of /__e"; fails=1; }
+      [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -cE '(^|[^A-Za-z_-])stat[[:space:]]')" -eq 1 ] || { echo "FAIL[OWNER_SRC] $f: the site must have exactly one stat (of /__e)"; fails=1; }
+      # INTREE: no stat of a path inside the chowned tree, whatever else the site has
+      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
+      # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
+      u0="$(grep -nxF "$UID0_LINE" "$s" | head -n 1 | cut -d: -f1)"; fd="$(grep -nE '^          find "\$WORK_ROOT"' "$s" | head -n 1 | cut -d: -f1)"
+      if [ -z "$u0" ] || [ -z "$fd" ] || [ "$u0" -ge "$fd" ] \
+         || ! sed -n "$((u0 + 1))p" "$s" | grep -qF '::error::runner user mismatch' || [ "$(sed -n "$((u0 + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
+        echo "FAIL[NOUID0] $f: no uid-0 check (::error::runner user mismatch + exit 1) before the find"; fails=1; fi
       # FALLBACK
       if grep -vE '^[[:space:]]*#' "$s" | grep -qiE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
         echo "FAIL[FALLBACK] $f: fallback branch in a site"; fails=1; fi
@@ -101,19 +113,26 @@ run_site() { # behavioural run of the first site: mode = ok | unreadable | chown
   local mode="$1" d site rc out
   d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin"
   site="$d/site.sh"
-  { echo 'set -u'; echo 'WORK_ROOT="$W"'; sed -e 's/^          //' "$SITE_FILE"; } > "$site"
+  mkdir -p "$d/e"
+  { echo 'set -u'; echo 'WORK_ROOT="$W"'; sed -e 's/^          //' -e "s#/__e#$d/e#g" "$SITE_FILE"; } > "$site"
   case "$mode" in
-    unreadable) rmdir "$d/w/_temp" "$d/w/ws"; export RUNNER_TEMP="$d/none"; W="$d/none2" ;;
+    unreadable) rmdir "$d/w/_temp" "$d/w/ws" "$d/e"; export RUNNER_TEMP="$d/none"; W="$d/none2" ;;
     chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; chown_target="$d/w/ws/x"; : > "$chown_target"
       export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
     gidonly) printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
       printf '#!/bin/sh\necho "$(id -u):4242"\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
       export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;
-    unsetrt) unset RUNNER_TEMP; W="$d/w" ;;   # _temp and WORK_ROOT are readable: must still fail
-    wrongroot) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\ncase "$*" in *_temp) echo 4242:4343 ;; *) echo 9999:9999 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # WORK_ROOT wrong-owned, RUNNER_TEMP right
-    *) export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
+    unsetrt) printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
+      printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
+      unset RUNNER_TEMP; export LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP unset: the owner never depended on it
+    wrongtemp) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
+      printf '#!/bin/sh\ncase "$*" in */e) echo 4242:4343 ;; *) echo 9999:9999 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
+      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP (inside the tree) and WORK_ROOT wrong-owned, /__e right
+    uid0) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
+      printf '#!/bin/sh\ncase "$*" in */e) echo 0:0 ;; *) echo 4242:4343 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
+      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # the owner source reads uid 0: must fail, never chown
+    *) printf '#!/bin/sh\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
+      printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"; export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
   esac
   export W
   if [ "$mode" = chownfail ]; then
@@ -130,13 +149,15 @@ run_site() { # behavioural run of the first site: mode = ok | unreadable | chown
 behaviour() {
   [ -s "${SITE_FILE:-}" ] || { echo "FAIL[NOSITE] no site to execute"; return 1; }
   local rc=0 o
-  o="$(run_site ok)" && echo "$o" | grep -q 'runner owner' && echo "ok   site runs, owner read from temp dir" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
+  o="$(run_site ok)" && echo "$o" | grep -qE 'runner owner \(stat of .*\): 4242:4343' && echo "ok   site runs, owner read from /__e" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
   o="$(run_site unreadable)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   unreadable owner -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
   o="$(run_site unsetrt)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   RUNNER_TEMP unset (WORK_ROOT/_temp readable) -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] RUNNER_TEMP unset did not fail: $o"; rc=1; fi
-  o="$(run_site wrongroot)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   WORK_ROOT wrong-owned, RUNNER_TEMP right -> repaired to the RUNNER_TEMP owner"; else echo "FAIL[BEHAVIOUR] repair did not use the RUNNER_TEMP owner: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 "; then echo "ok   RUNNER_TEMP unset -> still repaired to the /__e owner"; else echo "FAIL[BEHAVIOUR] the owner depended on RUNNER_TEMP: $o"; rc=1; fi
+  o="$(run_site wrongtemp)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP + WORK_ROOT wrong-owned -> still repaired to the runner uid (the /__e owner)"; else echo "FAIL[BEHAVIOUR] a wrong-owned path inside the tree became the owner: $o"; rc=1; fi
+  o="$(run_site uid0)"; r=$?
+  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner user mismatch' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   owner uid 0 -> ::error:: runner user mismatch + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] uid 0 did not fail closed: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
@@ -183,16 +204,33 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "1000 literal near chown"   LITERAL  "$C" "$C; U=1000"
   swap "1001 literal near chown"   LITERAL  "$C" "$C; U=1001"
   swap "chown target not OWNER_UG" TARGET   "$C" 'chown -h "$OWNER" "$p"'
-  swap "OWNER_UG from id"          ASSIGN   '          OWNER_UG=""' '          OWNER_UG="$(id -u):$(id -g)"'
+  # --- r6 owner source: /__e, outside the chowned tree; uid 0 refused ---
+  S='OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
+  swap "OWNER_UG from id"          OWNER_SRC,ASSIGN "$S" 'OWNER_UG="$(id -u):$(id -g)"'
   swap "extra OWNER_UG literal"    ASSIGN   '          export OWNER_UG' '          OWNER_UG=1234:1234'
-  swap "owner stat falls back to WORK_ROOT" ASSIGN ' || OWNER_UG=""' ' || OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$WORK_ROOT")"'
-  swap "owner stat of WORK_ROOT, not RUNNER_TEMP" ASSIGN '"$RUNNER_TEMP")" ||' '"$WORK_ROOT")" ||'
-  swap "RUNNER_TEMP guard dropped"  ASSIGN 'if [ -n "${RUNNER_TEMP:-}" ]; then' 'if true; then'
-  swap "stat loop over _temp and WORK_ROOT" ASSIGN 'if [ -n "${RUNNER_TEMP:-}" ]; then' 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do'
+  swap "OLD FORM: stat of RUNNER_TEMP (ac1d2c3)" OWNER_SRC,INTREE "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
+  swap "owner stat falls back to WORK_ROOT" OWNER_SRC,INTREE "$S" "$S"$'\n          [ -n "$OWNER_UG" ] || OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$WORK_ROOT")"'
+  swap "stat of WORK_ROOT"         OWNER_SRC,INTREE "/__e)\"" '"$WORK_ROOT")"'
+  swap "stat of GITHUB_WORKSPACE"  OWNER_SRC,INTREE "/__e)\"" '"$GITHUB_WORKSPACE")"'
+  swap "stat of RUNNER_WORKSPACE"  OWNER_SRC,INTREE "/__e)\"" '"$RUNNER_WORKSPACE")"'
+  swap "stat of HOME (/github/home)" OWNER_SRC,INTREE "/__e)\"" '"$HOME")"'
+  swap "stat of WORK_ROOT/_temp"   OWNER_SRC,INTREE "/__e)\"" '"$WORK_ROOT/_temp")"'
+  swap "stat of /__w"              OWNER_SRC,INTREE "/__e)\"" '/__w)"'
+  swap "stat of a path outside the tree, not /__e" OWNER_SRC "/__e)\"" '/opt)"'
+  swap "stat loop over _temp and WORK_ROOT" OWNER_SRC,INTREE,ASSIGN "$S" 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp"; do OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$P")"; done'
+  swap "second stat added"         OWNER_SRC "$S" "$S"$'\n          stat -c %u /__e >/dev/null'
+  swap "uid-0 check removed"       NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if false; then'
+  swap "uid-0 check compares gid"  NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if [ "${OWNER_UG##*:}" = "0" ]; then'
+  cp "$WF"/*.yml "$tmp"/   # uid-0 check reports but does not exit: the line after the mismatch error becomes `true`
+  awk '{ if (p) { sub(/exit 1/, "true"); p = 0 } if (index($0, "::error::runner user mismatch")) p = 1; print }' "$WF/$F" > "$tmp/$F"
+  expect "uid-0 check does not exit" NOUID0
+  swap "uid-0 error is a warning"  NOUID0   '::error::runner user mismatch' '::warning::runner user mismatch'
+  app  "stat of RUNNER_TEMP in another step" INTREE "      - name: x\n        run: |\n          stat -c '%u:%g' \"\$RUNNER_TEMP\""
+  app  "stat -c %u of GITHUB_WORKSPACE in another step" INTREE "      - name: x\n        run: |\n          U=\$(stat -c %u \"\$GITHUB_WORKSPACE\")"
   swap "fallback wording"          FALLBACK '          export OWNER_UG' '          echo "falling back"'
   swap "case on OWNER_UG"          FALLBACK '          export OWNER_UG' '          case "$OWNER_UG" in *) : ;; esac'
   swap "0:0 special case"          FALLBACK '          export OWNER_UG' '          [ "$OWNER_UG" = 0:0 ] && :'
-  swap "one site drifts"           DRIFT    'runner owner (stat of $RUNNER_TEMP)' 'runner owner'
+  swap "one site drifts"           DRIFT    'runner owner (stat of /__e)' 'runner owner'
   # --- infra-res ruling 1: uid OR gid ---
   PRED='\( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \)'
   swap "find selects by uid only"  GID,BEHAVIOUR "$PRED" '! -user "${OWNER_UG%%:*}"'
@@ -211,7 +249,7 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "site: &>/dev/null on chown" SWALLOW '"$p" ||' '"$p" &>/dev/null ||'
   swap "site: 2>/dev/null on find" SWALLOW  '+ > "$CHOWN_FAILED"' '+ > "$CHOWN_FAILED" 2>/dev/null'
   swap "site: &>/dev/null on find" SWALLOW  '+ > "$CHOWN_FAILED"' '+ > "$CHOWN_FAILED" &>/dev/null'
-  swap "site: set +e"              SWALLOW  '          OWNER_UG=""' $'          set +e\n          OWNER_UG=""'
+  swap "site: set +e"              SWALLOW  '          OWNER_UG="$(stat' $'          set +e\n          OWNER_UG="$(stat'
   swap "site: continue-on-error"   SWALLOW  'name: Pre-checkout ownership restore (EACCES self-heal)' $'name: Pre-checkout ownership restore (EACCES self-heal)\n        continue-on-error: true'
   # --- ruling 2: whole file, not only the markers ---
   swap "marker removed, site intact"  UNMARKED 'uid-agnostic (infra#2349)' 'uid-x'
