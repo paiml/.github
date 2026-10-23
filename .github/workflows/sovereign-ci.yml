@@ -244,7 +244,18 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -451,7 +462,18 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
 
   lint:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
@@ -506,7 +528,18 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -707,7 +740,18 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
 
   coverage:
     name: coverage
@@ -768,7 +812,18 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1030,7 +1085,18 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
 
   bench:
     name: bench
@@ -1071,7 +1137,18 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1250,7 +1327,18 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          chown -R 1000:1000 "$WORK_ROOT" 2>/dev/null || true
+          # uid-agnostic (infra#2349): own the tree as the runner's own uid:gid, read from
+          # its temp dir (the runner process creates it), never a hard-coded 1000.
+          OWNER_UG="$(stat -c '%u:%g' "${RUNNER_TEMP:-$WORK_ROOT/_temp}" 2>/dev/null || stat -c '%u:%g' "$WORK_ROOT/_temp" 2>/dev/null || true)"
+          case "$OWNER_UG" in
+            ''|0:0) echo "::notice::runner owner unreadable or root ('$OWNER_UG') — falling back to 1000:1000"; OWNER_UG=1000:1000 ;;
+            *) echo "runner owner from temp dir: $OWNER_UG" ;;
+          esac
+          if command -v find >/dev/null 2>&1; then
+            find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec chown -h "$OWNER_UG" {} + 2>/dev/null || true
+          else
+            chown -R "$OWNER_UG" "$WORK_ROOT" 2>/dev/null || true
+          fi
 
   security:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
