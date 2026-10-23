@@ -1,0 +1,46 @@
+# fork-pr-closer — NO-FORK-1 (operator ruling 2026-10-23 07:20Z, item c)
+#
+# paiml accepts no fork contributions. GitHub cannot stop a fork of a public repo,
+# so a fork-head PR is closed with a pointer to CONTRIBUTING.md.
+#
+# Two ways to consume it (same file):
+#   1. Org required workflow (ruleset): it fires on the target repo's own
+#      pull_request_target event.
+#   2. Reusable: a repo's caller on pull_request_target [opened, reopened] does
+#         jobs:
+#           close-fork-pr:
+#             uses: paiml/.github/.github/workflows/fork-pr-closer.yml@main
+#
+# SAFETY: pull_request_target runs with a write token in the BASE repo context.
+# This workflow therefore NEVER checks out, builds or executes PR code, and reads
+# only event metadata. Do not add a checkout step here (test-no-fork-guard.sh
+# fails if one appears). Keyed on head.repo.full_name only, never on
+# author_association (private org members read as CONTRIBUTOR; .github#92/#93).
+
+name: fork-pr-closer
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  close-fork-pr:
+    name: close-fork-pr
+    if: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "paiml does not accept fork contributions; request collaborator access (see https://github.com/paiml/.github/blob/main/CONTRIBUTING.md)."
+          gh pr close "$PR_NUMBER" --repo "$REPO"
