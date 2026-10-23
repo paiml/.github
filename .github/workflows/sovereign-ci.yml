@@ -144,6 +144,10 @@ jobs:
   # and it FAILS. A SKIPPED required check counts as passing, so the fork case is made
   # red explicitly here and again in `gate`. Same-repo PRs, push, merge_group,
   # schedule and workflow_dispatch skip this job and are otherwise unaffected.
+  # SINGLE PERMITTED GITHUB-HOSTED JOB IN A GATE (NO-FORK-1 ruling 2026-10-23 07:15Z b).
+  # It exists only because a fork job must never touch our self-hosted machines.
+  # It runs no PR code, no checkout, no secrets (permissions: {}, no secrets.* here).
+  # Any other GitHub-hosted job in a gate is a defect (scripts/test-no-fork-guard.sh).
   fork-guard:
     name: fork-guard
     if: ${{ startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository }}
@@ -1644,6 +1648,8 @@ jobs:
   gate:
     name: gate
     # NO-FORK-1: a fork-head PR runs this gate on a hosted runner (never self-hosted).
+    # This fork branch and fork-guard are the only permitted hosted runs-on in a gate
+    # (NO-FORK-1 07:15Z b): fork-head PRs only, no checkout, no secrets, only the refuse step runs.
     runs-on: ${{ (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["ubuntu-latest"]') || fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     if: always()
