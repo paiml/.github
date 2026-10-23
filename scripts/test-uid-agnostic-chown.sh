@@ -276,6 +276,104 @@ if [ "${1:-}" = "--self-test" ]; then
   out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
   echo "$out" | grep -q 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
   echo "  kept  [VARCMD] a variable command resolving to a non-chown stays green"
+  # --- infra#2349 class rules (infra-res): NORMALISE the command word, then match CLASSES ---------
+  # Every mutant below passed the literal-word detector at 366ffcc (infra-PR-cull: 0 of 3 caught).
+  nm() { app "$1" "$2" "      - name: x\n        run: |\n          # chown audit\n          $3"; }
+  # rule 1: the word is normalised the way the shell would (backslashes, quotes, ${V:-w}, basename)
+  nm "norm: ch\\own (backslash inside)"      TARGET 'ch\\own -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \\chown (leading backslash)"     TARGET '\\chown -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: /usr/bin/\\chown"                TARGET '/usr/bin/\\chown -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: sudo \\chown"                    TARGET 'sudo -n \\chown -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \\sudo chown"                    TARGET '\\sudo chown -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: 'ch'own (split quotes)"          TARGET "'ch'own -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  nm "norm: \"ch\"\"own\" (adjacent quotes)" TARGET '"ch""own" -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${CHOWN:-chown}"                TARGET '${CHOWN:-chown} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${CHOWN-chown}"                 TARGET '${CHOWN-chown} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${CHOWN:=chown}"                TARGET '${CHOWN:=chown} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${CHOWN=chown}"                 TARGET '${CHOWN=chown} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \"\${CHOWN:-chown}\" quoted"     TARGET '"${CHOWN:-chown}" -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${CHOWN:-\\chown} nested"       TARGET '${CHOWN:-\\chown} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \${C:-\${D:-chgrp}} nested default" TARGET '${C:-${D:-chgrp}} runner "$GITHUB_WORKSPACE"'
+  nm "norm: xargs chown"                     TARGET 'ls | xargs -n1 chown "$OWNER_UG"'
+  nm "norm: unresolvable \${CHOWN:-\$X}"     VARCMD '${CHOWN:-$X} -R "$OWNER_UG" "$GITHUB_WORKSPACE"'
+  nm "norm: \$(tool) command word"       VARCMD '$(find_tool) -R a:b "$GITHUB_WORKSPACE"'
+  nm "norm: backtick command word"           VARCMD '`command -v chown` -R a:b "$GITHUB_WORKSPACE"'
+  nm "norm: xargs \$X unresolved"            VARCMD 'ls | xargs -n1 $X "$OWNER_UG"'
+  nm "norm: \"\$X\" after if !"              VARCMD 'if ! "$X" -R a:b "$GITHUB_WORKSPACE"; then exit 1; fi'
+  # rule 2: the ownership primitives, each spelling normalised
+  nm "prim: install -o 1000 -g 1000"         TARGET 'install -o 1000 -g 1000 -m 755 a b'
+  nm "prim: install -o root"                 TARGET 'install -o root a b'
+  nm "prim: install -g root"                 TARGET 'install -m 644 -g root a b'
+  nm "prim: install -o1000 (attached)"       TARGET 'install -o1000 a b'
+  nm "prim: install -Do (cluster)"           TARGET 'install -Do root a b'
+  nm "prim: install --owner=root"            TARGET 'install --owner=root a b'
+  nm "prim: install --group root"            TARGET 'install --group root a b'
+  nm "prim: \\install -o"                    TARGET '\\install -o 1000 a b'
+  nm "prim: /usr/bin/install -g"             TARGET '/usr/bin/install -g 1000 a b'
+  nm "prim: \${INSTALL:-install} -o"         TARGET '${INSTALL:-install} -o 1000 a b'
+  nm "prim: sudo install -o"                 TARGET 'sudo -n install -o 1000 a b'
+  nm "prim: xargs install -g"                TARGET 'ls | xargs -I{} install -g 1000 {} /d'
+  nm "prim: find -exec install -o"           TARGET 'find . -type f -exec install -o 1000 {} /d \\;'
+  nm "prim: sh -c literal install -o"        TARGET "sh -c 'install -o 1000 a b'"
+  nm "prim: env X=1 install -o"              TARGET 'env X=1 install -o 1000 a b'
+  nm "prim: cp --chown"                      TARGET 'cp --chown=1000:1000 a b'
+  nm "prim: cp -a --chown"                   TARGET 'cp -a --chown 1000 a b'
+  nm "prim: rsync --chown"                   TARGET 'rsync -a --chown=1000:1000 a/ b/'
+  nm "prim: rsync --owner --group"           TARGET 'rsync -a --owner --group a/ b/'
+  nm "prim: tar --same-owner"                TARGET 'tar -xf a.tar --same-owner'
+  nm "prim: tar --owner=0"                   TARGET 'tar -cf a.tar --owner=0 --group=0 d'
+  nm "prim: \\tar --same-owner"              TARGET '\\tar xf a.tar --same-owner'
+  nm "prim: setfacl"                         TARGET 'setfacl -R -m u:1000:rwx "$GITHUB_WORKSPACE"'
+  nm "prim: sudo \\setfacl"                  TARGET 'sudo \\setfacl -b "$GITHUB_WORKSPACE"'
+  nm "prim: \${SETFACL:-setfacl}"            TARGET '${SETFACL:-setfacl} -b "$GITHUB_WORKSPACE"'
+  nm "prim: var resolved to install"         VARCMD 'I=install\n          $I -o 1000 a b'
+  nm "prim: var resolved to setfacl"         VARCMD 'S=/usr/bin/setfacl\n          $S -b x'
+  # rule 3: eval / sh -c / source with a non-literal argument, in a step that deals with ownership
+  nm "opaque: eval \"\$CMD\""                OPAQUE 'eval "$CMD"'
+  nm "opaque: eval \$CMD"                    OPAQUE 'eval $CMD'
+  nm "opaque: eval-built command word"       OPAQUE 'X=ls; eval "$X -R a b"'
+  nm "opaque: eval \$(build)"                OPAQUE 'eval $(build_cmd)'
+  nm "opaque: eval \"\$(printf ...)\""       OPAQUE 'eval "$(printf "%s" x)"'
+  nm "opaque: \\eval \"\$CMD\""              OPAQUE '\\eval "$CMD"'
+  nm "opaque: sh -c \"\$CMD\""               OPAQUE 'sh -c "$CMD"'
+  nm "opaque: bash -c \"\$CMD\""             OPAQUE 'bash -c "$CMD"'
+  nm "opaque: bash -lc \"\$CMD\""            OPAQUE 'bash -lc "$CMD"'
+  nm "opaque: sudo -n bash -c \"\$CMD\""     OPAQUE 'sudo -n bash -c "$CMD"'
+  nm "opaque: sh -c \"\$(build)\""           OPAQUE 'sh -c "$(build_cmd)"'
+  nm "opaque: source \"\$F\""                OPAQUE 'source "$F"'
+  nm "opaque: dot-source \"\$F\""            OPAQUE '. "$F"'
+  nm "opaque: \${SH:-sh} -c \"\$CMD\""       OPAQUE '${SH:-sh} -c "$CMD"'
+  nm "opaque: find -exec sh -c \"\$CMD\""    OPAQUE 'find . -exec sh -c "$CMD" sh {} +'
+  # the step deals with ownership by OWNER_UG alone (no chown word anywhere in it)
+  app "opaque: mention by OWNER_UG alone"    OPAQUE "      - name: x\n        run: |\n          U=\"\$OWNER_UG\"\n          eval \"\$CMD\""
+  # rule 5: controls. A resolved non-ownership command of the same shape stays GREEN (no FAIL at all).
+  keep() { # name line : append a step that mentions chown, demand a clean run
+    cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
+  }
+  keep "ctl: \\ls -R"                        '\\ls -R "$GITHUB_WORKSPACE"'
+  keep "ctl: \"ls\" quoted"                  '"ls" -R "$GITHUB_WORKSPACE"'
+  keep "ctl: \${LS:-ls}"                     '${LS:-ls} -R "$GITHUB_WORKSPACE"'
+  keep "ctl: \${LS:=/bin/ls}"                '${LS:=/bin/ls} -R "$GITHUB_WORKSPACE"'
+  keep "ctl: ch\\mod"                        'ch\\mod -R a+r "$GITHUB_WORKSPACE"'
+  keep "ctl: sudo \\chmod"                   'sudo -n \\chmod -R a+r "$GITHUB_WORKSPACE"'
+  keep "ctl: xargs ls"                       'ls | xargs -n1 ls -d'
+  keep "ctl: install -m 755 (no owner)"      'install -m 755 a b'
+  keep "ctl: install -Dm755"                 'install -Dm755 a b'
+  keep "ctl: cp -a"                          'cp -a a b'
+  keep "ctl: rsync -a"                       'rsync -a a/ b/'
+  keep "ctl: tar -czf"                       'tar -czf a.tgz d'
+  keep "ctl: find -exec ls"                  'find . -type f -exec ls -l {} +'
+  keep "ctl: sh -c 'ls' literal"             "sh -c 'ls -l'"
+  keep "ctl: eval 'ls' literal"              "eval 'ls -l'"
+  keep "ctl: source ./file literal"          'source ./env.sh'
+  keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
+  keep "ctl: install -o from OWNER_UG"       'install -o "${OWNER_UG%%:*}" a b'
+  # eval in a step that does not deal with ownership is not an ownership question
+  cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"
