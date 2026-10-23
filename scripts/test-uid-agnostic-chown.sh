@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 WF=${WF_DIR:-.github/workflows}
-CMD="cho""wn"
+CMD="chown"
 scan() { # dir -> prints offending lines
   grep -nE 'chown[^#]*[[:space:]]"?[0-9]+:[0-9]+"?[[:space:]]' "$1"/*.yml \
     | grep -E 'WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE' || true
