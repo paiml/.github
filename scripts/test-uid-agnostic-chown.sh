@@ -26,8 +26,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 WF=${WF_DIR:-.github/workflows}
 MARK='uid-agnostic (infra#2349)'
-STAT_LINE='            OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$P")" && break'
-LOOP_LINE='          for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do'
+STAT_LINE='            OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
+LOOP_LINE='          if [ -n "${RUNNER_TEMP:-}" ]; then'
+ACT=${ACT_DIR:-.github/actions}   # composite actions: scanned like workflows (their run steps are shell)
+list_files() { local f; for f in "$WF"/*.yml "$WF"/*.yaml "$ACT"/*/action.yml "$ACT"/*/action.yaml "$ACT"/action.yml; do [ -e "$f" ] && echo "$f"; done; }
 # Constants for the whole-file scan (logical lines are trimmed and continuation-joined).
 CH=chown; BR='{}'
 export MARK
@@ -35,7 +37,7 @@ export FIND_A='find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWN
 export FIND_TAIL=' || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }'
 export OWNER_LINE='OWNER="$(id -un):$(id -gn)"'
 export CHOWN_B="$CH -R \"\$OWNER\" \"\$WORK_ROOT\""
-SCAN_AWK="$(dirname "$0")/uid-agnostic-chown-scan.awk"
+SCAN_AWK="${SCAN_AWK:-$(dirname "$0")/uid-agnostic-chown-scan.awk}"
 
 extract_sites() { # file outdir -> writes outdir/site.N
   awk -v out="$2" -v mark="$MARK" '
@@ -48,7 +50,7 @@ extract_sites() { # file outdir -> writes outdir/site.N
 check_files() { # prints FAIL[tag] lines; returns 1 if any
   local fails=0 tmp sites=0 f
   tmp="$(mktemp -d)"
-  for f in "$WF"/*.yml; do
+  for f in $(list_files); do
     # NUMERIC: any non-comment chown with a numeric uid[:gid] argument
     awk -v F="$f" '/^[[:space:]]*#/ {next} /chown[[:space:]]+(-[A-Za-z]+[[:space:]]+)*"?[0-9]+(:[0-9]+)?"?([[:space:]]|$)/ {print "FAIL[NUMERIC] " F ":" NR ": " $0}' "$f"
     # LITERAL: 1000/1001 within 3 lines of a chown
@@ -57,15 +59,14 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
   [ -s "$tmp/global" ] && { cat "$tmp/global"; fails=1; }
   # Whole-file scan: every chown/chgrp in every workflow, sites or not.
   local nfiles=0 nchown=0 out
-  for f in "$WF"/*.yml; do
-    [ -e "$f" ] || continue
+  for f in $(list_files); do
     nfiles=$((nfiles + 1))
     out="$(awk -v F="$f" -f "$SCAN_AWK" "$f")" || { echo "FAIL[NOSCAN] scan of $f errored"; fails=1; continue; }
     printf '%s\n' "$out" | grep '^FAIL' && fails=1
     nchown=$((nchown + $(printf '%s\n' "$out" | sed -n 's/^SCAN //p' | head -n 1)))
   done
   { [ "$nfiles" -eq 0 ] || [ "$nchown" -eq 0 ]; } && { echo "FAIL[NOSCAN] scanned $nfiles file(s) and $nchown chown command(s) under $WF"; fails=1; }
-  for f in "$WF"/*.yml; do
+  for f in $(list_files); do
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
     for s in "$tmp"/d/site.*; do
       [ -e "$s" ] || continue
@@ -74,7 +75,10 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       # ASSIGN: only OWNER_UG="" and the stat line, plus the stat loop over exactly the runner paths
       bad="$(grep -nE '(^|[[:space:];])OWNER_UG=' "$s" | grep -vE ':[[:space:]]+OWNER_UG=""$' | grep -vF "$STAT_LINE" | grep -vE 'export OWNER_UG' || true)"
       [ -n "$bad" ] && { echo "FAIL[ASSIGN] $f: OWNER_UG not from stat of runner paths: $bad"; fails=1; }
-      grep -qxF "$STAT_LINE" "$s" && grep -qxF "$LOOP_LINE" "$s" || { echo "FAIL[ASSIGN] $f: stat loop over the runner temp paths missing or altered"; fails=1; }
+      grep -qxF "$STAT_LINE" "$s" && grep -qxF "$LOOP_LINE" "$s" || { echo "FAIL[ASSIGN] $f: the \$RUNNER_TEMP-only stat is missing or altered"; fails=1; }
+      # the owner source is the stat of $RUNNER_TEMP and nothing else: exactly one stat, no _temp/WORK_ROOT source
+      [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -cE '\$\(stat[[:space:]]+-')" -eq 1 ] || { echo "FAIL[ASSIGN] $f: the site must have exactly one stat (of \$RUNNER_TEMP)"; fails=1; }
+      grep -vE '^[[:space:]]*#' "$s" | grep -qE 'WORK_ROOT/_temp|stat[^|]*WORK_ROOT|for P in' && { echo "FAIL[ASSIGN] $f: owner read from a path other than \$RUNNER_TEMP"; fails=1; }
       # FALLBACK
       if grep -vE '^[[:space:]]*#' "$s" | grep -qiE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
         echo "FAIL[FALLBACK] $f: fallback branch in a site"; fails=1; fi
@@ -105,6 +109,10 @@ run_site() { # behavioural run of the first site: mode = ok | unreadable | chown
     gidonly) printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
       printf '#!/bin/sh\necho "$(id -u):4242"\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
       export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;
+    unsetrt) unset RUNNER_TEMP; W="$d/w" ;;   # _temp and WORK_ROOT are readable: must still fail
+    wrongroot) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
+      printf '#!/bin/sh\ncase "$*" in *_temp) echo 4242:4343 ;; *) echo 9999:9999 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
+      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # WORK_ROOT wrong-owned, RUNNER_TEMP right
     *) export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
   esac
   export W
@@ -125,6 +133,10 @@ behaviour() {
   o="$(run_site ok)" && echo "$o" | grep -q 'runner owner' && echo "ok   site runs, owner read from temp dir" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
   o="$(run_site unreadable)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   unreadable owner -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
+  o="$(run_site unsetrt)"; r=$?
+  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   RUNNER_TEMP unset (WORK_ROOT/_temp readable) -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] RUNNER_TEMP unset did not fail: $o"; rc=1; fi
+  o="$(run_site wrongroot)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   WORK_ROOT wrong-owned, RUNNER_TEMP right -> repaired to the RUNNER_TEMP owner"; else echo "FAIL[BEHAVIOUR] repair did not use the RUNNER_TEMP owner: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
@@ -143,14 +155,17 @@ run_all() {
 if [ "${1:-}" = "--self-test" ]; then
   tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:?}"' EXIT
   F=sovereign-ci.yml
+  MISSES=0
+  miss() { echo "SELF-TEST FAIL: $*"; [ -n "${KEEP_GOING:-}" ] || exit 1; MISSES=$((MISSES + 1)); }
   expect() { # name tags : run the guard on $tmp, demand FAIL[tag] for each comma-separated tag
     local t
     if cmp -s "$WF/$F" "$tmp/$F"; then echo "SELF-TEST FAIL: mutation '$1' changed nothing"; exit 1; fi
-    out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    local m0=$MISSES
     for t in ${2//,/ }; do
-      echo "$out" | grep -q "FAIL\[$t\]" || { echo "SELF-TEST FAIL: '$1' not caught as [$t]"; echo "$out" | head -n 5; exit 1; }
+      echo "$out" | grep -q "FAIL\[$t\]" || miss "'$1' not caught as [$t]"
     done
-    echo "  caught [$2] $1"
+    [ "$MISSES" -eq "$m0" ] && echo "  caught [$2] $1"
   }
   swap() { # name tags old new : replace the FIRST occurrence of old (plain text) in $F with new
     cp "$WF"/*.yml "$tmp"/
@@ -170,11 +185,14 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "chown target not OWNER_UG" TARGET   "$C" 'chown -h "$OWNER" "$p"'
   swap "OWNER_UG from id"          ASSIGN   '          OWNER_UG=""' '          OWNER_UG="$(id -u):$(id -g)"'
   swap "extra OWNER_UG literal"    ASSIGN   '          export OWNER_UG' '          OWNER_UG=1234:1234'
-  swap "stat path list altered"    ASSIGN   '"$WORK_ROOT/_temp" "$WORK_ROOT"; do' '"$WORK_ROOT/_temp" "$WORK_ROOT" "/home/runner"; do'
+  swap "owner stat falls back to WORK_ROOT" ASSIGN ' || OWNER_UG=""' ' || OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$WORK_ROOT")"'
+  swap "owner stat of WORK_ROOT, not RUNNER_TEMP" ASSIGN '"$RUNNER_TEMP")" ||' '"$WORK_ROOT")" ||'
+  swap "RUNNER_TEMP guard dropped"  ASSIGN 'if [ -n "${RUNNER_TEMP:-}" ]; then' 'if true; then'
+  swap "stat loop over _temp and WORK_ROOT" ASSIGN 'if [ -n "${RUNNER_TEMP:-}" ]; then' 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp" "$WORK_ROOT"; do'
   swap "fallback wording"          FALLBACK '          export OWNER_UG' '          echo "falling back"'
   swap "case on OWNER_UG"          FALLBACK '          export OWNER_UG' '          case "$OWNER_UG" in *) : ;; esac'
   swap "0:0 special case"          FALLBACK '          export OWNER_UG' '          [ "$OWNER_UG" = 0:0 ] && :'
-  swap "one site drifts"           DRIFT    'runner owner (stat of runner temp dir)' 'runner owner'
+  swap "one site drifts"           DRIFT    'runner owner (stat of $RUNNER_TEMP)' 'runner owner'
   # --- infra-res ruling 1: uid OR gid ---
   PRED='\( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \)'
   swap "find selects by uid only"  GID,BEHAVIOUR "$PRED" '! -user "${OWNER_UG%%:*}"'
@@ -225,6 +243,39 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "unified-gate: continue-on-error" SWALLOW 'name: Pre-checkout ownership restore (EACCES self-heal)' $'name: Pre-checkout ownership restore (EACCES self-heal)\n        continue-on-error: true'
   swap "unified-gate: original swallow form" SWALLOW "$BT" '|| true # was: sudo -n chown ... 2>/dev/null || chown ... || true'
   F=sovereign-ci.yml
+  # --- infra-res ruling 1: every shell context (inline run:, run: |, run: >, composite actions) ---
+  app  "inline run: chown (second key)" TARGET "      - name: x\n        run: $CH -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  app  "inline - run: chown (first key)" TARGET "      - run: $CH -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  app  "run: > folded block chown"  TARGET "      - name: x\n        run: >\n          $CH -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  app  "inline run: swallowed chown" TARGET,SWALLOW "      - name: x\n        run: $CH -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\" || true"
+  comp() { # name tags yaml : a composite action under $tmp/actions/x/action.yml
+    rm -rf "${tmp:?}/actions"; mkdir -p "$tmp/actions/x"; cp "$WF"/*.yml "$tmp"/; printf '%b\n' "$3" > "$tmp/actions/x/action.yml"
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    for t in ${2//,/ }; do echo "$out" | grep -q "FAIL\[$t\]" || { miss "composite '$1' not caught as [$t]"; }; done
+    echo "  caught [$2] $1"; rm -rf "${tmp:?}/actions"
+  }
+  CA='name: c\nruns:\n  using: composite\n  steps:\n'
+  comp "composite: inline run: chown"      TARGET "$CA    - run: $CH -R x y\n      shell: bash"
+  comp "composite: run: | block chown"     TARGET "$CA    - name: s\n      shell: bash\n      run: |\n        $CH -R x y"
+  comp "composite: run: > block chown"     TARGET "$CA    - name: s\n      shell: bash\n      run: >\n        $CH -R x y"
+  comp "composite: swallowed chown"        SWALLOW "$CA    - name: s\n      shell: bash\n      run: |\n        $CH -R x y || true"
+  comp "composite: numeric chown"          NUMERIC "$CA    - name: s\n      shell: bash\n      run: |\n        $CH -R 1000:1000 y"
+  # --- ruling 2: every spelling of the command word ---
+  for sp in '/usr/bin/chown' '/bin/chown' '/usr/bin/chgrp' 'chgrp' 'sudo chown' 'sudo -n chown' 'sudo -u root chown' 'sudo -n -E /usr/bin/chown' \
+            'command chown' 'command -p chown' 'env FOO=1 chown' 'env -i chown' 'exec chown' 'nice chown' 'nice -n 5 chown' 'ionice -c 3 chown' \
+            'doas chown' 'doas -u root chown' 'timeout 5 chown' 'timeout -k 1 5 chown' '"chown"' "'chown'" 'bash -c "chown'; do
+    app "spelling: $sp" TARGET "      - name: x\n        run: |\n          $sp -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  done
+  app  "spelling: \${CHOWN} resolved to chown" VARCMD "      - name: x\n        run: |\n          CHOWN=chown\n          \${CHOWN} -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  app  "spelling: \$CHOWN_BIN unresolved"      VARCMD "      - name: x\n        run: |\n          \$CHOWN_BIN -R \"\$OWNER_UG\" \"\$GITHUB_WORKSPACE\""
+  app  "spelling: \"\$X\" from a command substitution" VARCMD "      - name: x\n        run: |\n          X=\$(command -v chown)\n          \"\$X\" -R a:b \"\$GITHUB_WORKSPACE\""
+  app  "spelling: sudo \$X unresolved"         VARCMD "      - name: x\n        run: |\n          OWNER=\$(id -un)\n          sudo -n \$X -R a:b \"\$GITHUB_WORKSPACE\""
+  app  "spelling: env FOO=1 \${CHOWN} unresolved" VARCMD "      - name: x\n        run: |\n          # chown below\n          env FOO=1 \${CHOWN} -R a:b \"\$GITHUB_WORKSPACE\""
+  # a variable command that resolves to a non-chown must stay green (the rule fails only the unresolvable)
+  cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          LS=/bin/ls\n          \$LS -R \"\$GITHUB_WORKSPACE\" # owner listing" >> "$tmp/$F"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+  echo "$out" | grep -q 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
+  echo "  kept  [VARCMD] a variable command resolving to a non-chown stays green"
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"
@@ -234,6 +285,7 @@ if [ "${1:-}" = "--self-test" ]; then
   out="$(WF_DIR=$tmp/empty SITE_COPY= bash "$0" 2>&1 || true)"
   echo "$out" | grep -q 'FAIL\[NOSCAN\] scanned 0 file' || { echo "SELF-TEST FAIL: empty WF_DIR not caught as NOSCAN with a count"; exit 1; }
   echo "  caught [NOSCAN] empty workflow dir, with its file count"
+  [ "$MISSES" -eq 0 ] || { echo "self-test FAILED: $MISSES mutation(s) not caught"; exit 1; }
   echo "self-test ok: every mutation caught (red)"; exit 0
 fi
 run_all

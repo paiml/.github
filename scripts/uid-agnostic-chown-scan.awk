@@ -14,7 +14,50 @@ BEGIN {
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
   sn = 0; total = 0; container = 0
 }
-function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, hascmd) {
+# Command-word spellings: sudo [-flags], doas, command, exec, env [VAR=..], nice, ionice and
+# timeout N are stripped, then the word is matched by basename (so /usr/bin/chown and ${CHOWN}
+# are chown). cmdword() returns the first command word of a statement that is a $variable ("" if none).
+function cmdword(s,   n, a, i, j, m, T, t, st, w) {
+  gsub(/\$\{/, "$", s); gsub(/\+?=\(/, "=X ", s); gsub(/[<>]\(/, ";", s); gsub(/\$\(/, ";", s); gsub(/`/, ";", s)
+  n = split(s, a, /;|&&|\|\||\||&|\(|\{|\)/)
+  for (i = 1; i <= n; i++) {
+    st = trim(a[i]); if (st == "") continue
+    m = split(st, T, /[ \t]+/); j = 1
+    while (j <= m) {
+      t = T[j]
+      if (t == "sudo" || t == "doas") { j++; while (j <= m && T[j] ~ /^-/) { if (T[j] ~ /^-[ughCDprtTU]$/) j++; j++ } continue }
+      if (t == "command" || t == "exec") { j++; while (j <= m && T[j] ~ /^-/) j++; continue }
+      if (t == "env") { j++; while (j <= m && (T[j] ~ /^-/ || T[j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) j++; continue }
+      if (t == "nice") { j++; while (j <= m && T[j] ~ /^-/) { if (T[j] == "-n") j++; j++ } continue }
+      if (t == "ionice") { j++; while (j <= m && T[j] ~ /^-/) { if (T[j] ~ /^-[ctnp]$/) j++; j++ } continue }
+      if (t == "timeout") { j++; while (j <= m && T[j] ~ /^-/) { if (T[j] ~ /^-[ks]$/) j++; j++ } if (j <= m && T[j] ~ /^[0-9.]+[smhd]?$/) j++; continue }
+      break
+    }
+    if (j > m) continue
+    w = T[j]; gsub(/^["']+|["']+$/, "", w)
+    if (w ~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) return w
+  }
+  return ""
+}
+# A variable command resolves when the step has at least one plain assignment to it and every
+# assignment is a static word whose basename is not chown/chgrp. Anything dynamic does not resolve.
+function resolves(w, text,   nm, n, L, i, v, found) {
+  nm = w; gsub(/^\$\{?|\}?$/, "", nm); if (nm !~ /^[A-Za-z_][A-Za-z0-9_]*$/) return 0
+  n = split(text, L, "\n"); found = 0
+  for (i = 1; i <= n; i++) {
+    v = trim(L[i]); sub(/^- /, "", v); sub(/^run:[ \t]*/, "", v); sub(/^(export|local|readonly|declare)[ \t]+/, "", v)
+    if (index(v, nm "=") == 1) v = substr(v, length(nm) + 2)
+    else if (index(v, nm ": ") == 1) v = substr(v, length(nm) + 3)
+    else continue
+    gsub(/^["']|["']$/, "", v); sub(/[ \t;].*$/, "", v); gsub(/["']/, "", v)
+    if (v == "" || v ~ /[$`]/) return 0
+    sub(/^.*\//, "", v)
+    if (v == "chown" || v == "chgrp") return 0
+    found = 1
+  }
+  return found
+}
+function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, hascmd, vcmd, vw) {
   if (sn == 0) return
   n = 0; acc = ""; start = 0; text = ""
   for (i = 1; i <= sn; i++) {
@@ -29,13 +72,25 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
   nc = 0; siteA = 0; ownother = 0; haveown = 0
   for (i = 1; i <= n; i++) {
     lg = LG[i]; ln = LN[i]; u = lg
+    sub(/^(- )?run:[ \t]*/, "", u)
     if (u ~ /^(echo|printf)[ \t]/) u = unquote(u)
-    if (u ~ /^(- )?name:/ || u ~ /^(run|if|uses):/) cmd = 0
-    else cmd = (u ~ /(^|[;&|({`[:space:]])(chown|chgrp)[ \t]/)
+    vcmd = 0
+    if (lg ~ /^(- )?(name|if|uses):/) cmd = 0
+    else {
+      cmd = (u ~ /(^|[;&|({`"'\/[:space:]])(chown|chgrp)([ \t;&|)"']|$)/)
+      if (!cmd && u !~ /^(echo|printf)[ \t]/) { vw = cmdword(u); if (vw != "") { vcmd = 1; cmd = 1 } }
+    }
     if (lg == OWN) haveown = 1
     if (u ~ /(^|[ \t;])OWNER=/ && lg != OWN) ownother = 1
     if (!cmd) continue
     nc++; total++
+    if (vcmd) {
+      # enforced only in a step that deals with ownership (names chown/chgrp/OWNER_UG/OWNER=); another
+      # step's variable commands ("$PV" codegen, ...) are not an ownership question
+      if (tolower(text) !~ /chown|chgrp|owner_ug|owner=/ || resolves(vw, text)) { nc--; total-- }
+      else fail("VARCMD", ln, "command word " vw " is a variable whose value cannot be resolved to a non-chown command: " lg)
+      continue
+    }
     if (index(lg, "-exec sh -c") && index(lg, "chown -h \"$OWNER_UG\"")) {
       if (lg == FIND_A FIND_TAIL) siteA = 1
       else if (index(lg, FIND_A) == 1) fail("SWALLOW", ln, "the find site's failure tail was changed (must be the exact || { ::error::; exit 1; })")
@@ -56,7 +111,7 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
       lg = LG[i]; sw = unquote(lg)
       if (sw ~ /^(echo|printf)[ \t]/) continue
       if (sw ~ /(^|[^a-zA-Z_])set[ \t]+\+(e|o[ \t]+errexit)/) fail("SWALLOW", LN[i], "set +e in a step with a chown: " lg)
-      if (lg !~ /(^|[;&|({`[:space:]])(chown|chgrp|find)[ \t]/) continue
+      if (lg !~ /(^|[;&|({`"'\/[:space:]])(chown|chgrp|find)([ \t;&|)"']|$)/) continue
       if (lg ~ /\|\|[ \t]*(true|:|\/bin\/true|\/usr\/bin\/true|echo)([ \t;)'"]|$)/ || sw ~ /\|\|[ \t]*printf([ \t;)]|$)/ || lg ~ /;[ \t]*true[ \t]*$/ || lg ~ /2>[ \t]*\/dev\/null/ || lg ~ /&>[ \t]*\/dev\/null/ || lg ~ />[ \t]*\/dev\/null[ \t]*2>&1/)
         fail("SWALLOW", LN[i], "error swallowed on a chown/find line: " lg)
     }
