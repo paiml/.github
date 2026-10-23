@@ -96,14 +96,15 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
-          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
-          else
-            echo "pre-checkout ownership restored under $WORK_ROOT"
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
           fi
+          LEFT="$(find "$WORK_ROOT" ! \( -user "$(id -un)" -group "$(id -gn)" \) -print -quit)" || { echo "::error::find under $WORK_ROOT failed"; exit 1; }
+          if [ -n "$LEFT" ]; then
+            echo "::error::root-owned leftovers remain under $WORK_ROOT (first: $LEFT) — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+            exit 1
+          fi
+          echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Checkout target repo
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -393,14 +394,15 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
-          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
-          else
-            echo "pre-checkout ownership restored under $WORK_ROOT"
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
           fi
+          LEFT="$(find "$WORK_ROOT" ! \( -user "$(id -un)" -group "$(id -gn)" \) -print -quit)" || { echo "::error::find under $WORK_ROOT failed"; exit 1; }
+          if [ -n "$LEFT" ]; then
+            echo "::error::root-owned leftovers remain under $WORK_ROOT (first: $LEFT) — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+            exit 1
+          fi
+          echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Sync infra repo on runner
         run: |
@@ -532,14 +534,15 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
-          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES"
-          else
-            echo "pre-checkout ownership restored under $WORK_ROOT"
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
           fi
+          LEFT="$(find "$WORK_ROOT" ! \( -user "$(id -un)" -group "$(id -gn)" \) -print -quit)" || { echo "::error::find under $WORK_ROOT failed"; exit 1; }
+          if [ -n "$LEFT" ]; then
+            echo "::error::root-owned leftovers remain under $WORK_ROOT (first: $LEFT) — checkout may fail with EACCES"
+            exit 1
+          fi
+          echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Sync infra repo on runner
         run: |
@@ -651,14 +654,15 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
-          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
-          else
-            echo "pre-checkout ownership restored under $WORK_ROOT"
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
           fi
+          LEFT="$(find "$WORK_ROOT" ! \( -user "$(id -un)" -group "$(id -gn)" \) -print -quit)" || { echo "::error::find under $WORK_ROOT failed"; exit 1; }
+          if [ -n "$LEFT" ]; then
+            echo "::error::root-owned leftovers remain under $WORK_ROOT (first: $LEFT) — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+            exit 1
+          fi
+          echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Evaluate gate results
         run: |

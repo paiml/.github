@@ -259,7 +259,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -489,7 +489,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -567,7 +567,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -791,7 +791,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -875,7 +875,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -1160,7 +1160,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -1224,7 +1224,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -1426,7 +1426,7 @@ jobs:
           echo "runner owner (stat of runner temp dir): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
-          find "$WORK_ROOT" ! -user "${OWNER_UG%%:*}" -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
+          find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
           CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
           if [ "$CHOWN_N" -gt 0 ]; then
@@ -1473,19 +1473,20 @@ jobs:
           # (`chown -R noah:noah *`) instead of relying on a blanket rule.
           # Never fails the job: an unprivileged chown fixes whatever we own.
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
+          fi
           # Post-condition, not just an exit code: the sudoers drop-ins on intel
           # are machine-level config and NOT tracked in paiml/infra, so a reimage
           # can silently turn this step into a no-op. Assert the tree is actually
           # clean so that failure mode surfaces here instead of as a mystery
           # EACCES in the next job's checkout.
-          if find "$WORK_ROOT" ! -user "$(id -un)" -print -quit 2>/dev/null | grep -q .; then
-            echo "::warning::root-owned leftovers remain under $WORK_ROOT — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
-          else
-            echo "pre-checkout ownership restored under $WORK_ROOT"
+          LEFT="$(find "$WORK_ROOT" ! \( -user "$(id -un)" -group "$(id -gn)" \) -print -quit)" || { echo "::error::find under $WORK_ROOT failed"; exit 1; }
+          if [ -n "$LEFT" ]; then
+            echo "::error::root-owned leftovers remain under $WORK_ROOT (first: $LEFT) — checkout may fail with EACCES (is /etc/sudoers.d/runner-chown deployed?)"
+            exit 1
           fi
+          echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -1788,9 +1789,9 @@ jobs:
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
           OWNER="$(id -un):$(id -gn)"
-          sudo -n chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || chown -R "$OWNER" "$WORK_ROOT" 2>/dev/null \
-            || true
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
+          fi
 
   provenance:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
