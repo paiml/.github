@@ -1,0 +1,12 @@
+# infra#2349 OPAQUE allowlist (read by scripts/uid-agnostic-opaque-scan.awk, run by test-uid-agnostic-chown.sh).
+# One row per RED command word the scanner cannot prove literal. Fields are TAB-separated:
+#   file <TAB> step name <TAB> trimmed physical line <TAB> reason
+# A row with an empty reason is RED. A row that matches nothing is RED. A new RED word is never
+# let through by editing the scanner: it needs a row here, reviewed on its own line.
+ci.yml	actionlint	"$tmp/actionlint" -shellcheck=	actionlint binary extracted into a mktemp dir by the previous line of this step; the path is the point
+ci.yml	actionlint	"$tmp/actionlint" -version	actionlint binary extracted into a mktemp dir by the previous line of this step; the path is the point
+pr-gate.yml	Determine authorization	membership() {	shell helper that wraps one gh api call; the name shadows no command
+sovereign-ci.yml	Generate contract assertions (pv codegen)	"$PV" codegen "$member_dir/contracts" -o "$src_dir/generated_contracts.rs" || true	pv found at run time by scanning candidate paths, then `which pv`; the codegen tool is the provable-contracts CLI, not an ownership tool
+sovereign-ci.yml	Generate contract assertions (pv codegen)	"$PV" codegen "$PC_CONTRACTS" -o "$src_dir/generated_contracts.rs" || true	pv found at run time by scanning candidate paths, then `which pv`; the codegen tool is the provable-contracts CLI, not an ownership tool
+sovereign-ci.yml	Generate contract assertions (pv codegen)	"$PV" codegen "$PC_CONTRACTS" -o src/generated_contracts.rs || true	pv found at run time by scanning candidate paths, then `which pv`; the codegen tool is the provable-contracts CLI, not an ownership tool
+sovereign-ci.yml	Generate contract assertions (pv codegen)	"$PV" codegen contracts/ -o src/generated_contracts.rs || true	pv found at run time by scanning candidate paths, then `which pv`; the codegen tool is the provable-contracts CLI, not an ownership tool

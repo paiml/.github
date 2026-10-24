@@ -48,6 +48,9 @@ export FIND_TAIL=' || { echo "::error::find under $WORK_ROOT failed"; rm -f "${C
 export OWNER_LINE='OWNER="$(id -un):$(id -gn)"'
 export CHOWN_B="$CH -R \"\$OWNER\" \"\$WORK_ROOT\""
 SCAN_AWK="${SCAN_AWK:-$(dirname "$0")/uid-agnostic-chown-scan.awk}"
+OPAQUE_AWK="${OPAQUE_AWK:-$(dirname "$0")/uid-agnostic-opaque-scan.awk}"
+OPAQUE_ALLOW="${OPAQUE_ALLOW:-$(dirname "$0")/uid-agnostic-opaque-allowlist.txt}"
+OAWK="$OPAQUE_AWK"
 
 extract_sites() { # file outdir -> writes outdir/site.N
   awk -v out="$2" -v mark="$MARK" '
@@ -76,6 +79,31 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     nchown=$((nchown + $(printf '%s\n' "$out" | sed -n 's/^SCAN //p' | head -n 1)))
   done
   { [ "$nfiles" -eq 0 ] || [ "$nchown" -eq 0 ]; } && { echo "FAIL[NOSCAN] scanned $nfiles file(s) and $nchown chown command(s) under $WF"; fails=1; }
+  # OPAQUE class (scripts/uid-agnostic-opaque-scan.awk): in EVERY run step of EVERY scanned file, a command
+  # word must be a plain literal word, unless its file+step+line is a row of the committed allowlist.
+  local osteps=0 owords=0 orows=0 oo ar
+  : > "$tmp/used"
+  for f in $(list_files); do
+    oo="$(ALLOW="$OPAQUE_ALLOW" awk -v F="$f" -f "$OPAQUE_AWK" "$f")" || { echo "FAIL[NOSCAN] opaque scan of $f errored"; fails=1; continue; }
+    printf '%s\n' "$oo" | grep -aE '^(FAIL|ROW)' && fails=1
+    printf '%s\n' "$oo" | grep -a '^ALLOWUSED ' >> "$tmp/used"
+    osteps=$((osteps + $(printf '%s\n' "$oo" | awk '/^OSCAN /{print $2}')))
+    owords=$((owords + $(printf '%s\n' "$oo" | awk '/^OSCAN /{print $3}')))
+  done
+  if [ -e "$OPAQUE_ALLOW" ]; then
+    ar="$(awk -F'\t' 'FILENAME == ARGV[1] { if ($0 ~ /^ALLOWUSED /) u[substr($0, 11)] = 1; next }
+      /^[ \t]*(#|$)/ { next }
+      { rows++; k = $1 "\t" $2 "\t" $3
+        if (NF != 4 || $4 == "") print "FAIL[ALLOWLIST] row " rows " has no reason or is not 4 tab-separated fields: " $0
+        else if (!(k in u)) print "FAIL[ALLOWLIST] row " rows " matches no RED word (stale): " $1 " / " $2 " / " $3 }
+      END { print "ROWS " rows + 0 }' "$tmp/used" "$OPAQUE_ALLOW")" || { echo "FAIL[NOSCAN] allowlist read errored"; fails=1; }
+    printf '%s\n' "$ar" | grep -a '^FAIL' && fails=1
+    orows="$(printf '%s\n' "$ar" | awk '/^ROWS /{print $2}')"
+  else
+    echo "FAIL[ALLOWLIST] the committed allowlist $OPAQUE_ALLOW is missing"; fails=1
+  fi
+  [ "$osteps" -eq 0 ] || [ "$owords" -eq 0 ] && { echo "FAIL[NOSCAN] opaque scan read $osteps run step(s) and $owords command word(s)"; fails=1; }
+  OPAQUE_SUMMARY="opaque: $osteps run step(s), $owords command word(s) scanned, $orows allowlist row(s)"
   for f in $(list_files); do
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
     for s in "$tmp"/d/site.*; do
@@ -112,7 +140,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     cmp -s "$tmp/all.1" "$tmp/all.$i" || { echo "FAIL[DRIFT] site $i differs from site 1"; fails=1; }
     i=$((i + 1))
   done
-  [ "$fails" -eq 0 ] && echo "ok   $sites site(s), byte-identical; scanned $nfiles workflow file(s), $nchown chown command(s): all ruled shapes, none swallowed, no fallback"
+  [ "$fails" -eq 0 ] && echo "ok   $sites site(s), byte-identical; scanned $nfiles workflow file(s), $nchown chown command(s): all ruled shapes, none swallowed, no fallback; $OPAQUE_SUMMARY"
   [ -e "$tmp/all.1" ] && cp "$tmp/all.1" "${SITE_COPY:-/dev/null}" 2>/dev/null
   rm -rf "${tmp:?}"
   return "$fails"
@@ -427,7 +455,7 @@ if [ "${1:-}" = "--self-test" ]; then
   # rule 5: controls. A resolved non-ownership command of the same shape stays GREEN (no FAIL at all).
   keep() { # name line : append a step that mentions chown, demand a clean run
     cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
-    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"   # the chown scanner alone: the OPAQUE class below is stricter by design
     if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
   }
   keep "ctl: \\ls -R"                        '\\ls -R "$GITHUB_WORKSPACE"'
@@ -448,10 +476,13 @@ if [ "${1:-}" = "--self-test" ]; then
   keep "ctl: source ./file literal"          'source ./env.sh'
   keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
   keep "ctl: install -o from OWNER_UG"       'install -o "${OWNER_UG%%:*}" a b'
-  # eval in a step that does not deal with ownership is not an ownership question
+  # eval in a step that does not deal with ownership is not an ownership question for the chown scanner,
+  # but it IS an OPAQUE-class RED (ruling: every run step): the chown scanner stays quiet, the class scan does not.
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
-  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
+  out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"
+  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red in the chown scanner"; else echo "  kept  [green] eval in a step with no ownership text (chown scanner)"; fi
+  out="$(ALLOW=/dev/null awk -v F="$F" -f "$OAWK" "$tmp/$F")"
+  echo "$out" | grep -q 'FAIL\[OPAQUE\]' || miss "eval in a step with no ownership text is not an OPAQUE-class RED"
   # --- finding 2: every fail-closed exit in each self-heal site (and the unified-gate sites) ---------
   # For every `exit 1` that sits in a step with a chown / OWNER_UG, in sovereign-ci.yml and unified-gate.yml,
   # one mutant per replacement: true, :, nothing, exit 0. The guard (the scan, [EXIT]) must go red on each.
@@ -474,6 +505,125 @@ if [ "${1:-}" = "--self-test" ]; then
   done
   [ "$exitmut" -gt 0 ] && echo "  caught [EXIT] $exitmut fail-closed-exit mutants (true / : / nothing / exit 0) over sovereign-ci.yml and unified-gate.yml"
   F=sovereign-ci.yml
+  # --- OPAQUE class (uid-agnostic-opaque-scan.awk): in EVERY run step a command word is a plain literal --------
+  # Closes the three holes found at f0e60da: (a) X+=own appends, (b) alias c=chown, (c) "$X$Y" in a step with
+  # no chown / owner token. Every mutant runs the scanner on a one-step workflow with an empty allowlist.
+  omy() { # name verdict yaml-steps : red = a FAIL[OPAQUE] line, green = none
+    printf 'jobs:\n  j:\n    steps:\n%b\n' "$3" > "$tmp/om.yml"
+    local o; o="$(ALLOW=/dev/null awk -v F=om.yml -f "$OAWK" "$tmp/om.yml" 2>&1)"
+    case "$2" in
+      red)   echo "$o" | grep -q 'FAIL\[OPAQUE\]' || miss "OPAQUE mutant not caught: $1" ;;
+      green) echo "$o" | grep -q 'FAIL\[OPAQUE\]' && miss "OPAQUE false positive: $1: $(echo "$o" | grep -m1 'FAIL\[OPAQUE\]' | cut -c1-160)" ;;
+    esac
+    case "$2" in red) OP_RED=$((OP_RED + 1)) ;; *) OP_GREEN=$((OP_GREEN + 1)) ;; esac
+  }
+  om() { omy "$1" "$2" "      - name: t\n        run: |\n$(printf '%b\n' "$3" | sed 's/^/          /')"; }
+  OP_RED=0; OP_GREEN=0; m0=$MISSES
+  # (a) += appends and every other way a variable stops being a once-assigned literal
+  om "a: X=ch; X+=own; \$X -R (owner step)"        red   'X=ch\nX+=own\n$X -R "$OWNER_UG" "$WORK_ROOT"'
+  om "a: X=ch; X+=own; \$X -R /etc (plain step)"   red   'X=ch\nX+=own\n$X -R /etc'
+  om "a: X+=own, X never assigned plainly"         red   'X+=chown\n"$X" -R /etc'
+  om "a: assigned twice"                           red   'X=ls\nX=chown\n$X -R /etc'
+  om "a: assigned in both arms of an if"           red   'if true; then X=ls; else X=chown; fi\n$X -R /etc'
+  om "a: used before its assignment"               red   '$X -R /etc\nX=ls'
+  om "a: array element"                            red   'X[0]=chown\n${X[0]} -R /etc'
+  om "a: bound by \${X:=chown}"                    red   ': "${X:=chown}"\n$X -R /etc'
+  om "a: bound by read"                            red   'X=ls\nread -r X <<< chown\n$X -R /etc'
+  om "a: bound by for"                             red   'X=ls\nfor X in chown; do :; done\n$X -R /etc'
+  om "a: bound by printf -v"                       red   'X=ls\nprintf -v X chown\n$X -R /etc'
+  om "a: bound by (( ))"                           red   'X=ls\n(( X += 1 ))\n$X -R /etc'
+  om "a: only set by the YAML env: block"          red   '$TOOL -R /etc'
+  om "a: resolves to a shell"                      red   'X=bash\n$X -c "$CMD"'
+  om "a: resolves to eval"                         red   'X=eval\n$X "ls"'
+  # (b) alias, eval, source of a variable path, function definitions that shadow a command
+  om "b: alias c=chown; c -R"                      red   'alias c=chown\nc -R "$OWNER_UG" "$WORK_ROOT"'
+  om "b: alias in a step with no chown token"      red   'alias ll="ls -l"\nll'
+  om "b: \\alias"                                  red   '\\alias c=chown'
+  om "b: eval literal"                             red   'eval "ls"'
+  om "b: eval \$CMD"                               red   'eval "$CMD"'
+  om "b: source \"\$F\""                           red   'source "$F"'
+  om "b: . \$F"                                    red   '. $F'
+  om "b: source \$(pwd)/x"                         red   'source $(pwd)/x'
+  om "b: chown() { ...; }"                         red   'chown() { :; }'
+  om "b: chown () { ...; } spaced"                 red   'chown () { :; }\nchown -R a b'
+  om "b: function chown { ...; }"                  red   'function chown { :; }'
+  om "b: function ls() { ...; }"                   red   'function ls() { :; }'
+  om "b: bash -c \"\$CMD\""                        red   'bash -c "$CMD"'
+  om "b: sh -ec \"\$CMD\""                         red   'sh -ec "$CMD"'
+  om "b: trap \"\$H\" EXIT"                        red   'trap "$H" EXIT'
+  om "b: trap with a literal handler that holds \"\$X\$Y\"" red 'trap '"'"'"$X$Y" -R /etc'"'"' EXIT'
+  om "b: bash -c literal payload that holds \"\$X\$Y\"" red 'bash -c '"'"'"$X$Y" -R /etc'"'"
+  om "b: find -exec \"\$T\" {} +"                  red   'find . -exec "$T" {} +'
+  om "b: find -exec sh -c \"\$CMD\""               red   'find . -exec sh -c "$CMD" sh {} +'
+  # (c) command words that are not plain literals, in a step with no ownership token at all
+  om "c: \"\$X\$Y\" -R /etc (X=ch Y=own)"          red   'X=ch; Y=own\n"$X$Y" -R /etc'
+  om "c: \${X}\${Y} -R /etc"                       red   'X=ch; Y=own\n${X}${Y} -R /etc'
+  om "c: env \"\$X\$Y\" -R /etc"                   red   'X=ch; Y=own\nenv "$X$Y" -R /etc'
+  om "c: sudo \"\$X\$Y\""                          red   'X=ch; Y=own\nsudo -n "$X$Y" -R /etc'
+  om "c: \$(echo chown) -R /etc"                   red   '$(echo chown) -R /etc'
+  om "c: backtick word"                            red   '`echo chown` -R /etc'
+  om "c: ch\"\"own"                                red   'ch""own -R /etc'
+  om "c: ch\\own"                                  red   'ch\\own -R /etc'
+  om "c: 'ch'own"                                  red   "'ch'own -R /etc"
+  om "c: ch*wn glob"                               red   '/usr/bin/ch?wn -R /etc'
+  om "c: \${CHOWN:-chown}"                         red   '${CHOWN:-chown} -R /etc'
+  om "c: after a pipe"                             red   'ls | "$X$Y" -R /etc'
+  om "c: after && and ||"                          red   'true && "$X$Y" a || "$X$Y" b'
+  om "c: after then / do"                          red   'if true; then "$X$Y" a; fi\nwhile true; do "$X$Y" b; done'
+  om "c: inside \$( )"                             red   'echo "$( "$X$Y" -R /etc )"'
+  om "c: inside a process substitution"            red   'cat <( "$X$Y" -R /etc )'
+  om "c: inside an unquoted heredoc \$( )"         red   'cat <<EOF\n$( "$X$Y" -R /etc )\nEOF'
+  om "c: heredoc fed to bash"                      red   'bash <<EOF\n"$X$Y" -R /etc\nEOF'
+  om "c: \${{ }} in command position"              red   '${{ inputs.tool }} -R /etc'
+  om "c: lone \$VAR from the YAML env: block"      red   '$CHOWN_BIN -R /etc'
+  om "c: line continuation"                        red   'echo a \\\n  && "$X$Y" b'
+  omy "c: run: > folded block"                red   '      - name: t\n        run: >\n          echo a && "$X$Y" -R /etc'
+  omy "c: inline run: value"                       red   '      - name: t\n        run: "$X$Y" -R /etc'
+  omy "c: second step of a job"                    red   '      - name: ok\n        run: echo hi\n      - name: bad\n        run: |\n          "$X$Y" -R /etc'
+  # --- text that is not shell must stay GREEN (each is a false positive the old scanner fought) ---
+  omy "g: github-script JS body" green '      - uses: actions/github-script@v7\n        with:\n          script: |\n            const x = `${a}${b}`;\n            const r = await github.rest.pulls.get({ owner, repo });\n            "$X$Y" -R /etc\n            eval(x); alias = 1\n      - name: t\n        run: echo ok'
+  om "g: awk program in single quotes"       green 'awk '"'"'\nBEGIN { x = "$X$Y"; eval = 1 }\n{ print $1 | "sort" }\n'"'"' file'
+  om "g: jq program in single quotes"        green "jq -r '.[] | \"\\(.a)\$X\$Y\"' file.json"
+  om "g: heredoc fed to awk is data"         green 'awk -f - file <<'"'"'AWK'"'"'\n{ "$X$Y" -R /etc }\nAWK'
+  om "g: quoted heredoc to cat is data"      green 'cat > f <<'"'"'EOF'"'"'\n"$X$Y" -R /etc\nalias eval\nEOF'
+  om "g: unquoted heredoc text is data"      green 'cat > f <<EOF\nuser $USER ran "$X$Y"\nEOF'
+  om "g: heredoc <<- with tabs"              green 'cat <<-EOF\n\t"$X$Y"\n\tEOF'
+  om "g: \${{ }} in arguments"               green 'echo "${{ github.sha }}" ${{ inputs.x }}-y\nmkdir -p ${{ runner.temp }}/out'
+  om "g: \${{ }} multiword expression"       green 'echo ${{ fromJSON(needs.a.outputs.m).x }}'
+  om "g: assigned once to a literal"         green 'LS=/bin/ls\n"$LS" -R /tmp\n${LS} -R /tmp'
+  om "g: export once, then use"              green 'export T=ls\n$T /tmp'
+  om "g: assignments, redirects, tests"      green 'A=1 B=2 ls\nls > /dev/null 2>&1\n[ -f x ] && [[ "$a" == b && -z "$c" ]]\n(( n++ ))\nfor ((i=0;i<3;i++)); do :; done'
+  om "g: case patterns are not commands"     green 'case "$x" in\n  a|b) echo ab ;;\n  "$y") echo y ;;\n  *) echo other ;;\nesac\ncase $x in a) :;; esac'
+  om "g: for / while / read loops"           green 'for f in $(ls) "$@"; do echo "$f"; done\nwhile read -r l; do echo "$l"; done < f\nuntil true; do :; done'
+  om "g: command substitutions of literals"  green 'v="$(git rev-parse HEAD)"\nw=$(echo "$(date)")\necho `date`'
+  om "g: grouping, subshell, negation"       green '{ echo a; echo b; } > f\n( cd /tmp && ls )\n! grep -q x f'
+  om "g: wrappers over literals"             green 'sudo -n -u root ls\nenv A=1 ls\nxargs -n1 echo < f\ntimeout 5 ls\nnice -n 5 ls\ncommand -v "$X"'
+  om "g: eval-free sh -c with a literal"     green "bash -c 'echo hi'\nsh -c \"echo hi\"\ntrap 'rm -f f' EXIT"
+  om "g: find -exec literal"                 green "find . -type f -exec ls {} +\nfind . -exec sh -c 'ls \"\$1\"' sh {} \\\;"
+  om "g: source of a literal path"           green 'source ./env.sh\n. /etc/profile'
+  omy "g: python shell step is not bash"     green '      - name: t\n        shell: python\n        run: |\n          "$X$Y" = 1'
+  omy "g: run: key with a nested map"        green '    defaults:\n      run:\n        shell: bash\n    steps:\n      - name: t\n        run: echo ok'
+  [ "$MISSES" -eq "$m0" ] && echo "  caught [OPAQUE] $OP_RED run-step mutants RED, $OP_GREEN non-shell / literal cases GREEN"
+  # the allowlist: an unused row, a row with no reason, a missing file, a row that lets a RED word through
+  cp "$WF"/*.yml "$tmp"/; printf 'ci.yml\tno such step\tno such line\tbecause\n' > "$tmp/al.txt"; cat "$OPAQUE_ALLOW" >> "$tmp/al.txt"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions OPAQUE_ALLOW=$tmp/al.txt SITE_COPY= bash "$0" 2>&1 || true)"
+  echo "$out" | grep -q 'FAIL\[ALLOWLIST\].*matches no RED word' || miss "an allowlist row that matches nothing was not RED"
+  grep -v '^#' "$OPAQUE_ALLOW" | head -n 1 | awk -F'\t' '{print $1 "\t" $2 "\t" $3 "\t"}' > "$tmp/al.txt"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions OPAQUE_ALLOW=$tmp/al.txt SITE_COPY= bash "$0" 2>&1 || true)"
+  echo "$out" | grep -q 'FAIL\[ALLOWLIST\].*no reason' || miss "an allowlist row with no reason was not RED"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions OPAQUE_ALLOW=$tmp/none.txt SITE_COPY= bash "$0" 2>&1 || true)"
+  echo "$out" | grep -q 'FAIL\[ALLOWLIST\].*missing' || miss "a missing allowlist file was not RED"
+  : > "$tmp/al.txt"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions OPAQUE_ALLOW=$tmp/al.txt SITE_COPY= bash "$0" 2>&1 || true)"
+  echo "$out" | grep -q 'FAIL\[OPAQUE\]' || miss "with an empty allowlist the real tree's remaining RED words were not RED"
+  printf 'jobs:\n  j:\n    steps:\n      - name: t\n        run: |\n          "$X$Y" -R /etc\n' > "$tmp/om.yml"
+  printf 'om.yml\tt\t"$X$Y" -R /etc\tself-test fixture\n' > "$tmp/al.txt"
+  o="$(ALLOW=$tmp/al.txt awk -v F=om.yml -f "$OAWK" "$tmp/om.yml")"
+  { echo "$o" | grep -q 'FAIL\[OPAQUE\]' || echo "$o" | grep -q '^ALLOWUSED '; } && ! echo "$o" | grep -q 'FAIL\[OPAQUE\]' || miss "an allowlist row did not let its exact step+line through"
+  printf 'om.yml\tother step\t"$X$Y" -R /etc\twrong step\n' > "$tmp/al.txt"
+  o="$(ALLOW=$tmp/al.txt awk -v F=om.yml -f "$OAWK" "$tmp/om.yml")"
+  echo "$o" | grep -q 'FAIL\[OPAQUE\]' || miss "an allowlist row for another step let a RED word through"
+  echo "  caught [ALLOWLIST] unused row, no reason, missing file; allowlist matches the exact step+line only"
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

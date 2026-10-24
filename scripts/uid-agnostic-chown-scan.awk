@@ -122,6 +122,7 @@ function resolves(w, text,   nm, n, L, i, v, found) {
   n = split(text, L, "\n"); found = 0
   for (i = 1; i <= n; i++) {
     v = trim(L[i]); sub(/^- /, "", v); sub(/^run:[ \t]*/, "", v); sub(/^(export|local|readonly|declare)[ \t]+/, "", v)
+    if (index(v, nm "+=") == 1 || index(v, nm "[") == 1) return 0
     if (index(v, nm "=") == 1) v = substr(v, length(nm) + 2)
     else if (index(v, nm ": ") == 1) v = substr(v, length(nm) + 3)
     else continue
@@ -160,7 +161,7 @@ function flush(   tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, 
       fail("INTREE", ln, "stat of a path inside the chowned tree: " lg)
     if (lg ~ /^(- )?(name|if|uses):/) cmd = 0
     else {
-      CHOWN_RE = "(^|[;&|({`\"'/[:space:]])(chown|chgrp)([ \t;&|)\"']|$)"
+      CHOWN_RE = "(^|[;&|({`\"'/=[:space:]])(chown|chgrp)([ \t;&|)\"']|$)"
       cmd = (u ~ CHOWN_RE || nu ~ CHOWN_RE)
       walk(ku, 0)
       opaq = OPAQ
