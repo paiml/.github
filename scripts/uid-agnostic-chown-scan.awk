@@ -315,8 +315,29 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
   }
   sn = 0
 }
-/^  [A-Za-z0-9_.-]+:[ \t]*$/ { flush(); container = 0 }
-/^    container:/ { container = 1 }
-/^[ \t]*- (name|uses|run|id|if):/ { flush() }
-{ sn++; S[sn] = $0; SN[sn] = NR }
-END { flush(); print "SCAN " total; exit 0 }
+# Whole file is buffered and replayed in END, because a job-level `container:` key may come AFTER `steps:` (the old line-at-a-time
+# scan had already flushed every step of that job as bare-metal). jc[j] = job j has a container key, wherever it sits.
+# A step starts at a list item at the indent of the first item under `steps:`, whatever its first key is (name, uses, run, id, if,
+# shell, env, with, working-directory ...). The old rule listed five keys, so a step opening with `shell:` or `env:` was glued
+# onto the PREVIOUS step and inherited its marker comment and its verdict.
+{ L[NR] = $0 }
+END {
+  nl = NR; j = 0
+  for (i = 1; i <= nl; i++) {
+    if (L[i] ~ /^  [A-Za-z0-9_.-]+:[ \t]*$/) j++
+    if (L[i] ~ /^    container:/) jc[j] = 1
+  }
+  j = 0; sind = -1; iind = -1
+  for (i = 1; i <= nl; i++) {
+    $0 = L[i]; ind = match($0, /[^ ]/) - 1
+    if ($0 ~ /^  [A-Za-z0-9_.-]+:[ \t]*$/) { flush(); j++; container = jc[j] + 0; sind = -1; iind = -1 }
+    else if ($0 ~ /^(  |    )steps:[ \t]*$/) { flush(); sind = ind; iind = -1 }
+    else if (sind >= 0 && $0 !~ /^[ \t]*(#|$)/) {
+      if ($0 ~ /^ *- /) { if (iind < 0 && ind >= sind) iind = ind; if (ind == iind) flush() }
+      else if (ind <= sind && $0 ~ /^ *[A-Za-z0-9_.-]+:/) { flush(); sind = -1; iind = -1 }
+    }
+    if ($0 ~ /^[ \t]*- (name|uses|run|id|if|shell|env|with|working-directory|continue-on-error):/) flush()
+    sn++; S[sn] = $0; SN[sn] = i
+  }
+  flush(); print "SCAN " total; exit 0
+}
