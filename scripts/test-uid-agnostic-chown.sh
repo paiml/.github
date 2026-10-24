@@ -367,6 +367,17 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "norm: backtick command word"           VARCMD '`command -v chown` -R a:b "$GITHUB_WORKSPACE"'
   nm "norm: xargs \$X unresolved"            VARCMD 'ls | xargs -n1 $X "$OWNER_UG"'
   nm "norm: \"\$X\" after if !"              VARCMD 'if ! "$X" -R a:b "$GITHUB_WORKSPACE"; then exit 1; fi'
+  # finding 1: ANY command word that holds an expansion is a variable command word, not only a lone $VAR
+  nm "concat: \"\$X\$Y\" (X=ch Y=own)"      OPAQUE 'X=ch; Y=own; "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$X\$Y unquoted"               OPAQUE 'X=ch; Y=own; $X$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \${X}\${Y} braces"             OPAQUE 'X=ch; Y=own; "${X}${Y}" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: ch\$Y prefix literal"          OPAQUE 'Y=own; ch$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$Xown suffix literal"         OPAQUE 'X=ch; "$X"own -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: sudo -n \"\$X\$Y\""            OPAQUE 'X=ch; Y=own; sudo -n "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: env A=1 \"\$X\$Y\""            OPAQUE 'X=ch; Y=own; env A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: leading assignment A=1 \"\$X\$Y\"" OPAQUE 'X=ch; Y=own; A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$DIR/\$TOOL path command"     OPAQUE 'D=/usr/bin; T=ch; U=own; "$D/$T$U" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: after && in an if"             OPAQUE 'X=ch; Y=own; if true && "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"; then :; fi'
   # rule 2: the ownership primitives, each spelling normalised
   nm "prim: install -o 1000 -g 1000"         TARGET 'install -o 1000 -g 1000 -m 755 a b'
   nm "prim: install -o root"                 TARGET 'install -o root a b'
@@ -441,6 +452,28 @@ if [ "${1:-}" = "--self-test" ]; then
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
   out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
   if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
+  # --- finding 2: every fail-closed exit in each self-heal site (and the unified-gate sites) ---------
+  # For every `exit 1` that sits in a step with a chown / OWNER_UG, in sovereign-ci.yml and unified-gate.yml,
+  # one mutant per replacement: true, :, nothing, exit 0. The guard (the scan, [EXIT]) must go red on each.
+  # Mutants are checked per site against the scan alone, so the run stays fast.
+  exitmut=0
+  for F in sovereign-ci.yml unified-gate.yml; do
+    lines="$(awk 'function flush(  i){ if(has) for(i=1;i<=ne;i++) print E[i]; ne=0; has=0 }
+      /^[ \t]*- (name|uses|run|id|if):/{ flush() } /^  [A-Za-z0-9_.-]+:[ \t]*$/{ flush() }
+      !/^[ \t]*#/ && (/chown/ || /OWNER_UG/) { has=1 } /exit 1/ { ne++; E[ne]=NR } END{ flush() }' "$WF/$F")"
+    [ -n "$lines" ] || miss "no fail-closed exit found to mutate in $F"
+    for N in $lines; do
+      for R in 'true' ':' '' 'exit 0'; do
+        sed "${N}s/exit 1/$R/" "$WF/$F" > "$tmp/m.yml"
+        cmp -s "$WF/$F" "$tmp/m.yml" && { miss "exit mutant $F:$N '$R' changed nothing"; continue; }
+        exitmut=$((exitmut + 1))
+        awk -v F="$F" -f "$SCAN_AWK" "$tmp/m.yml" | grep -q 'FAIL\[EXIT\]' || miss "exit mutant $F:$N 'exit 1' -> '$R' not caught as [EXIT]: $(sed -n "${N}p" "$WF/$F" | cut -c1-100)"
+      done
+    done
+    awk -v F="$F" -f "$SCAN_AWK" "$WF/$F" | grep -q 'FAIL\[EXIT\]' && miss "[EXIT] fired on the unmutated $F"
+  done
+  [ "$exitmut" -gt 0 ] && echo "  caught [EXIT] $exitmut fail-closed-exit mutants (true / : / nothing / exit 0) over sovereign-ci.yml and unified-gate.yml"
+  F=sovereign-ci.yml
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

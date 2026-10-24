@@ -12,7 +12,7 @@ function fail(tag, ln, msg) { print "FAIL[" tag "] " F ":" ln ": " msg; bad = 1 
 BEGIN {
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
-  sn = 0; total = 0; container = 0
+  ALLOW_CMD = "^$NEVERMATCH"; sn = 0; total = 0; container = 0
 }
 # --- NORMALISE a command word the way the shell would, then match CLASSES, not spellings ---------
 # kq(): remove backslashes and expand ${V:-w} ${V-w} ${V:=w} ${V=w} to w (quotes kept).
@@ -50,16 +50,20 @@ function skipwrap(T, m, j,   t) {
 }
 # cmdword() returns the first command word of a statement of the (quote-stripped, normalised) line s
 # that is a $variable / $( ) / backtick word ("" if none).
-function cmdword(s,   n, a, i, m, T, j, st, w) {
+function cmdword(s,   ww, n, a, i, m, T, j, st, w) {
   if (s ~ /(^|[;&|({])[ \t]*(\$\([^(]|`)/) return "$(...)"
   gsub(/\$\{/, "$", s); gsub(/\+?=\(/, "=X ", s); gsub(/[<>]\(/, ";", s); gsub(/\$\(/, ";", s); gsub(/`/, ";", s)
   n = split(s, a, /;|&&|\|\||\||&|\(|\{|\)/)
   for (i = 1; i <= n; i++) {
     st = trim(a[i]); if (st == "") continue
     m = split(st, T, /[ \t]+/); j = skipwrap(T, m, 1)
+    while (j <= m && T[j] ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) j++
     if (j > m) continue
     w = T[j]
-    if (w ~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) return w
+    # CLASS: any command word that holds an expansion ($, `) is a variable command word, whatever its
+    # shape ($X, $X$Y, ${X}${Y}, pre$X, $X/bin/tool). Only a lone $VAR that the step resolves to a
+    # static non-chown word (resolves()) or a word on the named allowlist below is let through.
+    if (w ~ /[$`]/) { ww = w; sub(/^\002/, "", ww); sub(/\002$/, "", ww); if (ww ~ /\002/) ww = ww "~"; if (!(ww ~ ALLOW_CMD)) return ww }
   }
   return ""
 }
@@ -129,7 +133,7 @@ function resolves(w, text,   nm, n, L, i, v, found) {
   }
   return found
 }
-function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
+function flush(   tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
   if (sn == 0) return
   n = 0; acc = ""; start = 0; text = ""
   for (i = 1; i <= sn; i++) {
@@ -161,7 +165,7 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
       walk(ku, 0)
       opaq = OPAQ
       if (!cmd && PRIM != "") { cmd = 1; prim = 1 }
-      if (!cmd && u !~ /^(echo|printf)[ \t]/) { vw = cmdword(nu); if (vw != "") { vcmd = 1; cmd = 1 } }
+      if (!cmd && u !~ /^(echo|printf)[ \t]/) { tq = ku; gsub(/["']/, "\002", tq); vw = cmdword(tq); if (vw != "") { vcmd = 1; cmd = 1 } }
     }
     if (opaq && owns_step(textn)) fail("OPAQUE", ln, "eval / sh -c / source with a non-literal argument in a step that deals with ownership: the scanner cannot see what will run: " lg)
     if (lg == OWN) haveown = 1
@@ -172,7 +176,9 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
     if (vcmd) {
       # enforced only in a step that deals with ownership (names chown/chgrp/OWNER_UG/OWNER=/an ownership
       # primitive); another step's variable commands ("$PV" codegen, ...) are not an ownership question
-      if ((tolower(textn) !~ /chown|chgrp|owner_ug|owner=/ && !owns_step(textn)) || resolves(vw, text)) { nc--; total-- }
+      if ((tolower(textn) !~ /chown|chgrp|owner_ug|owner=/ && !owns_step(textn))) { nc--; total-- }
+      else if (vw != "$(...)" && vw !~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) fail("OPAQUE", ln, "command word " vw " holds an expansion that is not a lone resolvable $VAR (concatenated $X$Y, prefix$X, $X/tool ...) in a step that deals with ownership: the scanner cannot see what will run: " lg)
+      else if (resolves(vw, text)) { nc--; total-- }
       else fail("VARCMD", ln, "command word " vw " is a variable whose value cannot be resolved to a non-chown command: " lg)
       continue
     }
@@ -199,6 +205,26 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
       if (lg !~ /(^|[;&|({`"'\/[:space:]])(chown|chgrp|find)([ \t;&|)"']|$)/ && nl !~ /(^|[;&|({`\/[:space:]])(chown|chgrp|find)([ \t;&|)]|$)/) continue
       if (lg ~/\|\|[ \t]*(true|:|\/bin\/true|\/usr\/bin\/true|echo)([ \t;)'"]|$)/ || sw ~ /\|\|[ \t]*printf([ \t;)]|$)/ || lg ~ /;[ \t]*true[ \t]*$/ || lg ~ /2>[ \t]*\/dev\/null/ || lg ~ /&>[ \t]*\/dev\/null/ || lg ~ />[ \t]*\/dev\/null[ \t]*2>&1/)
         fail("SWALLOW", LN[i], "error swallowed on a chown/find line: " lg)
+    }
+    # EXIT: every ::error:: in a step with a chown is a fail-closed path and must END in `exit 1`.
+    # One-line form: the logical line is `... echo "::error::..."; [rm -f ...;] exit 1; }`, i.e. the text
+    # from ::error:: to the end of the line finishes with `; exit 1` (+ optional `;` and `}`).
+    # Multi-line form: the line is a plain echo statement (starts with echo, ends with a quote) and the
+    # next logical lines, after any `rm -f ...` cleanup lines, are exactly `exit 1`. `true`, `:`, `exit 0`,
+    # `exit 10`, a deleted exit, or anything else between the error and its exit is a swallowed failure.
+    for (i = 1; i <= n; i++) {
+      lg = LG[i]
+      if ((k = index(lg, "::error::")) == 0) continue
+      if (lg !~ /^(- )?(name|if|uses):/ && substr(lg, k) ~ /;[ \t]*exit 1[ \t]*;?[ \t]*\}?[ \t]*$/) continue
+      ok = 0
+      if (lg ~ /^echo[ \t]/ && lg ~ /"[ \t]*$/) {
+        for (nx = i + 1; nx <= n; nx++) {
+          if (LG[nx] == "" || LG[nx] ~ /^rm -f [^;&|]*$/) continue
+          ok = (LG[nx] ~ /^exit 1[ \t]*$/)
+          break
+        }
+      }
+      if (!ok) fail("EXIT", LN[i], "::error:: is not followed by exit 1 in the same block (a swallowed fail-closed exit): " lg)
     }
     for (i = 1; i <= sn; i++) if (S[i] ~ /^[ \t]*continue-on-error:/ && S[i] !~ /continue-on-error:[ \t]*false/) fail("SWALLOW", SN[i], "continue-on-error on a step with a chown")
   }
