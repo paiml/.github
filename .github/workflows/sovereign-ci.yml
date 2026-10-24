@@ -244,34 +244,85 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -479,34 +530,85 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   lint:
@@ -562,34 +664,85 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -791,34 +944,85 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   coverage:
@@ -880,34 +1084,85 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1170,34 +1425,85 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   bench:
@@ -1239,34 +1545,85 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1446,34 +1803,85 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
+          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
+          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
+          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
+          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
+          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
+          # anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   security:
@@ -1515,6 +1923,24 @@ jobs:
           # when neither sudo -n nor a plain chown can repair the tree the step exits 1 with an
           # ::error::, and the post-condition find below re-checks the result. A bare-metal runner
           # without the sudoers grant fails here on purpose, never silently.
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -1831,6 +2257,24 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
