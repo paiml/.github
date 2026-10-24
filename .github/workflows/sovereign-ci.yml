@@ -286,6 +286,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -560,6 +569,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -682,6 +700,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -950,6 +977,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -1078,6 +1114,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -1407,6 +1452,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -1515,6 +1569,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -1761,6 +1824,15 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -1827,6 +1899,15 @@ jobs:
           # when neither sudo -n nor a plain chown can repair the tree the step exits 1 with an
           # ::error::, and the post-condition find below re-checks the result. A bare-metal runner
           # without the sudoers grant fails here on purpose, never silently.
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
@@ -2149,6 +2230,15 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
           # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
           # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
           if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
