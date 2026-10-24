@@ -97,6 +97,12 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -397,6 +403,12 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -539,6 +551,12 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -661,6 +679,12 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }

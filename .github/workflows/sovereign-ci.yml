@@ -286,6 +286,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -554,6 +560,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -670,6 +682,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -932,6 +950,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1054,6 +1078,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1377,6 +1407,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1479,6 +1515,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1719,6 +1761,12 @@ jobs:
           fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1779,6 +1827,12 @@ jobs:
           # when neither sudo -n nor a plain chown can repair the tree the step exits 1 with an
           # ::error::, and the post-condition find below re-checks the result. A bare-metal runner
           # without the sudoers grant fails here on purpose, never silently.
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
+          fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -2094,6 +2148,12 @@ jobs:
           if [ "$WORK_ROOT" != "$(dirname "${RUNNER_TEMP:-/dev/null}")" ] || [ ! -d "$WORK_ROOT" ]; then
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          fi
+          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+            exit 1
           fi
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then

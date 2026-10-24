@@ -23,6 +23,9 @@
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
 #   [EXIT]     an ::error:: branch that is not EXACTLY the error echo, `exit 1` alone, then the branch close (or `|| { echo "::error::..."; [rm -f ...;] exit 1; }`), or a trap in a step with a chown
 #   [DRIFT]    sites not byte-identical, or an unterminated site
+#   [WORKROOT] a step that runs find/chown/chgrp/stat/... on $WORK_ROOT with no earlier symlink / not-a-directory guard
+#              (`if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then`, ::error:: + exit 1) in the same step. find does not
+#              descend into a symlinked root, so it counts 0 wrong-owned paths and reports "restored".
 #   [NOSITE]   no site found; [NOSCAN] no workflow file or no chown command scanned
 # It prints how many files and chown commands it scanned. It also runs the first site for real:
 # owner read from the listener files, a disagreeing or unreadable owner exits 1 with ::error::, a failing chown exits 1 with a count, and a
@@ -77,6 +80,23 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     printf '%s\n' "$out" | grep '^FAIL' && fails=1
     nchown=$((nchown + $(printf '%s\n' "$out" | sed -n 's/^SCAN //p' | head -n 1)))
   done
+  # WORKROOT: per step, every command that touches $WORK_ROOT needs the guard (+ ::error:: + exit 1) earlier in that step.
+  local nwr=0
+  for f in $(list_files); do
+    out="$(WR_GUARD='          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then' awk -v F="$f" '
+      function step() { g = 0; pend = 0 }
+      BEGIN { G = ENVIRON["WR_GUARD"]; step() }
+      match($0, /^ *- /) && RLENGTH <= 8 { step() }
+      pend == 1 { if (index($0, "::error::") && $0 ~ /^ *echo /) pend = 2; else { print "FAIL[WORKROOT] " F ":" NR ": WORK_ROOT guard without an ::error:: echo"; g = 0; pend = 0 } next }
+      pend == 2 { if ($0 ~ /^ *exit 1$/) { g = 1 } else { print "FAIL[WORKROOT] " F ":" NR ": WORK_ROOT guard without exit 1"; g = 0 } pend = 0; next }
+      $0 == G { pend = 1; next }
+      /^[[:space:]]*#/ || /^[[:space:]]*(echo|printf)[[:space:]]/ { next }
+      /(^|[^A-Za-z_-])(find|chown|chgrp|chmod|stat|rm|du|ls|cp|mv|tar|rsync|cd)[[:space:]][^#]*[$][{]?WORK_ROOT/ { n++; if (!g) print "FAIL[WORKROOT] " F ":" NR ": WORK_ROOT used without the symlink/not-a-directory guard: " $0 }
+      END { print "WRN " n + 0 }' "$f")" || { echo "FAIL[NOSCAN] WORKROOT scan of $f errored"; fails=1; continue; }
+    printf '%s\n' "$out" | grep '^FAIL' && fails=1
+    nwr=$((nwr + $(printf '%s\n' "$out" | sed -n 's/^WRN //p' | head -n 1)))
+  done
+  [ "$nwr" -eq 0 ] && { echo "FAIL[NOSCAN] WORKROOT scan examined 0 command(s) on WORK_ROOT"; fails=1; }
   { [ "$nfiles" -eq 0 ] || [ "$nchown" -eq 0 ]; } && { echo "FAIL[NOSCAN] scanned $nfiles file(s) and $nchown chown command(s) under $WF"; fails=1; }
   for f in $(list_files); do
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
@@ -189,6 +209,10 @@ STUB
             GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; S_ENV=9999:9999; export GITHUB_ENV GITHUB_OUTPUT S_ENV ;;   # in-tree GITHUB_ENV wrong-owned, GITHUB_OUTPUT the listener's
     intreeroot) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
             GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; S_ENV=0:0 S_OUT=0:0; export GITHUB_ENV GITHUB_OUTPUT S_ENV S_OUT ;;   # both in-tree files root-owned (a container step ran as root)
+    # WORK_ROOT itself is not a plain directory: find would not descend into a link (0 wrong-owned paths, "restored"); never follow it
+    symlinkroot) mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link"; export W ;;   # link to a dir holding wrong-owned files
+    danglingroot) ln -s "${d:?}/nowhere" "${d:?}/link"; W="$d/link"; export W ;;
+    fileroot) : > "${d:?}/rf"; W="$d/rf"; export W ;;
   esac
   [ -e "$d/bin/wc" ] && chmod +x "$d/bin/wc"
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
@@ -238,6 +262,11 @@ behaviour() {
   for m in ownergarbage:"owner stat prints non-numeric text" ownernocolon:"owner stat prints a uid with no gid" ownerzeropad:"owner stat prints uid 00 (root spelled with a pad)" ownertwocolon:"owner stat prints three fields"; do
     o="$(run_site "${m%%:*}")"; r=$?
     if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # WORK_ROOT must be a real directory: a symlink (even to a good tree), a dangling link or a regular file is ::error:: + exit 1, nothing chowned.
+  for m in symlinkroot:"WORK_ROOT is a symlink to a dir holding wrong-owned files" danglingroot:"WORK_ROOT is a dangling symlink" fileroot:"WORK_ROOT is a regular file"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::WORK_ROOT' && ! echo "$o" | grep -q 'CHOWN-CALLED' && ! echo "$o" | grep -q 'ownership restored'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
   done
   return "$rc"
 }
@@ -337,7 +366,18 @@ if [ "${1:-}" = "--self-test" ]; then
   exmut "owner shape: leading-zero uid (00) allowed" "s/|:\*|0\*) ;;/|:*) ;;/" "$F_OZ"
   exmut "owner shape: non-digit characters allowed" "s/\*\[!0-9:\]\*|//" "$F_OG"
   exmut "owner shape: a second colon allowed" "s/|\*:\*:\*|/|/" "$F_O3"
-  swap "agreement check removed"   AGREE    "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
+  # --- r13: WORK_ROOT must not be a symlink or a non-directory; guard at every site, executed mutants ---
+  WG='if \[ -L "\$WORK_ROOT" \] || \[ ! -d "\$WORK_ROOT" \]; then'
+  F_SL='WORK_ROOT is a symlink to a dir holding wrong-owned files'; F_DL='WORK_ROOT is a dangling symlink'; F_RF='WORK_ROOT is a regular file'
+  exmut "FINDING r13: WORK_ROOT guard removed at every marked site (symlinked root reports restored)" 's/'"$WG"'/if false; then/' "$F_SL" "$F_DL" "$F_RF"
+  exmut "WORK_ROOT guard weakened to -d only (a link to a dir passes)" 's/if \[ -L "\$WORK_ROOT" \] || \[ ! -d/if [ ! -d/' "$F_SL"
+  exmut "WORK_ROOT guard weakened to -L only (a regular file passes)" 's/ || \[ ! -d "\$WORK_ROOT" \]; then$/; then/' "$F_RF"
+  exmut "WORK_ROOT guard exit removed" '/WORK_ROOT .* is a symlink or not a directory/{n;s/exit 1/true/}' "$F_SL" "$F_DL" "$F_RF"
+  swap "WORK_ROOT guard removed at one marked site" WORKROOT,DRIFT 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then' 'if false; then'
+  swap "WORK_ROOT guard is a warning" WORKROOT 'echo "::error::WORK_ROOT' 'echo "::warning::WORK_ROOT'
+  app  "new step: find on WORK_ROOT without the guard" WORKROOT "      - name: x\n        run: |\n          find \"\$WORK_ROOT\" -print"
+  app  "new step: stat of WORK_ROOT without the guard" WORKROOT "      - name: x\n        run: |\n          U=\$(stat -c %u \"\$WORK_ROOT\")"
+  swap "agreement check removed"   AGREE   "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
   swap "agreement is a warning"    AGREE    '::error::cannot establish the runner owner' '::warning::cannot establish the runner owner'
   cp "$WF"/*.yml "$tmp"/   # agreement check reports but does not exit
   awk '{ if (p) { sub(/exit 1/, "true"); p = 0 } if (index($0, "::error::cannot establish the runner owner")) p = 1; print }' "$WF/$F" > "$tmp/$F"
