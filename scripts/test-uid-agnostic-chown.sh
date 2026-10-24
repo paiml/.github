@@ -16,22 +16,26 @@
 #   [SWALLOW]  `|| true` `|| :` `|| /bin/true` `|| echo` `; true` `2>/dev/null` `&>/dev/null`
 #              on a chown or find line, `set +e`, or continue-on-error, in a step with a chown
 #   [UNMARKED] a self-heal site without the marker comment
-#   [OWNER_SRC] the owner is not read by the one stat of /__e (outside the chowned tree)
+#   [OWNER_SRC] the owner is not read by the stat of GITHUB_ENV plus the confirming stat of GITHUB_OUTPUT (listener-created, this step)
+#   [AGREE]    no ::error:: + exit 1 when the two disagree or are unreadable, before the uid-0 check
 #   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp)
 #   [NOUID0]   no uid-0 check (error + exit 1, before the find) on the owner
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
 #   [DRIFT]    sites not byte-identical, or an unterminated site
 #   [NOSITE]   no site found; [NOSCAN] no workflow file or no chown command scanned
 # It prints how many files and chown commands it scanned. It also runs the first site for real:
-# owner read, unreadable owner exits 1 with ::error::, a failing chown exits 1 with a count, and a
+# owner read from the listener files, a disagreeing or unreadable owner exits 1 with ::error::, a failing chown exits 1 with a count, and a
 # file with the right uid and the wrong gid gets chowned.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 WF=${WF_DIR:-.github/workflows}
 MARK='uid-agnostic (infra#2349)'
-# The owner source (r6): the step runs as uid 0 inside the job container, so the owner is the stat of
-# /__e (the runner's externals dir, outside the chowned _work tree) and uid 0 is refused.
-STAT_LINE='          OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
+# The owner source (r7): the step runs as uid 0 inside the job container, so the owner is the stat of the
+# listener-created file-command file GITHUB_ENV, which must agree with GITHUB_OUTPUT; uid 0 is refused.
+# (r6 read /__e, the HOST externals dir: 1000:1000 on gx10 where the listener is uid 1001.)
+STAT_LINE='          OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
+STAT_LINE2='          OWNER_CHK="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
+AGREE_LINE='          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then'
 UID0_LINE='          if [ "${OWNER_UG%%:*}" = "0" ]; then'
 INTREE_RE='RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
 ACT=${ACT_DIR:-.github/actions}   # composite actions: scanned like workflows (their run steps are shell)
@@ -80,10 +84,15 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       grep -q '^          rm -f "${CHOWN_FAILED:?}"$' "$s" || { echo "FAIL[DRIFT] $f: unterminated site"; fails=1; }
       # ASSIGN: OWNER_UG is assigned only by the one stat line (and exported); nothing else
       bad="$(grep -nE '(^|[[:space:];])OWNER_UG=' "$s" | grep -vF "$STAT_LINE" | grep -vE 'export OWNER_UG' || true)"
-      [ -n "$bad" ] && { echo "FAIL[ASSIGN] $f: OWNER_UG assigned other than by the stat of /__e: $bad"; fails=1; }
-      # OWNER_SRC: the new owner source is present, unaltered, and the ONLY stat in the site
-      grep -qxF "$STAT_LINE" "$s" || { echo "FAIL[OWNER_SRC] $f: the owner is not read by the stat of /__e"; fails=1; }
-      [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -cE '(^|[^A-Za-z_-])stat[[:space:]]')" -eq 1 ] || { echo "FAIL[OWNER_SRC] $f: the site must have exactly one stat (of /__e)"; fails=1; }
+      [ -n "$bad" ] && { echo "FAIL[ASSIGN] $f: OWNER_UG assigned other than by the stat of GITHUB_ENV: $bad"; fails=1; }
+      # OWNER_SRC: the owner source is the stat of GITHUB_ENV, cross-checked by the stat of GITHUB_OUTPUT; these are the ONLY two stats
+      grep -qxF "$STAT_LINE" "$s" && grep -qxF "$STAT_LINE2" "$s" || { echo "FAIL[OWNER_SRC] $f: the owner is not read by the stat of GITHUB_ENV and GITHUB_OUTPUT"; fails=1; }
+      [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -cE '(^|[^A-Za-z_-])stat[[:space:]]')" -eq 2 ] || { echo "FAIL[OWNER_SRC] $f: the site must have exactly two stats (GITHUB_ENV, GITHUB_OUTPUT)"; fails=1; }
+      # AGREE: the two file-command owners must agree, with ::error:: + exit 1, before the uid-0 check and the find
+      ag="$(grep -nxF "$AGREE_LINE" "$s" | head -n 1 | cut -d: -f1)"; u0a="$(grep -nxF "$UID0_LINE" "$s" | head -n 1 | cut -d: -f1)"
+      if [ -z "$ag" ] || [ -z "$u0a" ] || [ "$ag" -ge "$u0a" ] \
+         || ! sed -n "$((ag + 1))p" "$s" | grep -qF '::error::cannot establish the runner owner' || [ "$(sed -n "$((ag + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
+        echo "FAIL[AGREE] $f: no two-file owner agreement (::error:: + exit 1) before the uid-0 check"; fails=1; fi
       # INTREE: no stat of a path inside the chowned tree, whatever else the site has
       grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
       # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
@@ -109,36 +118,41 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
   return "$fails"
 }
 
-run_site() { # behavioural run of the first site: mode = ok | unreadable | chownfail
+# Behavioural run of the first site against stubs. The stat stub answers by PATH, as the real files
+# would: set_env / set_output are the listener-created file-command files (S_ENV / S_OUT = "uid:gid",
+# empty = unreadable), the /__e stand-in is the HOST externals dir (S_E, 1000:1000 as on gx10), any
+# other path (RUNNER_TEMP, WORK_ROOT, workspace) is wrong-owned 9999:9999.
+# mode = ok | gx10 | disagree | uid0 | unsetenv | unreadable | chownfail | gidonly | wrongtemp
+run_site() {
   local mode="$1" d site rc out
-  d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin"
+  d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
+  : > "$d/fc/set_env"; : > "$d/fc/set_output"; : > "$d/w/ws/x"
   site="$d/site.sh"
-  mkdir -p "$d/e"
   { echo 'set -u'; echo 'WORK_ROOT="$W"'; sed -e 's/^          //' -e "s#/__e#$d/e#g" "$SITE_FILE"; } > "$site"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"
+  cat > "$d/bin/stat" <<'STUB'
+#!/bin/sh
+case "$3" in
+  *set_env) [ -n "$S_ENV" ] && echo "$S_ENV" || exit 1 ;;
+  *set_output) [ -n "$S_OUT" ] && echo "$S_OUT" || exit 1 ;;
+  */e) echo "$S_E" ;;
+  "") exit 1 ;;
+  *) echo 9999:9999 ;;
+esac
+STUB
+  chmod +x "$d/bin/chown" "$d/bin/stat"
+  export LOG="$d/log" RUNNER_TEMP="$d/w/_temp" W="$d/w" GITHUB_ENV="$d/fc/set_env" GITHUB_OUTPUT="$d/fc/set_output"
+  export S_ENV=4242:4343 S_OUT=4242:4343 S_E=1000:1000
   case "$mode" in
-    unreadable) rmdir "$d/w/_temp" "$d/w/ws" "$d/e"; export RUNNER_TEMP="$d/none"; W="$d/none2" ;;
-    chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; chown_target="$d/w/ws/x"; : > "$chown_target"
-      export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
-    gidonly) printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\necho "$(id -u):4242"\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;
-    unsetrt) printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      unset RUNNER_TEMP; export LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP unset: the owner never depended on it
-    wrongtemp) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\ncase "$*" in */e) echo 4242:4343 ;; *) echo 9999:9999 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP (inside the tree) and WORK_ROOT wrong-owned, /__e right
-    uid0) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\ncase "$*" in */e) echo 0:0 ;; *) echo 4242:4343 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # the owner source reads uid 0: must fail, never chown
-    *) printf '#!/bin/sh\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
-      printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"; export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
+    gx10) S_ENV=1001:1001 S_OUT=1001:1001; export S_ENV S_OUT ;;                  # listener 1001, /__e 1000
+    disagree) S_ENV=1001:1001 S_OUT=1000:1000; export S_ENV S_OUT ;;
+    uid0) S_ENV=0:0 S_OUT=0:0; export S_ENV S_OUT ;;
+    unsetenv) unset GITHUB_ENV ;;
+    unreadable) S_ENV= S_OUT=; export S_ENV S_OUT ;;
+    chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; S_ENV=4242:4242 S_OUT=4242:4242; export S_ENV S_OUT ;;
+    gidonly) S_ENV="$(id -u):4242" S_OUT="$(id -u):4242"; export S_ENV S_OUT ;;
+    wrongtemp) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset and every tree path wrong-owned: the owner never depended on them
   esac
-  export W
-  if [ "$mode" = chownfail ]; then
-    # make a file the owner check selects: pretend the owner uid differs via a stubbed stat
-    printf '#!/bin/sh\necho 4242:4242\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-  fi
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
   [ -s "$d/log" ] && out="$out"$'\n'"CHOWN-CALLED $(tr '\n' ' ' < "$d/log")"
   rm -rf "${d:?}"
@@ -148,22 +162,28 @@ run_site() { # behavioural run of the first site: mode = ok | unreadable | chown
 
 behaviour() {
   [ -s "${SITE_FILE:-}" ] || { echo "FAIL[NOSITE] no site to execute"; return 1; }
-  local rc=0 o
-  o="$(run_site ok)" && echo "$o" | grep -qE 'runner owner \(stat of .*\): 4242:4343' && echo "ok   site runs, owner read from /__e" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
-  o="$(run_site unreadable)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   unreadable owner -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
-  o="$(run_site unsetrt)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 "; then echo "ok   RUNNER_TEMP unset -> still repaired to the /__e owner"; else echo "FAIL[BEHAVIOUR] the owner depended on RUNNER_TEMP: $o"; rc=1; fi
-  o="$(run_site wrongtemp)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP + WORK_ROOT wrong-owned -> still repaired to the runner uid (the /__e owner)"; else echo "FAIL[BEHAVIOUR] a wrong-owned path inside the tree became the owner: $o"; rc=1; fi
+  local rc=0 o r
+  o="$(run_site ok)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -qE 'runner owner \(stat of GITHUB_ENV.*\): 4242:4343' && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 "; then echo "ok   site runs, owner read from the listener files"; else echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; fi
+  o="$(run_site gx10)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 1001:1001 " && ! echo "$o" | grep -q "1000:1000"; then echo "ok   gx10: listener files 1001, /__e 1000 -> chowned to 1001"; else echo "FAIL[BEHAVIOUR] gx10 case did not pick the listener uid 1001: $o"; rc=1; fi
+  o="$(run_site disagree)"; r=$?
+  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   GITHUB_ENV and GITHUB_OUTPUT disagree -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] disagreeing owners did not fail closed: $o"; rc=1; fi
   o="$(run_site uid0)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner user mismatch' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   owner uid 0 -> ::error:: runner user mismatch + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] uid 0 did not fail closed: $o"; rc=1; fi
+  o="$(run_site unsetenv)"; r=$?
+  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   GITHUB_ENV unset -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] unset GITHUB_ENV did not fail closed: $o"; rc=1; fi
+  o="$(run_site unreadable)"; r=$?
+  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   unreadable listener files -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
+  o="$(run_site wrongtemp)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP unset, tree paths wrong-owned -> still the listener uid"; else echo "FAIL[BEHAVIOUR] a path inside the tree became the owner: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
   if [ "$r" -eq 0 ] && echo "$o" | grep -qE "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
   return "$rc"
 }
+
 
 run_all() {
   export SITE_FILE; SITE_FILE="$(mktemp)"
@@ -204,21 +224,30 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "1000 literal near chown"   LITERAL  "$C" "$C; U=1000"
   swap "1001 literal near chown"   LITERAL  "$C" "$C; U=1001"
   swap "chown target not OWNER_UG" TARGET   "$C" 'chown -h "$OWNER" "$p"'
-  # --- r6 owner source: /__e, outside the chowned tree; uid 0 refused ---
-  S='OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
+  # --- r7 owner source: the listener's file-command files, two must agree; uid 0 refused ---
+  S='OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
+  AGREE='          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then'
+  S2='OWNER_CHK="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
   swap "OWNER_UG from id"          OWNER_SRC,ASSIGN "$S" 'OWNER_UG="$(id -u):$(id -g)"'
   swap "extra OWNER_UG literal"    ASSIGN   '          export OWNER_UG' '          OWNER_UG=1234:1234'
+  swap "OLD FORM (r6): stat of /__e (gx10: 1000, listener 1001)" OWNER_SRC "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
   swap "OLD FORM: stat of RUNNER_TEMP (ac1d2c3)" OWNER_SRC,INTREE "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
   swap "owner stat falls back to WORK_ROOT" OWNER_SRC,INTREE "$S" "$S"$'\n          [ -n "$OWNER_UG" ] || OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$WORK_ROOT")"'
-  swap "stat of WORK_ROOT"         OWNER_SRC,INTREE "/__e)\"" '"$WORK_ROOT")"'
-  swap "stat of GITHUB_WORKSPACE"  OWNER_SRC,INTREE "/__e)\"" '"$GITHUB_WORKSPACE")"'
-  swap "stat of RUNNER_WORKSPACE"  OWNER_SRC,INTREE "/__e)\"" '"$RUNNER_WORKSPACE")"'
-  swap "stat of HOME (/github/home)" OWNER_SRC,INTREE "/__e)\"" '"$HOME")"'
-  swap "stat of WORK_ROOT/_temp"   OWNER_SRC,INTREE "/__e)\"" '"$WORK_ROOT/_temp")"'
-  swap "stat of /__w"              OWNER_SRC,INTREE "/__e)\"" '/__w)"'
-  swap "stat of a path outside the tree, not /__e" OWNER_SRC "/__e)\"" '/opt)"'
+  swap "stat of WORK_ROOT"         OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$WORK_ROOT")"'
+  swap "stat of GITHUB_WORKSPACE"  OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$GITHUB_WORKSPACE")"'
+  swap "stat of RUNNER_WORKSPACE"  OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$RUNNER_WORKSPACE")"'
+  swap "stat of HOME (/github/home)" OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$HOME")"'
+  swap "stat of WORK_ROOT/_temp"   OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$WORK_ROOT/_temp")"'
+  swap "stat of /__w"              OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '/__w)"'
+  swap "stat of a path outside the tree, not the listener files" OWNER_SRC '"${GITHUB_ENV:-}")"' '/opt)"'
   swap "stat loop over _temp and WORK_ROOT" OWNER_SRC,INTREE,ASSIGN "$S" 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp"; do OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$P")"; done'
-  swap "second stat added"         OWNER_SRC "$S" "$S"$'\n          stat -c %u /__e >/dev/null'
+  swap "third stat added"          OWNER_SRC "$S2" "$S2"$'\n          stat -c %u /__e >/dev/null'
+  swap "confirming stat removed"   OWNER_SRC "$S2" 'OWNER_CHK="$OWNER_UG"'
+  swap "agreement check removed"   AGREE    "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
+  swap "agreement is a warning"    AGREE    '::error::cannot establish the runner owner' '::warning::cannot establish the runner owner'
+  cp "$WF"/*.yml "$tmp"/   # agreement check reports but does not exit
+  awk '{ if (p) { sub(/exit 1/, "true"); p = 0 } if (index($0, "::error::cannot establish the runner owner")) p = 1; print }' "$WF/$F" > "$tmp/$F"
+  expect "agreement check does not exit" AGREE
   swap "uid-0 check removed"       NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if false; then'
   swap "uid-0 check compares gid"  NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if [ "${OWNER_UG##*:}" = "0" ]; then'
   cp "$WF"/*.yml "$tmp"/   # uid-0 check reports but does not exit: the line after the mismatch error becomes `true`
@@ -230,7 +259,7 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "fallback wording"          FALLBACK '          export OWNER_UG' '          echo "falling back"'
   swap "case on OWNER_UG"          FALLBACK '          export OWNER_UG' '          case "$OWNER_UG" in *) : ;; esac'
   swap "0:0 special case"          FALLBACK '          export OWNER_UG' '          [ "$OWNER_UG" = 0:0 ] && :'
-  swap "one site drifts"           DRIFT    'runner owner (stat of /__e)' 'runner owner'
+  swap "one site drifts"           DRIFT    'runner owner (stat of GITHUB_ENV' 'runner owner (stat of GITHUB_ENX'
   # --- infra-res ruling 1: uid OR gid ---
   PRED='\( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \)'
   swap "find selects by uid only"  GID,BEHAVIOUR "$PRED" '! -user "${OWNER_UG%%:*}"'
