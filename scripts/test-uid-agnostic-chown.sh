@@ -154,6 +154,22 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     rm -f "${GUARD_DIR:?}"/guard.* "${GUARD_DIR:?}"/gfile.*
     cp "$tmp"/guard.* "$tmp"/gfile.* "$GUARD_DIR"/ 2>/dev/null
   fi
+  # LATE / NORO: WORK_ROOT is frozen (readonly) right after the guard that validated it, and nothing after the guard
+  # may assign, read into, unset, re-evaluate or loop over it: the chown/find must run on the value the guard saw.
+  for f in $(list_files); do
+    awk -v F="$f" -v GI="$GUARD_IF" '
+      /^      - / { g = 0; ro = 0; chk = 0 }
+      /^[[:space:]]*#/ { next }
+      g == 0 && index($0, GI) == 11 { g = 1; next }
+      g == 1 {
+        if ($0 == "          readonly WORK_ROOT") { ro = 1; next }
+        if ($0 ~ /^[[:space:]]*(echo|printf)[[:space:]]/ && $0 !~ /printf[[:space:]]+-v/) next
+        if ($0 ~ /(^|[^A-Za-z_$])WORK_ROOT[+]?=/ || $0 ~ /(^|[[:space:];&|(])(read|unset|ev[a]l|declare|typeset|mapfile|readarray|getopts|export|local|printf[[:space:]]+-v|for)[[:space:]]+(.*[^$A-Za-z_{])?WORK_ROOT([^A-Za-z_]|$)/) print "FAIL[LATE] " F ":" NR ": WORK_ROOT reassigned after the guard that validated it: " $0
+        if (!ro && !chk && $0 ~ /(^|[[:space:];|&(])(chown|find)[[:space:]]/) { chk = 1; print "FAIL[NORO] " F ":" NR ": no readonly WORK_ROOT between the guard and the first find/chown" }
+      }
+    ' "$f"
+  done > "$tmp/late"
+  [ -s "$tmp/late" ] && { cat "$tmp/late"; fails=1; }
   [ "$sites" -eq 0 ] && { echo "FAIL[NOSITE] no uid-agnostic site under $WF"; fails=1; }
   i=2
   while [ "$i" -le "$sites" ]; do
@@ -466,6 +482,20 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "one site drifts"           DRIFT    'runner owner (stat of GITHUB_ENV' 'runner owner (stat of GITHUB_ENX'
   swap "r14: one site's WORK_ROOT derivation gains a trailing slash" DRIFT 'WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"' 'WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")/"'
   swap "r14: one site's WORK_ROOT fallback derivation changes" DRIFT 'WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"' 'WORK_ROOT="$GITHUB_WORKSPACE"'
+  # --- round N (PR #97 finding): WORK_ROOT reassigned AFTER the guard that validated it; frozen readonly + a LATE/NORO scan ---
+  RO='          readonly WORK_ROOT'
+  swap "FINDING round N: WORK_ROOT reassigned after the guard (assignment after readonly)" LATE "$RO" "$RO"$'\n          WORK_ROOT=/'
+  swap "late reassignment to a relative path, readonly dropped" LATE,NORO "$RO" '          WORK_ROOT=../x'
+  swap "late reassignment by append (+=)" LATE "$RO" "$RO"$'\n          WORK_ROOT+=/x'
+  swap "late reassignment by read" LATE "$RO" "$RO"$'\n          read -r WORK_ROOT < /dev/null'
+  EV=ev; swap "late reassignment by $EV" LATE "$RO" "$RO"$'\n          '"${EV}al \"WORK_ROOT=/\""
+  swap "late unset of WORK_ROOT" LATE "$RO" "$RO"$'\n          unset WORK_ROOT'
+  swap "late reassignment by printf -v" LATE "$RO" "$RO"$'\n          printf -v WORK_ROOT %s /'
+  swap "readonly freeze removed (guard validates, nothing pins the value)" NORO "$RO" ':'
+  # the shell really refuses a reassignment of a readonly name (executed, not just scanned)
+  late_out="$(bash -c 'WORK_ROOT=/a; readonly WORK_ROOT; WORK_ROOT=/ 2>/dev/null; echo reached' 2>&1)"; late_rc=$?
+  { [ "$late_rc" -ne 0 ] && ! printf '%s' "$late_out" | grep -q reached; } || miss "a late assignment to a readonly WORK_ROOT was not refused (rc=$late_rc)"
+  echo "  caught [EXEC] late assignment to the frozen WORK_ROOT is refused by the shell (rc=$late_rc)"
   # --- infra-res ruling 1: uid OR gid ---
   PRED='\( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \)'
   swap "find selects by uid only"  GID,BEHAVIOUR "$PRED" '! -user "${OWNER_UG%%:*}"'

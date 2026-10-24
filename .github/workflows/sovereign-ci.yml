@@ -302,6 +302,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -586,6 +588,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -718,6 +722,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -996,6 +1002,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1134,6 +1142,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1473,6 +1483,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1591,6 +1603,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1847,6 +1861,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
@@ -1923,6 +1939,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
@@ -2255,6 +2273,8 @@ jobs:
             echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
+          # Freeze the validated value: a later assignment to WORK_ROOT is a hard error, so the find/chown below can only see what the guard saw.
+          readonly WORK_ROOT
           OWNER="$(id -un):$(id -gn)"
           if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
             chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT (is /etc/sudoers.d/runner-chown deployed?)"; exit 1; }
