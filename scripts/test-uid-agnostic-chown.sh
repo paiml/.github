@@ -992,6 +992,42 @@ EOF
   om "r6 ctl: sed --sandbox cannot e"                 green "sed --sandbox -n '1e id' f"
   om "r6 ctl: cargo test is not a recipe runner"      green 'cargo test --lib'
   om "r6 ctl: cargo fmt"                              green 'cargo fmt --all -- --check'
+  # --- r7 (PMAT-2359): ALLOWLIST of command words. PR-cull at 34e008a: docker/flock/ssh/nsenter wrap make; a PATH shim, a git alias,
+  # fakeroot and parallel get past a denylist. Every command word must be on the committed list, or the line is RED [UNLISTED].
+  om "r7 a: docker run img make"                      red   'docker run --rm img make fix-owner'
+  om "r7 b: flock wraps make"                         red   'flock /tmp/l make fix-owner'
+  om "r7 c: ssh host make"                            red   'ssh host make fix-owner'
+  om "r7 d: nsenter wraps make"                       red   'nsenter -t 1 -m make fix-owner'
+  om "r7 e: PATH shim (ln then PATH=)"                red   'ln -s /usr/bin/true /tmp/s/cat; PATH=/tmp/s:$PATH cat f'
+  om "r7 f: export PATH"                              red   'export PATH=/tmp/s:$PATH'
+  om "r7 g: GITHUB_PATH write"                        red   'echo /tmp/s >> "$GITHUB_PATH"'
+  om "r7 h: BASH_ENV via GITHUB_ENV"                  red   'echo "BASH_ENV=/tmp/x.sh" >> "$GITHUB_ENV"'
+  om "r7 i: cp a chown binary under a listed name"    red   'cp /usr/bin/chown /usr/local/bin/cat'
+  om "r7 j: git -c alias"                             red   "git -c 'alias.x=!chown -R 1:1 /' x"
+  om "r7 k: git alias via config write"               red   "git config alias.x '!chown -R 1:1 /'"
+  om "r7 l: fakeroot"                                 red   'fakeroot make fix-owner'
+  om "r7 m: parallel"                                 red   'parallel make ::: a b'
+  om "r7 n1: podman"                                  red   'podman run img id'
+  om "r7 n2: variable holds a listed-with-args word"  red   'X=awk; $X '"'"'BEGIN{system("id")}'"'"
+  om "r7 n3: /usr/../tmp path word"                   red   '/usr/../tmp/x/cat f'
+  om "r7 n4: rustup run wraps an unlisted tool"       red   'rustup run stable make fix'
+  om "r7 n5: gh alias set"                            red   "gh alias set x '!chown -R 1:1 /'"
+  om "r7 n6: gh api POST"                             red   'gh api -X POST repos/o/r/issues -f title=x'
+  om "r7 n7: cargo --config runner"                   red   'cargo test --config target.x.runner=\"chown\"'
+  om "r7 n8: write into /usr/local/bin"               red   'echo x > /usr/local/bin/cat'
+  om "r7 n9: LD_PRELOAD export"                       red   'export LD_PRELOAD=/tmp/x.so'
+  om "r7 n10: dynamic export name"                    red   'export "$N=/tmp/s"'
+  om "r7 n11: curl -K config"                         red   'curl -K /tmp/c.cfg'
+  om "r7 n12: git clone --upload-pack"                red   'git clone --upload-pack=chown a b'
+  om "r7 n13: env-file write with embedded newline"   red   'printf "A=1\nPATH=/tmp/s\n" >> "$GITHUB_ENV"'
+  om "r7 ctl: echo and test"                          green 'echo hi; test -f x'
+  om "r7 ctl: git read subcommands"                   green 'git -C d rev-parse HEAD; git log -1; git diff --stat'
+  om "r7 ctl: gh pr view"                             green 'gh pr view 1 --json state'
+  om "r7 ctl: gh api GET"                             green 'gh api repos/o/r/pulls/1'
+  om "r7 ctl: cargo build"                            green 'cargo build --release'
+  om "r7 ctl: jq and sort pipeline"                   green 'cat f | jq -r .a | sort -u | head -n 3'
+  om "r7 ctl: listed var word"                        green 'X=echo; $X hi'
+  om "r7 ctl: git config read"                        green 'git config --get remote.origin.url'
   [ "$MISSES" -eq "$m0" ] && echo "  caught [OPAQUE] $OP_RED run-step mutants RED, $OP_GREEN non-shell / literal cases GREEN"
   # the allowlist: an unused row, a row with no reason, a missing file, a row that lets a RED word through
   cp "$WF"/*.yml "$tmp"/; printf 'ci.yml\tno such step\tno such line\tbecause\n' > "$tmp/al.txt"; cat "$OPAQUE_ALLOW" >> "$tmp/al.txt"

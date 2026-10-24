@@ -110,18 +110,26 @@ function harvest(b, ln,   k, e, c, n) {
     }
   }
 }
-function bind(name) { if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) BIND[name] = 1 }
+function bind(name, isexp,   why) {
+  if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+    BIND[name] = 1
+    why = envbad(name, isexp ? "http.x.extraheader" : "")
+    if (why != "") redt("PATH", curln, "read / for / printf -v / unset / export binds " name ": " why)
+  }
+}
 # identifiers on the left of an assignment operator inside (( )) / $(( )) / ${V:=w}
 function bindarith(t,   a, k, m) {
   while (match(t, /[A-Za-z_][A-Za-z0-9_]*[ \t]*(\+|-|\*|\/|%|<<|>>|&|\^|\|)?=[^=]/)) {
     m = substr(t, RSTART, RLENGTH); sub(/[^A-Za-z0-9_].*$/, "", m); bind(m); t = substr(t, RSTART + RLENGTH)
   }
 }
-function record_asg(tok, ln,   nm, pl, val, sub1) {
+function record_asg(tok, ln,   nm, pl, val, sub1, pl2) {
   nm = tok; sub(/[+\[=].*$/, "", nm)
   if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*\[/) { bind(nm); return }
   pl = (tok ~ /^[A-Za-z_][A-Za-z0-9_]*\+=/)
   val = tok; sub(/^[A-Za-z_][A-Za-z0-9_]*\+?=/, "", val)
+  pl2 = envbad(nm, val)
+  if (pl2 != "") redt("PATH", ln, "assignment to " nm ": " pl2 " (a step that changes what a command word means is RED)")
   if (pl) PLUS[nm] = 1
   ASGN[nm]++
   if (ASGN[nm] == 1) { ASGV[nm] = val; ASGS[nm] = ++SEQ }
@@ -145,8 +153,8 @@ function resolve_all(   i, nm, v, b) {
   for (i = 1; i <= DN; i++) {
     nm = DNM[i]
     v = ASGV[nm]; sub(/^["']/, "", v); sub(/["']$/, "", v)
-    if (ASGN[nm] == 1 && !(nm in PLUS) && !(nm in BIND) && ASGS[nm] < DSQ[i] && lit(ASGV[nm]) != "" && !dangerous(bn(v))) continue
-    red(DLN[i], "command word " shown(DW[i]) " is a variable that is not assigned exactly once, by a plain VAR=literal, before this use (+=, a second assignment, read/for/:= binding, env-only or a dangerous literal)")
+    if (ASGN[nm] == 1 && !(nm in PLUS) && !(nm in BIND) && ASGS[nm] < DSQ[i] && lit(ASGV[nm]) != "" && !dangerous(bn(v)) && (bn(v) in SIMPLE)) continue
+    red(DLN[i], "command word " shown(DW[i]) " is a variable that is not assigned exactly once, by a plain VAR=literal, before this use, or its literal is not a SIMPLE listed command (+=, a second assignment, read/for/:= binding, env-only, a dangerous literal, or a listed command whose arguments matter)")
   }
   DN = 0
 }
@@ -448,6 +456,160 @@ function buildtool(bt, j, b,   k, s) {
   }
   return ""
 }
+# --- ALLOWLIST OF COMMAND WORDS (PMAT-2359, cop ruling: stop denylisting) ------------------------------------------
+# Every command word of a run step (the first word of each simple command, and every word after a known wrapper: env,
+# sudo, doas, timeout, nice, ionice, command, exec, nohup, setsid, time, busybox, rustup run, xargs, find -exec) must be a
+# name on the committed list below, else RED [UNLISTED]. Anything nobody thought of (docker, ssh, nsenter, flock, fakeroot,
+# parallel, chronic, stdbuf, a name made by a PATH shim or a git alias) is RED by default; it needs an allowlist row.
+# Words are resolved BY NAME: the guard assumes the runner image's binaries are what their names say. An image, or a PATH,
+# outside the step is out of claim. Inside the step, these are RED: a PATH change (PATH=, export PATH, env PATH=, a write to
+# GITHUB_PATH / GITHUB_ENV / BASH_ENV, read/for/printf -v on PATH), an exec-hook variable (LD_PRELOAD, RUSTC_WRAPPER,
+# GIT_SSH_COMMAND, PAGER, GIT_CONFIG_KEY_n with an alias or a program key, ...), a function or alias definition, a git -c,
+# a git subcommand off the read list (that is also how a git alias is caught), a git config write, and a write into a
+# system directory (a copy of a tool placed under a listed name).
+# Two lists: SIMPLE words are readers with no argument that matters, and are the only words a deferred $VAR may stand for;
+# the rest are listed but their arguments are read by the branch that owns them (git, gh, cargo, apt-get, sccache, rustup,
+# curl, find, xargs, sh, bash, awk, sed, and the writers cp mv rm mkdir touch tee chmod tar chown).
+function initlists(   n, a, i) {
+  n = split("echo printf test [ [[ ]] : true false exit return break continue shift wait pwd cat grep egrep fgrep head tail cut tr sort uniq wc ls stat id date jq dirname basename realpath readlink mktemp sleep which base64 sha256sum sha1sum md5sum uname nproc hostname whoami df du diff cmp seq xxd od pmat bashrs yamllint cosign openssl rustfmt", a, " ")
+  for (i = 1; i <= n; i++) { SIMPLE[a[i]] = 1; LST[a[i]] = 1 }
+  n = split("cd set export local readonly declare typeset read unset trap mapfile readarray getopts git gh cargo apt-get sccache rustup curl find xargs sh bash awk sed cp mv rm mkdir touch tee chmod tar chown", a, " ")
+  for (i = 1; i <= n; i++) LST[a[i]] = 1
+  n = split("cp mv rm mkdir touch tee chmod tar curl sed chown", a, " ")
+  for (i = 1; i <= n; i++) WRITER[a[i]] = 1
+  n = split("clone fetch rev-parse rev-list merge-base log diff show status cat-file ls-files ls-remote grep describe config", a, " ")
+  for (i = 1; i <= n; i++) GITOK[a[i]] = 1
+  n = split("build test fmt clippy check nextest deny audit llvm-cov bench metadata install doc tree fetch version", a, " ")
+  for (i = 1; i <= n; i++) CARGOOK[a[i]] = 1
+}
+# envbad(nm, val): why assigning the variable nm (value text val, "" when unknown) lets a step change what a later command word means
+function envbad(nm, val,   v) {
+  if (nm == "PATH") return "PATH"
+  if (nm ~ /^(BASH_ENV|ENV|CDPATH|SHELLOPTS|BASHOPTS|PROMPT_COMMAND|PS4|BASH_FUNC_.*|LD_[A-Z_]+|NODE_OPTIONS|PERL5OPT|PERL5LIB|PYTHONSTARTUP|PYTHONPATH|RUBYOPT|RUBYLIB|AWKPATH|AWKLIBPATH|SHELL|PAGER|EDITOR|VISUAL|SSH_ASKPASS|HOME|XDG_CONFIG_HOME|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTDOC|CARGO_BUILD_RUSTC.*|CARGO_BUILD_RUSTDOC.*|CARGO_ALIAS_.*|CARGO_TARGET_.*|GIT_(SSH|SSH_COMMAND|EXEC_PATH|EXTERNAL_DIFF|PAGER|EDITOR|SEQUENCE_EDITOR|ASKPASS|PROXY_COMMAND|TEMPLATE_DIR|CONFIG_GLOBAL|CONFIG_SYSTEM|CONFIG_PARAMETERS|CONFIG|DIR|WORK_TREE))$/) return "an exec-hook / config-redirect variable"
+  if (nm ~ /^GIT_CONFIG_KEY_[0-9]+$/ && val != "http.x.extraheader") {
+    v = val; gsub(/^["']|["']$/, "", v)
+    if (v !~ /^http\.[A-Za-z0-9_.:\/-]*\.extraheader$/ && v !~ /^safe\.directory$/ && v !~ /^user\.(name|email)$/ && v !~ /^url\.[A-Za-z0-9_.:\/@-]+\.insteadof$/) return "a GIT_CONFIG_KEY that is not a known data key (an alias or a program key)"
+  }
+  return ""
+}
+# sysdir(w): the word w names a path inside a system directory (a place a tool of a listed name lives)
+function sysdir(w,   x, nm, v) {
+  x = w; gsub(/["']/, "", x); sub(/^[A-Za-z0-9_-]+=/, "", x)
+  if (x ~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/) {
+    nm = x; sub(/^\$\{?/, "", nm); sub(/[^A-Za-z0-9_].*$/, "", nm)
+    if (ASGN[nm] == 1 && !(nm in PLUS) && !(nm in BIND) && lit(ASGV[nm]) != "") { v = ASGV[nm]; gsub(/["']/, "", v); sub(/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/, v, x) }
+  }
+  return (x ~ /^\/(usr|bin|sbin|lib|lib32|lib64|opt|etc|boot|snap|var\/lib)(\/|$)/)
+}
+# a statement that touches the file-command files or writes into a system directory
+function envkeyok(a, b,   k, x, nm) {
+  for (k = a + 1; k <= b; k++) { if (RD[k]) continue; if (TK[k] ~ /^-[neE]+$/) { if (TK[k] ~ /e/) return 0; continue } break }
+  if (k > b) return 0
+  x = TK[k]; gsub(/^["']|["']$/, "", x)
+  if (x ~ /\\n|\\r|\n|\003/) return 0
+  if (x !~ /^[A-Za-z_][A-Za-z0-9_]*=/) return 0
+  nm = x; sub(/=.*$/, "", nm)
+  return (envbad(nm, "") == "")
+}
+function envfilescan(a, b,   i, s, c) {
+  c = lit(TK[a]); s = bn(c)
+  for (i = a; i <= b; i++) {
+    if (RD[i] == 2 && TK[i - 1] ~ />/ && sysdir(TK[i])) { redt("SYSDIR", TKL[i], "redirect into a system directory: it can place a tool under a listed name"); return }
+    if (TK[i] ~ /GITHUB_PATH|BASH_ENV/) { redt("PATH", TKL[i], "a word names GITHUB_PATH / BASH_ENV: it changes the PATH or the shell start-up of later steps"); return }
+    if (TK[i] ~ /GITHUB_ENV/) {
+      if (s == "stat" || TK[i] ~ /^[A-Za-z_][A-Za-z0-9_]*="\$\(stat -c '[^']*' "\$\{GITHUB_(ENV|OUTPUT):-\}"\)"$/) continue
+      if ((s == "echo" || s == "printf") && RD[i] == 0) continue
+      if (s == "echo" && RD[i] == 2 && TK[i - 1] == ">>" && envkeyok(a, b)) continue
+      redt("PATH", TKL[i], "a write to GITHUB_ENV that is not `echo NAME=value` with a plain name: it can set PATH, BASH_ENV or an exec hook for later steps"); return
+    }
+  }
+}
+function wrscan(j, b, base,   k) {
+  for (k = j + 1; k <= b; k++) if (!RD[k] && sysdir(TK[k])) { redt("SYSDIR", TKL[k], base " operand in a system directory: it can place or alter a tool under a listed name"); return 1 }
+  return 0
+}
+function gitscan(j, b,   k, t, s, rf, wf, n) {
+  k = j + 1
+  while (k <= b) {
+    if (RD[k]) { k++; continue }
+    t = TK[k]
+    if (t == "-C" || t == "--git-dir" || t == "--work-tree" || t == "--namespace") { k += 2; continue }
+    if (t ~ /^(-p|--no-pager|--paginate|--no-optional-locks|--bare|--literal-pathspecs|--no-replace-objects)$/ || t ~ /^--(git-dir|work-tree|namespace)=/) { k++; continue }
+    if (t ~ /^-c/ || t ~ /^--config-env/ || t ~ /^--exec-path/ || t == "--super-prefix") { redt("GITCFG", TKL[j], "git " t " sets configuration (an alias or a program key) for this command"); return }
+    if (t ~ /^-/) { redt("UNLISTED", TKL[j], "git global option " t " is not on the known list"); return }
+    break
+  }
+  if (k > b) return
+  s = lit(TK[k])
+  if (s == "") { redt("UNLISTED", TKL[j], "git subcommand is not a plain literal word (an alias can hide behind it)"); return }
+  if (!(s in GITOK)) { redt("UNLISTED", TKL[j], "git subcommand " s " is not on the read list (a git alias or an external git-" s " would run)"); return }
+  for (n = k + 1; n <= b; n++) if (!RD[n] && TK[n] ~ /^(-c|--config|--config-env|--upload-pack|-u|--receive-pack|--exec|--template|--ext-diff|--textconv|-O|--open-files-in-pager|--run)(=|$)/) { redt("GITCFG", TKL[j], "git " s " " TK[n] " runs a program or sets configuration"); return }
+  if (s == "config") {
+    rf = 0; wf = 0
+    for (n = k + 1; n <= b; n++) if (!RD[n]) {
+      if (TK[n] ~ /^(--get|--get-all|--get-regexp|--get-urlmatch|--list|-l|--get-color|--get-colorbool|--show-origin|--show-scope|--name-only|--null|-z|--global|--system|--local|--worktree|--file|-f|--includes|--no-includes|--type=.*|--bool|--int|--path)$/) { if (TK[n] ~ /^(--get|--get-all|--get-regexp|--get-urlmatch|--list|-l)$/) rf = 1; if (TK[n] ~ /^(--file|-f)$/) n++; continue }
+      if (TK[n] ~ /^-/) { wf = 1; continue }
+    }
+    if (!rf || wf) redt("GITCFG", TKL[j], "git config that is not a read (--get / --get-all / --list): a config write can define an alias or a program key")
+    else {
+      # a read form still has exactly one key operand at most; any extra operand is a value, which makes it a write
+      rf = 0; for (n = k + 1; n <= b; n++) if (!RD[n] && TK[n] !~ /^-/ && TK[n - 1] !~ /^(--file|-f)$/) rf++
+      if (rf > 1) redt("GITCFG", TKL[j], "git config with a key and a value is a write")
+    }
+  }
+}
+function ghscan(j, b,   k, t, g, v, pair, n) {
+  k = j + 1; while (k <= b && RD[k]) k++
+  if (k > b) return
+  t = TK[k]
+  if (t ~ /^-/) { if (t ~ /^(--version|--help|-h)$/) return; redt("UNLISTED", TKL[j], "gh option " t " before the subcommand: group and verb cannot be read"); return }
+  g = lit(t); v = ""
+  for (n = k + 1; n <= b; n++) if (!RD[n] && TK[n] !~ /^-/) { v = lit(TK[n]); break }
+  if (g == "") { redt("UNLISTED", TKL[j], "gh subcommand is not a plain literal word"); return }
+  if (g == "api") {
+    for (n = k + 1; n <= b; n++) if (!RD[n]) {
+      t = TK[n]
+      if (t ~ /^(-f|-F|--field|--raw-field|--input)/ || t ~ /^-[A-Za-z]*[fF]$/) { redt("GHWRITE", TKL[j], "gh api with a field or input body is a POST"); return }
+      if (t ~ /^(-X|--method)$/) { if (toupper(unq(TK[n + 1])) != "GET" && toupper(lit(TK[n + 1])) != "GET") { redt("GHWRITE", TKL[j], "gh api with a method other than GET"); return } n++; continue }
+      if (t ~ /^-X./ || t ~ /^--method=/) { redt("GHWRITE", TKL[j], "gh api with a method option the scanner does not read"); return }
+    }
+    return
+  }
+  pair = g " " v
+  if (pair ~ /^(pr (view|list|diff|checks|status)|run (view|list)|repo view|release (view|list|download)|issue (view|list|status)|auth status)$/) return
+  redt("GHWRITE", TKL[j], "gh " pair " is not on the read list: it can write, merge, upload, or run an alias or an extension")
+}
+function cargoscan(j, b,   k, s, n) {
+  k = j + 1; while (k <= b && (RD[k] || TK[k] ~ /^\+/)) k++
+  if (k > b) return
+  s = lit(TK[k])
+  if (s == "") { redt("UNLISTED", TKL[j], "cargo subcommand is not a plain literal word"); return }
+  if (s ~ /^(--version|-V|-vV|--list)$/) return
+  if (!(s in CARGOOK)) { redt("UNLISTED", TKL[j], "cargo subcommand " s " is not on the list (an alias or an external cargo-" s " would run)"); return }
+  for (n = j + 1; n <= b; n++) if (!RD[n] && TK[n] ~ /^(--config|-Z|--config=.*)/) { redt("GITCFG", TKL[j], "cargo " TK[n] " sets configuration (an alias, a linker or a wrapper) for this command"); return }
+}
+function aptscan(j, b,   k, s, n) {
+  k = j + 1; while (k <= b && (RD[k] || TK[k] ~ /^-[yqfV]+$/ || TK[k] == "--no-install-recommends")) k++
+  if (k > b) return
+  s = lit(TK[k])
+  if (s !~ /^(update|install|clean|autoremove)$/) { redt("UNLISTED", TKL[j], "apt-get " shown(TK[k]) " is not update / install / clean / autoremove"); return }
+  for (n = j + 1; n <= b; n++) if (!RD[n] && TK[n] ~ /^(-o|--option|-c|--config-file|-oAPT.*)/) { redt("GITCFG", TKL[j], "apt-get " TK[n] " runs a hook command"); return }
+}
+function sccachescan(j, b,   k, s) {
+  k = j + 1; while (k <= b && RD[k]) k++
+  if (k > b) return
+  s = lit(TK[k])
+  if (s !~ /^(--show-stats|--start-server|--stop-server|--zero-stats|--version|-s|-z|-V)$/) redt("UNLISTED", TKL[j], "sccache " shown(TK[k]) ": sccache followed by anything else wraps and runs that command as a compiler")
+}
+function rustupscan(j, b,   k, s) {
+  k = j + 1; while (k <= b && RD[k]) k++
+  if (k > b) return
+  s = lit(TK[k])
+  if (s !~ /^(show|toolchain|component|target|update|default|which|--version|-V)$/) redt("UNLISTED", TKL[j], "rustup " shown(TK[k]) " is not on the list (rustup run is read as a wrapper)")
+}
+function curlscan(j, b,   k) {
+  for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] ~ /^(-K|--config|-K.+)$/) { redt("GITCFG", TKL[j], "curl " TK[k] " reads options (an exec-capable config) from a file"); return }
+}
 function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   j = a
   while (j <= b) {
@@ -459,6 +621,7 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
     if (bt == "command") { j++; while (j <= b && TK[j] ~ /^-/) { if (TK[j] ~ /^-[vV]$/) return; j++ } continue }
     if (bt == "exec") { j++; while (j <= b && TK[j] ~ /^-/) { if (TK[j] == "-a") j++; j++ } continue }
     if (bt == "busybox") { j++; continue }
+    if (bt == "rustup" && lit(TK[j + 1]) == "run") { j += 3; continue }
     if (bt ~ /^(su|runuser)$/) {
       for (k = j + 1; k <= b; k++) if (!RD[k] && (TK[k] ~ /^-[A-Za-z]*c$/ || TK[k] == "--command")) {
         e = (k + 1 <= b) ? unq(TK[k + 1]) : "\001"
@@ -485,6 +648,7 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   bt = bn(w)
   # a command word that is a path: a relative one runs a file the step may have written; an absolute one must be a system directory
   if (w ~ /\// && w !~ /^\/(usr|bin|sbin|opt|lib|lib64|etc)\//) { redt("INTERP", TKL[j], "command word " w " is a path outside the system directories: it can be a file the step wrote"); return }
+  if (w ~ /\/\.\.?(\/|$)/) { redt("INTERP", TKL[j], "command word " w " has a . or .. path segment: it can reach a file outside the system directories under a system name"); return }
   if (XREPL && (bt ~ /^(sh|bash|dash|zsh|ksh|ash|eval)$/)) { redt("INTERP", TKL[j], "xargs replacement string fed into a shell or eval"); return }
   if (PIPED && !safe_consumer(bt) && bt !~ /^(sh|bash|dash|zsh|ksh|ash|eval)$/) { redt("INTERP", TKL[j], "piped text reaches " bt ", which is not a known data consumer (it may execute it)"); return }
   for (k = a; k <= b; k++) if (RD[k] == 1 && TK[k] ~ /^<<[<-]?$/ && !safe_consumer(bt) && bt !~ /^(sh|bash|dash|zsh|ksh|ash|eval)$/) { redt("INTERP", TKL[j], "a heredoc or here-string feeds text to " bt ", which is not a known data consumer (it may execute it)"); return }
@@ -499,8 +663,18 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   if (bt ~ /^(nsenter|chroot|flock|script|watch|parallel|stdbuf|taskset|docker|podman|ssh|unshare|setpriv|capsh|sg|newgrp|sshpass|kubectl|lxc|systemd-run|firejail|bwrap)$/) {
     for (k = j + 1; k <= b; k++) if (!RD[k] && bn(lit(TK[k])) ~ /^(sh|bash|dash|zsh|ksh|ash|eval|su|runuser)$/) { evalrange(k, b, depth + 1); return }
     if (PIPED && bt ~ /^(nsenter|chroot|script|ssh|unshare|setpriv|capsh|sg|newgrp|sshpass|kubectl|lxc|systemd-run|firejail|bwrap)$/) redt("INTERP", TKL[j], "piped text reaches " bt ", which can run it as a command on the other side")
-    return
+    # fall through: a wrapper that is not on the list is UNLISTED below (r7: the old return let docker, flock, ssh, nsenter pass)
   }
+  # r7 ALLOWLIST: every command word must be on the committed list; the branches below read the arguments of the listed words
+  if (!(bt in LST)) { redt("UNLISTED", TKL[j], "command word " bt " is not on the committed list of known-safe commands (resolved by name; an image or PATH outside the step is out of claim)"); return }
+  if (bt in WRITER) { if (wrscan(j, b, bt)) return }
+  if (bt == "git") { gitscan(j, b); return }
+  if (bt == "gh") { ghscan(j, b); return }
+  if (bt == "cargo") { cargoscan(j, b); return }
+  if (bt == "apt-get") { aptscan(j, b); return }
+  if (bt == "sccache") { sccachescan(j, b); return }
+  if (bt == "rustup") { rustupscan(j, b); return }
+  if (bt == "curl") { curlscan(j, b) }
   if (bt == "trap") {
     k = j + 1; while (k <= b && (RD[k] || TK[k] ~ /^-/)) k++
     if (k <= b) {
@@ -511,11 +685,11 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
     return
   }
   if (bt ~ /^(export|local|readonly|declare|typeset)$/) {
-    for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) record_asg(TK[k], TKL[k]); else if (!RD[k] && TK[k] !~ /^-/) bind(lit(TK[k]))
+    for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) record_asg(TK[k], TKL[k]); else if (!RD[k] && TK[k] !~ /^-/) { if (lit(TK[k]) == "") redt("PATH", TKL[k], bt " of a name the scanner cannot read: it can set PATH or an exec-hook variable"); else bind(lit(TK[k]), 1) }
     for (k = j + 1; k <= b; k++) if (TK[k] ~ /^-[A-Za-z]*n/) bind(lit(TK[k + 1]))
     return
   }
-  if (bt ~ /^(read|mapfile|readarray|getopts|unset)$/) { for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] !~ /^-/) bind(lit(TK[k])); return }
+  if (bt ~ /^(read|mapfile|readarray|getopts|unset)$/) { for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] !~ /^-/) { if (lit(TK[k]) == "" && TK[k] !~ /^<|^[0-9]/) redt("PATH", TKL[k], bt " into a name the scanner cannot read: it can set PATH or an exec-hook variable"); else bind(lit(TK[k])) } return }
   if (bt == "printf") { for (k = j + 1; k < b; k++) if (TK[k] == "-v") bind(lit(TK[k + 1])); return }
   if (bt == "find") {
     for (k = j + 1; k <= b; k++) if (TK[k] ~ /^-(exec|execdir|ok|okdir)$/) {
@@ -526,7 +700,7 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   }
 }
 function endstmt(   k) {
-  if (TKn > 0 && !patpos) { SEQ++; PIPED = PIPEIN; PIPEIN = 0; XREPL = 0; primscan(1, TKn); evalrange(1, TKn, 0) }
+  if (TKn > 0 && !patpos) { SEQ++; PIPED = PIPEIN; PIPEIN = 0; XREPL = 0; primscan(1, TKn); envfilescan(1, TKn); evalrange(1, TKn, 0) }
   TKn = 0
   for (k in HDST) if (HDST[k] == SID) HDSH[k] = ((lit(TK[1]) ~ /^(sh|bash|dash|zsh|ksh|ash)$/) ? 1 : 0)
   SID++
@@ -813,6 +987,7 @@ function parse(   li, line, p, key, val, kcol, k, first, ind, txt, folded, cont,
 }
 BEGIN {
   F = ""; STEPS = 0; WORDS = 0; allowed = 0; SEEN = 0; SCANNED = 0; UNPARSE = 0; qn = 0
+  initlists()
   af = ENVIRON["ALLOW"]
   while (af != "" && (getline row < af) > 0) {
     if (row ~ /^[ \t]*(#|$)/) continue
