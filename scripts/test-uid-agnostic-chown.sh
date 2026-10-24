@@ -33,8 +33,9 @@ MARK='uid-agnostic (infra#2349)'
 # The owner source (r7): the step runs as uid 0 inside the job container, so the owner is the stat of the
 # listener-created file-command file GITHUB_ENV, which must agree with GITHUB_OUTPUT; uid 0 is refused.
 # (r6 read /__e, the HOST externals dir: 1000:1000 on gx10 where the listener is uid 1001.)
-STAT_LINE='          OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
-STAT_LINE2='          OWNER_CHK="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
+STAT_LINE='          OWNER_UG="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
+STAT_LINE2='          OWNER_CHK="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
+REG_LINE='          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then'
 AGREE_LINE='          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then'
 UID0_LINE='          if [ "${OWNER_UG%%:*}" = "0" ]; then'
 INTREE_RE='RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
@@ -93,6 +94,11 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       if [ -z "$ag" ] || [ -z "$u0a" ] || [ "$ag" -ge "$u0a" ] \
          || ! sed -n "$((ag + 1))p" "$s" | grep -qF '::error::cannot establish the runner owner' || [ "$(sed -n "$((ag + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
         echo "FAIL[AGREE] $f: no two-file owner agreement (::error:: + exit 1) before the uid-0 check"; fails=1; fi
+      # REGFILE: both listener files must be regular files (-f follows links, so a dangling link or a directory fails), with ::error:: + exit 1, after the stats and the agreement check, before the uid-0 check
+      rg="$(grep -nxF "$REG_LINE" "$s" | head -n 1 | cut -d: -f1)"; sg="$ag"
+      if [ -z "$rg" ] || [ -z "$sg" ] || [ "$rg" -le "$sg" ] || [ "$rg" -ge "$u0a" ] \
+         || ! sed -n "$((rg + 1))p" "$s" | grep -qF '::error::cannot establish the runner owner' || [ "$(sed -n "$((rg + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
+        echo "FAIL[REGFILE] $f: no regular-file check on GITHUB_ENV and GITHUB_OUTPUT (::error:: + exit 1) after the agreement check and before the uid-0 check"; fails=1; fi
       # INTREE: no stat of a path inside the chowned tree, whatever else the site has
       grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
       # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
@@ -122,7 +128,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
 # would: set_env / set_output are the listener-created file-command files (S_ENV / S_OUT = "uid:gid",
 # empty = unreadable), the /__e stand-in is the HOST externals dir (S_E, 1000:1000 as on gx10), any
 # other path (RUNNER_TEMP, WORK_ROOT, workspace) is wrong-owned 9999:9999.
-# mode = ok | gx10 | disagree | uid0 | unsetenv | unreadable | chownfail | gidonly | wrongtemp
+# mode = ok | gx10 | disagree | uid0 | unsetenv | unreadable | chownfail | gidonly | wrongtemp  | danglingout | foreignout | danglingenv | envdir | outdir
 run_site() {
   local mode="$1" d site rc out
   d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
@@ -132,6 +138,12 @@ run_site() {
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"
   cat > "$d/bin/stat" <<'STUB'
 #!/bin/sh
+L=0; if [ "$1" = -L ]; then L=1; shift; fi   # then $1=-c $2=fmt $3=path, as the real stat
+# -L follows the link: a dangling one fails; a link to the foreign file answers with the TARGET owner
+if [ "$L" = 1 ]; then
+  [ -e "$3" ] || exit 1
+  if [ -L "$3" ]; then case "$(readlink "$3")" in *other) echo 7777:7777; exit 0 ;; esac; fi
+fi
 case "$3" in
   *set_env) [ -n "$S_ENV" ] && echo "$S_ENV" || exit 1 ;;
   *set_output) [ -n "$S_OUT" ] && echo "$S_OUT" || exit 1 ;;
@@ -152,6 +164,11 @@ STUB
     chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; S_ENV=4242:4242 S_OUT=4242:4242; export S_ENV S_OUT ;;
     gidonly) S_ENV="$(id -u):4242" S_OUT="$(id -u):4242"; export S_ENV S_OUT ;;
     wrongtemp) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset and every tree path wrong-owned: the owner never depended on them
+    danglingout) rm -f "${d:?}/fc/set_output"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_output" ;;   # symlink to nothing
+    foreignout) : > "${d:?}/fc/other"; rm -f "${d:?}/fc/set_output"; ln -s "${d:?}/fc/other" "${d:?}/fc/set_output" ;;   # symlink to a file owned by 7777:7777
+    danglingenv) rm -f "${d:?}/fc/set_env"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_env" ;;
+    envdir) rm -f "${d:?}/fc/set_env"; mkdir "${d:?}/fc/set_env" ;;   # a directory where the file-command file should be
+    outdir) rm -f "${d:?}/fc/set_output"; mkdir "${d:?}/fc/set_output" ;;
   esac
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
   [ -s "$d/log" ] && out="$out"$'\n'"CHOWN-CALLED $(tr '\n' ' ' < "$d/log")"
@@ -181,6 +198,10 @@ behaviour() {
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
   if [ "$r" -eq 0 ] && echo "$o" | grep -qE "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
+  for m in danglingout:"dangling GITHUB_OUTPUT symlink" foreignout:"GITHUB_OUTPUT symlink to a file of another owner" danglingenv:"dangling GITHUB_ENV symlink" envdir:"GITHUB_ENV is a directory" outdir:"GITHUB_OUTPUT is a directory"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
   return "$rc"
 }
 
@@ -225,9 +246,10 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "1001 literal near chown"   LITERAL  "$C" "$C; U=1001"
   swap "chown target not OWNER_UG" TARGET   "$C" 'chown -h "$OWNER" "$p"'
   # --- r7 owner source: the listener's file-command files, two must agree; uid 0 refused ---
-  S='OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
+  S='OWNER_UG="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
   AGREE='          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then'
-  S2='OWNER_CHK="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
+  REG='          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then'
+  S2='OWNER_CHK="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
   swap "OWNER_UG from id"          OWNER_SRC,ASSIGN "$S" 'OWNER_UG="$(id -u):$(id -g)"'
   swap "extra OWNER_UG literal"    ASSIGN   '          export OWNER_UG' '          OWNER_UG=1234:1234'
   swap "OLD FORM (r6): stat of /__e (gx10: 1000, listener 1001)" OWNER_SRC "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
@@ -243,6 +265,31 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "stat loop over _temp and WORK_ROOT" OWNER_SRC,INTREE,ASSIGN "$S" 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp"; do OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$P")"; done'
   swap "third stat added"          OWNER_SRC "$S2" "$S2"$'\n          stat -c %u /__e >/dev/null'
   swap "confirming stat removed"   OWNER_SRC "$S2" 'OWNER_CHK="$OWNER_UG"'
+  # --- r10 (PR #97): stat -L plus a regular-file check on BOTH listener files; a dangling link, a foreign link or a directory fails closed ---
+  swap "FINDING: plain stat (no -L) of GITHUB_OUTPUT, one site" OWNER_SRC,DRIFT "$S2" 'OWNER_CHK="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
+  swap "plain stat (no -L) of GITHUB_ENV, one site" OWNER_SRC,DRIFT "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
+  swap "regular-file check removed" REGFILE "$REG" '          if false; then'
+  swap "regular-file check covers GITHUB_ENV only" REGFILE "$REG" '          if [ ! -f "${GITHUB_ENV:-}" ]; then'
+  swap "regular-file check covers GITHUB_OUTPUT only" REGFILE "$REG" '          if [ ! -f "${GITHUB_OUTPUT:-}" ]; then'
+  swap "-f weakened to -e (a directory passes)" REGFILE "$REG" '          if [ ! -e "${GITHUB_ENV:-}" ] || [ ! -e "${GITHUB_OUTPUT:-}" ]; then'
+  # Executed mutants: each variant is applied at ALL 8 sites (so DRIFT stays quiet) and then the
+  # behaviour fixtures are RUN against the mutated site; the named fixtures must go red.
+  F_OUT='dangling GITHUB_OUTPUT symlink'; F_FOR='GITHUB_OUTPUT symlink to a file of another owner'
+  F_ENV='dangling GITHUB_ENV symlink'; F_DIR='GITHUB_ENV is a directory'; F_ODIR='GITHUB_OUTPUT is a directory'
+  FCHK='if \[ ! -f "\${GITHUB_ENV:-}" \] || \[ ! -f "\${GITHUB_OUTPUT:-}" \]; then'
+  exmut() { # name sed-expr fixture... : sed over $F, guard must stay quiet on no tag we assert, each fixture must be FAIL[BEHAVIOUR]
+    local n="$1" e="$2" fx out; shift 2
+    cp "$WF"/*.yml "$tmp"/; sed -i "$e" "$tmp/$F"
+    cmp -s "$WF/$F" "$tmp/$F" && { echo "SELF-TEST FAIL: mutation '$n' changed nothing"; exit 1; }
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    for fx in "$@"; do echo "$out" | grep -qF "FAIL[BEHAVIOUR] $fx did not fail closed" || miss "'$n': fixture '$fx' stayed green"; done
+    echo "  caught [BEHAVIOUR] $n: $# fixture(s) red"
+  }
+  exmut "FINDING at all 8 sites: plain stat of both files, no -f check" "s/stat -L -c/stat -c/; s/$FCHK/if false; then/" "$F_OUT" "$F_FOR" "$F_ENV" "$F_DIR" "$F_ODIR"
+  exmut "plain stat at all 8 sites, -f check kept (dangling covered, foreign link not)" "s/stat -L -c/stat -c/" "$F_FOR"
+  exmut "-f check removed at all 8 sites, stat -L kept" "s/$FCHK/if false; then/" "$F_DIR" "$F_ODIR"
+  exmut "-f weakened to -e at all 8 sites" "s/! -f /! -e /g" "$F_DIR" "$F_ODIR"
+  exmut "-f on GITHUB_ENV only at all 8 sites" 's/ || \[ ! -f "${GITHUB_OUTPUT:-}" \]; then/; then/' "$F_ODIR"
   swap "agreement check removed"   AGREE    "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
   swap "agreement is a warning"    AGREE    '::error::cannot establish the runner owner' '::warning::cannot establish the runner owner'
   cp "$WF"/*.yml "$tmp"/   # agreement check reports but does not exit
