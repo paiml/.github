@@ -170,6 +170,17 @@ STUB
     danglingenv) rm -f "${d:?}/fc/set_env"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_env" ;;
     envdir) rm -f "${d:?}/fc/set_env"; mkdir "${d:?}/fc/set_env" ;;   # a directory where the file-command file should be
     outdir) rm -f "${d:?}/fc/set_output"; mkdir "${d:?}/fc/set_output" ;;
+    # r12: wc (the failed-path counter) is untrusted output. A count that is empty or not a run of digits must fail closed.
+    wcfail) printf '#!/bin/sh\nexit 1\n' > "${d:?}/bin/wc" ;;                       # wc fails and prints nothing
+    wcempty) printf '#!/bin/sh\nexit 0\n' > "${d:?}/bin/wc" ;;                      # wc succeeds and prints nothing
+    wcgarbage) printf '#!/bin/sh\necho oops\n' > "${d:?}/bin/wc" ;;                 # wc prints non-numeric output
+    wcnegative) printf '#!/bin/sh\necho -1\n' > "${d:?}/bin/wc" ;;                  # wc prints a signed number
+    wcspaces) printf '#!/bin/sh\necho "0 x"\n' > "${d:?}/bin/wc" ;;                 # a zero followed by text must not read as zero
+    # r12: the owner read from the listener files must be a numeric uid:gid with a non-root uid
+    ownergarbage) S_ENV=abc:def S_OUT=abc:def; export S_ENV S_OUT ;;
+    ownernocolon) S_ENV=4242 S_OUT=4242; export S_ENV S_OUT ;;
+    ownerzeropad) S_ENV=00:0 S_OUT=00:0; export S_ENV S_OUT ;;                      # uid 0 spelled so that `= "0"` misses it
+    ownertwocolon) S_ENV=4242:4343:1 S_OUT=4242:4343:1; export S_ENV S_OUT ;;
     # GITHUB_ENV / GITHUB_OUTPUT INSIDE the tree being chowned (the listener keeps them under _work/_temp). The stat is taken
     # before the find/chown, so a wrong-owned tree cannot change what it reads; a wrong-owned file-command file cannot be used.
     intree) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
@@ -179,6 +190,7 @@ STUB
     intreeroot) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
             GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; S_ENV=0:0 S_OUT=0:0; export GITHUB_ENV GITHUB_OUTPUT S_ENV S_OUT ;;   # both in-tree files root-owned (a container step ran as root)
   esac
+  [ -e "$d/bin/wc" ] && chmod +x "$d/bin/wc"
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
   [ -s "$d/log" ] && out="$out"$'\n'"CHOWN-CALLED $(tr '\n' ' ' < "$d/log")"
   rm -rf "${d:?}"
@@ -216,6 +228,16 @@ behaviour() {
   for m in intreemixed:"in-tree GITHUB_ENV wrong-owned, GITHUB_OUTPUT the listener's" intreeroot:"in-tree GITHUB_ENV and GITHUB_OUTPUT root-owned"; do
     o="$(run_site "${m%%:*}")"; r=$?
     if [ "$r" -ne 0 ] && echo "$o" | grep -qE '::error::(cannot establish the runner owner|runner user mismatch)' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # r12: the failed-path count is validated before it is compared. Each wc stub must make the site exit nonzero with the count ::error::.
+  for m in wcfail:"wc stub that fails" wcempty:"wc stub that prints nothing" wcgarbage:"wc stub that prints non-numeric output" wcnegative:"wc stub that prints a negative number" wcspaces:"wc stub that prints a zero followed by text"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot count the failed paths'; then echo "ok   ${m#*:} -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # r12: a listener owner that is not a numeric uid:gid with a non-root uid is refused before any find/chown.
+  for m in ownergarbage:"owner stat prints non-numeric text" ownernocolon:"owner stat prints a uid with no gid" ownerzeropad:"owner stat prints uid 00 (root spelled with a pad)" ownertwocolon:"owner stat prints three fields"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
   done
   return "$rc"
 }
@@ -305,6 +327,16 @@ if [ "${1:-}" = "--self-test" ]; then
   exmut "-f check removed at all 8 sites, stat -L kept" "s/$FCHK/if false; then/" "$F_DIR" "$F_ODIR"
   exmut "-f weakened to -e at all 8 sites" "s/! -f /! -e /g" "$F_DIR" "$F_ODIR"
   exmut "-f on GITHUB_ENV only at all 8 sites" 's/ || \[ ! -f "${GITHUB_OUTPUT:-}" \]; then/; then/' "$F_ODIR"
+  # --- r12: the failed-path count and the owner shape are validated before use; executed mutants at ALL 8 sites ---
+  F_WCF='wc stub that fails'; F_WCE='wc stub that prints nothing'; F_WCG='wc stub that prints non-numeric output'; F_WCS='wc stub that prints a zero followed by text'
+  F_OG='owner stat prints non-numeric text'; F_ONC='owner stat prints a uid with no gid'; F_OZ='owner stat prints uid 00 (root spelled with a pad)'; F_O3='owner stat prints three fields'
+  exmut "FINDING: count validation removed at all 8 sites (empty and garbage pass)" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1__never__)/" "$F_WCF" "$F_WCE" "$F_WCG" "$F_WCS"
+  exmut "count validation keeps only the empty case" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1'')/" "$F_WCG" "$F_WCS"
+  exmut "count validation keeps only the non-digit case (empty passes)" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1*[!0-9]*)/" "$F_WCF" "$F_WCE"
+  exmut "owner shape check removed at all 8 sites" "s/^\( *\)\*\[!0-9:\]\*|.*) ;;\$/\1*) OWNER_SHAPE_OK=1 ;;/" "$F_OG" "$F_ONC" "$F_OZ" "$F_O3"
+  exmut "owner shape: leading-zero uid (00) allowed" "s/|:\*|0\*) ;;/|:*) ;;/" "$F_OZ"
+  exmut "owner shape: non-digit characters allowed" "s/\*\[!0-9:\]\*|//" "$F_OG"
+  exmut "owner shape: a second colon allowed" "s/|\*:\*:\*|/|/" "$F_O3"
   swap "agreement check removed"   AGREE    "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
   swap "agreement is a warning"    AGREE    '::error::cannot establish the runner owner' '::warning::cannot establish the runner owner'
   cp "$WF"/*.yml "$tmp"/   # agreement check reports but does not exit
@@ -623,6 +655,56 @@ if [ "${1:-}" = "--self-test" ]; then
   { [ "$rc" -ne 0 ] && ! echo "$res" | grep -q CONTINUED; } || miss "r11 control: the unmutated branch is not fail-closed when executed"
   rm -f "${tmp:?}/m11.yml"
   echo "  caught [EXIT] $r11n exact-text mutants of the fail-closed branch (the finding, exit 0 / return / true / : / trap / chaining / newline / comment / string)"
+  # --- r12 (finding at `if ! sudo -n chown ...; then BODY fi`): the body is exact text, checked by errshape() ---
+  # Before r12 the scan accepted ANY body after `then`. Each mutant below rewrites the body of EVERY `if ! sudo -n chown`
+  # in sovereign-ci.yml and unified-gate.yml; the scan must say [tag] at every one of them (6 sites), and where the mutant
+  # really lets a failed sudo fall through, the mutated branch is EXECUTED (sudo and chown stubbed to fail) and must be
+  # seen to carry on (CONTINUED or rc 0).
+  r12n=0
+  r12() { # name tag expect(open|any) mode rep
+    local G cnt want got frag res rc nm="$1" tag="$2" ex="$3" mode="$4" rep="$5"
+    want=0; got=0
+    for G in sovereign-ci.yml unified-gate.yml; do
+      MODE="$mode" REP="$rep" awk '/^ *if ! sudo -n chown/ { getline b; m = ENVIRON["MODE"]; r = ENVIRON["REP"]
+          if (m == "ifrep") { print "          " r; print b } else if (m == "rep") { print; print "            " r } else if (m == "del") print
+          else if (m == "after") { print; print b; print "            " r } else if (m == "before") { print; print "            " r; print b } ; next } { print }' "$WF/$G" > "$tmp/m12.yml"
+      cmp -s "$WF/$G" "$tmp/m12.yml" && { miss "r12 mutant '$nm' changed nothing in $G"; continue; }
+      cnt="$(grep -c '^ *if ! sudo -n chown' "$WF/$G")"; want=$((want + cnt))
+      got=$((got + $(awk -v F="$G" -f "$SCAN_AWK" "$tmp/m12.yml" | grep -c "FAIL\[$tag\]")))
+      if [ "$ex" = open ]; then
+        frag="$(awk '/^ *if ! sudo -n chown/ { on = 1 } on { print } on && /^ *fi$/ { exit }' "$tmp/m12.yml")"
+        res="$(bash -c "sudo() { return 1; }; chown() { return 1; }; OWNER=o; WORK_ROOT=/w; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+        if [ "$rc" -eq 0 ] || echo "$res" | grep -q CONTINUED; then :; else miss "r12 '$nm' was meant to be fail-open but the executed branch exited rc=$rc"; fi
+      fi
+    done
+    r12n=$((r12n + 1))
+    [ "$got" -ge "$want" ] && [ "$want" -gt 0 ] || miss "r12 mutant '$nm': [$tag] seen at $got of $want sites"
+  }
+  r12 "THE FINDING: body is only true"                 EXIT open rep 'true'
+  r12 "body is only :"                                 EXIT open rep ':'
+  r12 "body is exit 0"                                 EXIT open rep 'exit 0'
+  r12 "body is return 0"                               EXIT open rep 'return 0'
+  r12 "body is an empty line (no command)"             EXIT any  rep ''
+  r12 "body deleted: then fi"                          EXIT any  del ''
+  r12 "body is a comment only"                         EXIT any  rep '# chown -R "$OWNER" "$WORK_ROOT"'
+  r12 "body is an echo only"                           EXIT open rep 'echo "sudo chown failed"'
+  r12 "body is an ::error:: echo with no exit"         EXIT open rep 'echo "::error::sudo chown failed"'
+  r12 "body is the plain chown || true"                EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || true'
+  r12 "body is the plain chown with exit 0 branch"     EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown failed"; exit 0; }'
+  r12 "body is the plain chown, error with no exit"    EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown failed"; }'
+  r12 "body is the plain chown alone (failure unchecked)" EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT"'
+  r12 "body is a different chown target"               EXIT any  rep 'chown -R "$OWNER" "$GITHUB_WORKSPACE" || { echo "::error::chown failed"; exit 1; }'
+  r12 "second command after the plain chown"           EXIT any  after 'true'
+  r12 "command before the plain chown"                 EXIT any  before 'true'
+  r12 "exit 0 after the plain chown"                   EXIT any  after 'exit 0'
+  r12 "if line carries || true"                        TARGET any  ifrep 'if ! sudo -n chown -R "$OWNER" "$WORK_ROOT" || true; then'
+  r12 "if line is not negated (sudo success runs the plain chown)" TARGET any ifrep 'if sudo -n chown -R "$OWNER" "$WORK_ROOT"; then'
+  r12 "if line then on the same line as the body"      TARGET any ifrep 'if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then true; fi; if false; then'
+  # control: the unmutated branch is seen closed when executed, and the unmutated scan has no [EXIT] / [TARGET] on it
+  frag="$(awk '/^ *if ! sudo -n chown/ { on = 1 } on { print } on && /^ *fi$/ { exit }' "$WF/sovereign-ci.yml")"
+  res="$(bash -c "sudo() { return 1; }; chown() { return 1; }; OWNER=o; WORK_ROOT=/w; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && ! echo "$res" | grep -q CONTINUED; } || miss "r12 control: the unmutated sudo branch is not fail-closed when executed"
+  echo "  caught [EXIT/TARGET] $r12n mutants of the \`if ! sudo -n chown\` body, each at every site (the finding: true / : / exit 0 / empty / second command / unchecked chown)"
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

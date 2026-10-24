@@ -273,17 +273,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -520,17 +541,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   lint:
@@ -615,17 +657,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -856,17 +919,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   coverage:
@@ -957,17 +1041,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1259,17 +1364,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   bench:
@@ -1340,17 +1466,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
           echo "pre-checkout ownership restored under $WORK_ROOT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1559,17 +1706,38 @@ jobs:
             echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
+          # The owner must be a numeric uid:gid with a non-root uid (no leading zero, one colon, digits only). A stat that
+          # prints anything else would hand a garbage owner to find/chown, so it is refused here, not compared.
+          OWNER_SHAPE_OK=0
+          case "${OWNER_UG:-}" in
+            *[!0-9:]*|*:*:*|*:|:*|0*) ;;
+            *:*) OWNER_SHAPE_OK=1 ;;
+          esac
+          if [ "$OWNER_SHAPE_OK" != 1 ]; then
+            echo "::error::runner owner '${OWNER_UG:-}' is not a numeric uid:gid with a non-root uid"
+            exit 1
+          fi
           echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
             || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }
-          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')"
-          if [ "$CHOWN_N" -gt 0 ]; then
-            echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
-            rm -f "${CHOWN_FAILED:?}"
-            exit 1
-          fi
+          # wc must give a non-empty run of digits; empty (wc failed or printed nothing) or anything else is a failure, never a pass.
+          CHOWN_N="$(wc -l < "$CHOWN_FAILED" | tr -d ' ')" || CHOWN_N=""
+          case "$CHOWN_N" in
+            ''|*[!0-9]*)
+              echo "::error::cannot count the failed paths under $WORK_ROOT: wc gave '$CHOWN_N'"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
+          case "$CHOWN_N" in
+            *[1-9]*)
+              echo "::error::chown to $OWNER_UG failed on $CHOWN_N path(s) under $WORK_ROOT; first: $(head -n 5 "$CHOWN_FAILED" | tr '\n' ' ')"
+              rm -f "${CHOWN_FAILED:?}"
+              exit 1
+              ;;
+          esac
           rm -f "${CHOWN_FAILED:?}"
 
   security:

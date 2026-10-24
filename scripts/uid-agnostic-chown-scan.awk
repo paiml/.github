@@ -272,8 +272,19 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
       else fail("TARGET", ln, "site find/chown line differs from the ruled shape")
     } else if (index(lg, CHOWN_B)) {
       k = index(lg, CHOWN_B); pre = substr(lg, 1, k - 1); rest = substr(lg, k + length(CHOWN_B))
-      isB = ((pre == "" || pre == "if ! sudo -n ") && (rest == "; then" || rest ~ /^ \|\| \{ echo "::error::[^"]*"; exit 1; \}$/))
+      isB = ((pre == "" && rest ~ /^ \|\| \{ echo "::error::[^"]*"; exit 1; \}$/) || (pre == "if ! sudo -n " && rest == "; then"))
       if (!isB) fail("TARGET", ln, "bare-metal chown is not the ruled shape: " lg)
+      # `if ! sudo -n chown ...; then BODY fi` (r12): the body is NOT free text. It must be exactly one line, the plain
+      # `chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::MSG"; exit 1; }` (checked by the same exact-text errshape()
+      # as every other fail-closed branch), then `fi`. A body of true / : / exit 0 / nothing / an echo, or a second
+      # command, would let a failed sudo fall through with the tree unrepaired.
+      if (isB && pre == "if ! sudo -n ") {
+        b = LG[i + 1]; kb = index(b, CHOWN_B)
+        if (i + 1 > n) fail("EXIT", ln, "the `if ! sudo -n chown ...; then` has no body: " lg)
+        else if (kb != 1 || substr(b, length(CHOWN_B) + 1) !~ /^ \|\| \{ echo "::error::[^"]*"; exit 1; \}$/) fail("EXIT", ln, "the body of `if ! sudo -n chown ...; then` is not exactly the plain chown with its `|| { echo ::error::..; exit 1; }` branch: " b)
+        else if ((why = errshape(i + 1, n)) != "") fail("EXIT", LN[i + 1], why ": " b)
+        else if (LG[i + 2] != "fi") fail("EXIT", ln, "the `if ! sudo -n chown ...; then` body is not closed by `fi` straight after the plain chown: " LG[i + 2])
+      }
       if (!haveown) fail("ASSIGN", ln, "OWNER is not assigned as " OWN " in this step")
       if (container) fail("TARGET", ln, "a container job runs as root: use the stat-derived owner, not id -un:id -gn")
     } else fail("TARGET", ln, "chown/chgrp is not the ruled owner on the ruled path: " lg)
