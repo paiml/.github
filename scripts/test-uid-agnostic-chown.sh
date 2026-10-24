@@ -957,6 +957,41 @@ EOF
   omy "r5 js: env: values are not script text"       green '      - uses: actions/github-script@v7\n        env:\n          REASON: ${{ steps.a.outputs.r }}\n        with:\n          script: |\n            core.setOutput("x", process.env.REASON);'
   omy "r5 uses: docker:// runs an unread image"      red '      - uses: docker://alpine:3\n        with:\n          args: id'
   omy "r5 uses: a pinned third-party action is data" green '      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4'
+  # --- r6 (PMAT-2359): capability rule for recipe runners and for sed's e command / s///e flag -------------------
+  # Quorum at f818e83: (a) `make -C x fix-owner` whose recipe chowns passed; (b) `sed -n "1e echo c$(printf h)own ..."` passed.
+  # A text scanner cannot read a Makefile or a sed program's every effect, so the capability is the finding.
+  om "r6 a: make -C dir target (recipe chowns)"       red   'make -C machines/x fix-owner'
+  om "r6 b: sed -n \"1e echo c\$(printf h)own ...\""  red   'sed -n "1e echo c$(printf h)own -h \\"$OWNER_UG\\" \\"$WORK_ROOT\\"" /dev/null'
+  om "r6 n1: sed 1e id (single quotes)"               red   "sed -n '1e id' f"
+  om "r6 n2: sed s///e flag"                          red   "sed 's/x/y/e' f"
+  om "r6 n3: sed second -e holds the e command"       red   "sed -e 's/a/b/' -e '2e id' f"
+  om "r6 n4: sed -f script file"                      red   'sed -f fix.sed f'
+  om "r6 n5: sed -ne cluster, e after a semicolon"    red   "sed -ne 'p;e id' f"
+  om "r6 n6: sed ANSI-C quoted script"                red   "sed \$'1e id' f"
+  om "r6 n7: sed e after an address and !"            red   "sed '/a/!e id' f"
+  om "r6 n8: sed e inside a block"                    red   "sed -n '/a/{p;e id' -e '}' f"
+  om "r6 n9: sed script from a variable"              red   'sed -n "$PROG" f'
+  om "r6 n10: sed s with a custom delimiter and e"    red   "sed 's|a|b|ge' f"
+  om "r6 n11: sed -i with e command"                  red   "sed -i '1e id' f"
+  om "r6 n12: GNU sed unterminated s is unreadable"   red   "sed 's/a/b' f"
+  om "r6 n13: just"                                   red   'just fix-owner'
+  om "r6 n14: npm run"                                red   'npm run fix-owner'
+  om "r6 n15: cargo xtask"                            red   'cargo xtask chown'
+  om "r6 n16: ninja"                                  red   'ninja -C build fix'
+  om "r6 n17: env make"                               red   'env A=1 make fix-owner'
+  om "r6 n18: find -exec make"                        red   'find . -name x -exec make -C {} fix \;'
+  om "r6 n19: sudo gmake"                             red   'sudo gmake fix-owner'
+  om "r6 n20: cargo run"                              red   'cargo run -p tool'
+  om "r6 n21: make in a pipeline tail"                red   'echo x | make -f -'
+  om "r6 n22: cmake --build"                          red   'cmake --build build'
+  om "r6 ctl: sed -i plain substitution"              green "sed -i 's/a/b/g' f"
+  om "r6 ctl: sed address regex containing e"         green "sed -n '/echo/p' f"
+  om "r6 ctl: sed s with e in the replacement text"   green "sed 's/a/exec/' f"
+  om "r6 ctl: sed y command"                          green "sed 'y/abc/xyz/' f"
+  om "r6 ctl: sed brace block and d"                  green "sed -e '/a/{s/x/y/;p}' -e '/b/d' f"
+  om "r6 ctl: sed --sandbox cannot e"                 green "sed --sandbox -n '1e id' f"
+  om "r6 ctl: cargo test is not a recipe runner"      green 'cargo test --lib'
+  om "r6 ctl: cargo fmt"                              green 'cargo fmt --all -- --check'
   [ "$MISSES" -eq "$m0" ] && echo "  caught [OPAQUE] $OP_RED run-step mutants RED, $OP_GREEN non-shell / literal cases GREEN"
   # the allowlist: an unused row, a row with no reason, a missing file, a row that lets a RED word through
   cp "$WF"/*.yml "$tmp"/; printf 'ci.yml\tno such step\tno such line\tbecause\n' > "$tmp/al.txt"; cat "$OPAQUE_ALLOW" >> "$tmp/al.txt"

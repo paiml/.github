@@ -349,6 +349,105 @@ function safe_consumer(b) {
   return (b ~ /^(cat|grep|egrep|fgrep|sed|awk|gawk|mawk|cut|tr|sort|uniq|head|tail|tee|wc|jq|read|base64|xxd|od|sha256sum|sha1sum|sha512sum|md5sum|b2sum|gzip|gunzip|zcat|bzip2|xz|zstd|column|paste|join|comm|diff|cmp|fold|nl|rev|less|more|xargs|true|false|test|\[|\[\[|:|curl|wget|gh|docker|cosign|openssl|gpg|git|cargo|rustc|jq|sponge|mapfile|readarray|while|until|printf|echo|date|sleep|logger|cmp|realpath|dirname|basename|stat|ls|find|rm|mkdir|touch|mv|cp|ln|df|du|free|ps|lsof|ss|ip|tput|wall|mail|sendmail|nproc|uname|id|whoami|env|sudo|command|tac|expand|unexpand|split|csplit|shuf|seq|yes|timeout|nice|ionice|time|stdbuf|flock|systemctl|journalctl)$/)
 }
 # evalrange(a, b): the statement held in TK[a..b] (raw words)
+# sed is an interpreter too: the e command and the s///e flag run a shell command. sedbad(t): why the sed script text t
+# can run a command (or cannot be parsed with certainty), else "". Fail closed: an unknown command letter, an
+# unterminated pattern and a script from a file (-f) are all RED. --sandbox makes e/w/r impossible and is green.
+function sed_skipdelim(t, p, d,   n, c) {
+  n = length(t)
+  for (; p <= n; p++) {
+    c = substr(t, p, 1)
+    if (c == "\\") { p++; continue }
+    if (c == "[") { p++; if (substr(t, p, 1) == "^") p++; if (substr(t, p, 1) == "]") p++; while (p <= n && substr(t, p, 1) != "]") p++; continue }
+    if (c == d) return p
+  }
+  return 0
+}
+function sedbad(t,   n, p, c, d, q, f) {
+  n = length(t); p = 1
+  while (p <= n) {
+    c = substr(t, p, 1)
+    if (c ~ /[ \t\n;{}]/) { p++; continue }
+    while (1) {
+      c = substr(t, p, 1)
+      if (c ~ /[0-9$ \t,~+!]/) { p++; continue }
+      if (c == "/" || (c == "\\" && p < n)) {
+        d = "/"; if (c == "\\") { p++; d = substr(t, p, 1) }
+        q = sed_skipdelim(t, p + 1, d); if (q == 0) return "unterminated address regex"
+        p = q + 1; while (substr(t, p, 1) ~ /[IM]/) p++
+        continue
+      }
+      break
+    }
+    c = substr(t, p, 1)
+    if (c == "") break
+    if (c == "{" || c == "}") { p++; continue }
+    if (c == "e") return "the e command runs a shell command"
+    if (c == "s") {
+      d = substr(t, p + 1, 1); if (d == "" || d == "\n" || d == "\\") return "s with no usable delimiter"
+      q = sed_skipdelim(t, p + 2, d); if (q == 0) return "unterminated s pattern"
+      q = sed_skipdelim(t, q + 1, d); if (q == 0) return "unterminated s replacement"
+      p = q + 1
+      while (p <= n && substr(t, p, 1) !~ /[;}\n# \t]/) {
+        f = substr(t, p, 1)
+        if (f == "e") return "the s///e flag runs the pattern space as a shell command"
+        if (f == "w") { q = index(substr(t, p), "\n"); p = (q == 0) ? n + 1 : p + q - 1; break }
+        p++
+      }
+      continue
+    }
+    if (c == "y") {
+      d = substr(t, p + 1, 1); if (d == "" || d == "\n" || d == "\\") return "y with no usable delimiter"
+      q = sed_skipdelim(t, p + 2, d); if (q == 0) return "unterminated y"
+      q = sed_skipdelim(t, q + 1, d); if (q == 0) return "unterminated y"
+      p = q + 1; continue
+    }
+    if (c ~ /[aic]/) { while (p <= n) { q = index(substr(t, p), "\n"); if (q == 0) { p = n + 1; break } p += q; if (substr(t, p - 2, 1) != "\\") break } continue }
+    if (c ~ /[rRwW:#]/) { q = index(substr(t, p), "\n"); p = (q == 0) ? n + 1 : p + q; continue }
+    if (c ~ /[bBtT]/) { p++; while (p <= n && substr(t, p, 1) !~ /[;}\n]/) p++; continue }
+    if (c ~ /[=dDgGhHlnNpPqQxzF]/) { p++; while (substr(t, p, 1) ~ /[0-9 \t]/) p++; continue }
+    return "unknown sed command letter " c
+  }
+  return ""
+}
+function sedwhy(w,   t) {
+  if (index(w, "\003")) return "the script holds a ${{ }} expression"
+  t = deq(w)
+  if (DQDYN) return "the script is built by shell expansion"
+  return sedbad(t)
+}
+function sedscan(j, b,   k, t, why, got) {
+  got = 0
+  for (k = j + 1; k <= b; k++) if (!RD[k] && TK[k] == "--sandbox") return
+  for (k = j + 1; k <= b; k++) {
+    if (RD[k]) continue
+    t = TK[k]
+    if (t ~ /^-[A-Za-z]*f/ || t ~ /^--file/) { redt("INTERP", TKL[j], "sed reads its script from a file: the script is not read by this scanner"); return }
+    if (t == "-e" || t == "--expression" || (t ~ /^-[A-Za-z]+$/ && t ~ /e$/ && t !~ /^-i/)) {
+      k++; if (k > b) return
+      got = 1; why = sedwhy(TK[k]); if (why != "") { redt("INTERP", TKL[j], "sed script can run a command or is not readable (" why ")"); return }
+      continue
+    }
+    if (t ~ /^--expression=/) { got = 1; why = sedwhy(substr(t, 14)); if (why != "") { redt("INTERP", TKL[j], "sed script can run a command or is not readable (" why ")"); return } continue }
+    if (t == "--" || t ~ /^-/) continue
+    if (!got) { why = sedwhy(t); if (why != "") redt("INTERP", TKL[j], "sed script can run a command or is not readable (" why ")") }
+    return
+  }
+}
+# make-like tools run recipes, scripts and hooks that live in the repo and are not read here: RED by capability.
+# buildtool(bt, j, b): the tool's name when it is a recipe runner, else "".
+function buildtool(bt, j, b,   k, s) {
+  if (bt ~ /^(make|gmake|bmake|remake|just|ninja|samu|scons|rake|bazel|bazelisk|gradle|gradlew|mvn|mvnw|ant|task|xtask|invoke|tox|nox|meson|cmake|npm|npx|yarn|pnpm|bun|bunx|pnpx|corepack|mage|earthly|doit|waf|buck|buck2|pants|nx|turbo|lerna|grunt|gulp|fab|cargo-xtask|cargo-make|cargo-script)$/) return bt
+  if (bt == "cargo") {
+    for (k = j + 1; k <= b; k++) {
+      s = TK[k]; if (RD[k] || s ~ /^-/ || s ~ /^\+/) continue
+      s = lit(s)
+      if (s == "") return "cargo <dynamic subcommand>"
+      if (s ~ /^(xtask|run|make|script|r)$/) return "cargo " s
+      return ""
+    }
+  }
+  return ""
+}
 function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   j = a
   while (j <= b) {
@@ -394,6 +493,8 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   if (bt == "source" || bt == ".") { redt("INTERP", TKL[j], bt " runs a file the scanner does not read"); return }
   if (bt ~ /^(sh|bash|dash|zsh|ksh|ash)$/) { shellrange(j, b); return }
   if (bt ~ /^(awk|gawk|mawk|nawk|original-awk)$/) { awkscan(j, b); return }
+  if (bt ~ /^(sed|gsed|busybox-sed)$/) { sedscan(j, b); return }
+  if ((e = buildtool(bt, j, b)) != "") { redt("INTERP", TKL[j], e " runs recipes or scripts that live in the repo: the code it runs is not read by this scanner (capability rule)"); return }
   if (bt ~ /^(python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node|nodejs|php[0-9.]*|pwsh|lua[0-9.]*|luajit|deno|bun|tclsh[0-9.]*|wish|osascript|expect|irb|jshell|Rscript|julia|swift|groovy|escript|guile|racket|ocaml|runghc|ghci|npx|ts-node|tsx)$/) { redt("INTERP", TKL[j], bt " is an interpreter: the program it runs is not read by this scanner"); return }
   if (bt ~ /^(nsenter|chroot|flock|script|watch|parallel|stdbuf|taskset|docker|podman|ssh|unshare|setpriv|capsh|sg|newgrp|sshpass|kubectl|lxc|systemd-run|firejail|bwrap)$/) {
     for (k = j + 1; k <= b; k++) if (!RD[k] && bn(lit(TK[k])) ~ /^(sh|bash|dash|zsh|ksh|ash|eval|su|runuser)$/) { evalrange(k, b, depth + 1); return }
