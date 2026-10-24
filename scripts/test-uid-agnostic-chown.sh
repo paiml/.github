@@ -45,6 +45,9 @@ list_files() { local f; for f in "$WF"/*.yml "$WF"/*.yaml "$ACT"/*/action.yml "$
 # Constants for the whole-file scan (logical lines are trimmed and continuation-joined).
 CH=chown; BR='{}'
 export MARK
+# The WORK_ROOT refusal guard line: not a link, a directory, and its physical path (pwd -P) equals the name (a symlinked PARENT fails the third test).
+export GUARD_IF='if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then'
+export GUARD_MARK="# Normalise WORK_ROOT before the guard:"
 export FIND_A='find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c '"'"'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done'"'"' sh '"$BR"' + > "$CHOWN_FAILED"'
 export FIND_TAIL=' || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }'
 export OWNER_LINE='OWNER="$(id -un):$(id -gn)"'
@@ -59,6 +62,18 @@ extract_sites() { # file outdir -> writes outdir/site.N
     !on && inpre { pre = pre $0 "\n" }
     on { print > f }
     on && $0 == "          rm -f \"${CHOWN_FAILED:?}\"" { on=0; close(f) }
+  ' "$1"
+}
+
+# extract_guard: the WORK_ROOT refusal block, from its "# Normalise WORK_ROOT before the guard:" comment to the first line that is
+# exactly `fi` at step indent. It is in EVERY chown step of EVERY file (the sovereign-ci.yml self-heal sites and the bare-metal
+# unified-gate.yml steps). All copies must be byte-identical, and each is EXECUTED (guard_behaviour).
+extract_guard() { # file outdir -> outdir/guard.N (+ outdir/unterminated)
+  awk -v out="$2" '
+    index($0, "# Normalise WORK_ROOT before the guard:") == 11 && !on { on=1; n++; f=out "/guard." n }
+    on { print > f }
+    on && $0 == "          fi" { on=0; close(f) }
+    END { if (on) { close(f); print "x" > (out "/unterminated") } }
   ' "$1"
 }
 
@@ -117,6 +132,28 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     done
     rm -rf "${tmp:?}/d"
   done
+  # GUARD: the refusal blocks of all files are one text (drift = red) and terminated; guard_behaviour executes each.
+  local gn=0 g
+  for f in $(list_files); do
+    mkdir "$tmp/g"; extract_guard "$f" "$tmp/g"
+    [ -e "$tmp/g/unterminated" ] && { echo "FAIL[DRIFT] $f: unterminated WORK_ROOT refusal block"; fails=1; }
+    for g in "$tmp"/g/guard.*; do
+      [ -e "$g" ] || continue
+      gn=$((gn + 1)); cp "$g" "$tmp/guard.$gn"; echo "$f" > "$tmp/gfile.$gn"
+      grep -qxF "          $GUARD_IF" "$g" || { echo "FAIL[DRIFT] $f: the WORK_ROOT refusal block lacks the resolved-path guard line"; fails=1; }
+    done
+    rm -rf "${tmp:?}/g"
+  done
+  i=2
+  while [ "$i" -le "$gn" ]; do
+    cmp -s "$tmp/guard.1" "$tmp/guard.$i" || { echo "FAIL[DRIFT] WORK_ROOT refusal block $i ($(cat "$tmp/gfile.$i")) differs from block 1 ($(cat "$tmp/gfile.1"))"; fails=1; }
+    i=$((i + 1))
+  done
+  [ "$gn" -eq 0 ] && { echo "FAIL[UNGUARDED] no WORK_ROOT refusal block under $WF"; fails=1; }
+  if [ -n "${GUARD_DIR:-}" ]; then
+    rm -f "${GUARD_DIR:?}"/guard.* "${GUARD_DIR:?}"/gfile.*
+    cp "$tmp"/guard.* "$tmp"/gfile.* "$GUARD_DIR"/ 2>/dev/null
+  fi
   [ "$sites" -eq 0 ] && { echo "FAIL[NOSITE] no uid-agnostic site under $WF"; fails=1; }
   i=2
   while [ "$i" -le "$sites" ]; do
@@ -138,7 +175,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
 FSTUB() { printf '#!/bin/sh\necho "find $1" >> "$LOG"\nexit 0\n' > "${d:?}/bin/find"; chmod +x "${d:?}/bin/find"; }   # a find that only logs: a mutant that lets "/" through must not walk the real root
 run_site() {
   local mode="$1" d site rc out
-  d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
+  d="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
   : > "$d/fc/set_env"; : > "$d/fc/set_output"; : > "$d/w/ws/x"
   site="$d/site.sh"
   { echo 'set -u'; echo 'WORK_ROOT="$W"'; sed -e 's/^          //' -e "s#/__e#$d/e#g" "$SITE_FILE"; } > "$site"
@@ -198,6 +235,8 @@ STUB
     # WORK_ROOT itself is not a plain directory: find would not descend into a link (0 wrong-owned paths, "restored"); never follow it
     symlinkroot) mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link"; export W ;;   # link to a dir holding wrong-owned files
     danglingroot) ln -s "${d:?}/nowhere" "${d:?}/link"; W="$d/link"; export W ;;
+    # a symlinked PARENT of WORK_ROOT: [ -L ] on the leaf is false and the leaf is a directory, but chown -R would follow the parent into another tree
+    symlinkparent) FSTUB; mkdir -p "${d:?}/real/w"; : > "${d:?}/real/w/wrong-owned"; ln -s "${d:?}/real" "${d:?}/lnk"; W="$d/lnk/w"; export W ;;
     fileroot) : > "${d:?}/rf"; W="$d/rf"; export W ;;
     # r14: spellings of WORK_ROOT that -L / -d alone do not catch (a trailing slash makes -L follow the link); every one must be refused
     slashlink) FSTUB; mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link/"; export W ;;
@@ -261,7 +300,7 @@ behaviour() {
     if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
   done
   # WORK_ROOT must be a real directory: a symlink (even to a good tree), a dangling link or a regular file is ::error:: + exit 1, nothing chowned.
-  for m in symlinkroot:"WORK_ROOT is a symlink to a dir holding wrong-owned files" danglingroot:"WORK_ROOT is a dangling symlink" fileroot:"WORK_ROOT is a regular file"; do
+  for m in symlinkroot:"WORK_ROOT is a symlink to a dir holding wrong-owned files" danglingroot:"WORK_ROOT is a dangling symlink" fileroot:"WORK_ROOT is a regular file" symlinkparent:"WORK_ROOT has a symlinked parent (probe/lnk/work)"; do
     o="$(run_site "${m%%:*}")"; r=$?
     if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::WORK_ROOT' && ! echo "$o" | grep -q 'CHOWN-CALLED' && ! echo "$o" | grep -q 'ownership restored'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
   done
@@ -274,12 +313,34 @@ behaviour() {
 }
 
 
+# guard_behaviour: EXECUTE every file's WORK_ROOT refusal block (the unified-gate.yml bare-metal steps included, not only the sovereign-ci.yml
+# sites) against real directory fixtures. A good directory reaches the end; every other spelling is ::error::WORK_ROOT + nonzero, never reached.
+guard_behaviour() {
+  local rc=0 n=0 g d out r name p
+  [ -d "${GUARD_DIR:-}" ] && ls "$GUARD_DIR"/guard.* >/dev/null 2>&1 || { echo "FAIL[UNGUARDED] no refusal block to execute"; return 1; }
+  d="$(cd "$(mktemp -d)" && pwd -P)"
+  mkdir -p "$d/real/w" "$d/good" "$d/a"; : > "$d/rf"; ln -s "$d/real/w" "$d/link"; ln -s "$d/real" "$d/lnk"; ln -s "$d/nowhere" "$d/dangling"
+  for g in "$GUARD_DIR"/guard.*; do
+    n=$((n + 1)); name="$(cat "${g/guard./gfile.}")"
+    out="$(bash -c 'set -u; WORK_ROOT="$1"; '"$(cat "$g")"'; echo REACHED' _ "$d/good" 2>&1)"; r=$?
+    if [ "$r" -eq 0 ] && echo "$out" | grep -q REACHED; then :; else echo "FAIL[BEHAVIOUR] $name: a real directory was refused: $out"; rc=1; fi
+    for p in "/" "//" "///" "" "scripts" "$d/a/../good" "$d/./good" "$d/good/." "$d/good/.." "$d/link" "$d/link/" "$d/link//" "$d/lnk/w" "$d/lnk/w/" "$d/rf" "$d/dangling" "$d/nowhere"; do
+      out="$(bash -c 'set -u; WORK_ROOT="$1"; '"$(cat "$g")"'; echo REACHED' _ "$p" 2>&1)"; r=$?
+      if [ "$r" -ne 0 ] && echo "$out" | grep -q '::error::WORK_ROOT' && ! echo "$out" | grep -q REACHED; then :; else echo "FAIL[BEHAVIOUR] $name: WORK_ROOT '$p' was not refused (rc=$r): $out"; rc=1; fi
+    done
+  done
+  rm -rf "${d:?}"
+  [ "$rc" -eq 0 ] && echo "ok   $n WORK_ROOT refusal block(s) executed: a real directory passes; /, //, empty, relative, ./.., symlink, link/, symlinked parent, file, dangling are refused"
+  return "$rc"
+}
+
 run_all() {
-  export SITE_FILE; SITE_FILE="$(mktemp)"
+  export SITE_FILE GUARD_DIR; SITE_FILE="$(mktemp)"; GUARD_DIR="$(mktemp -d)"
   SITE_COPY="$SITE_FILE" check_files; local a=$?
   behaviour; local b=$?
-  rm -f "${SITE_FILE:?}"
-  [ "$a" -eq 0 ] && [ "$b" -eq 0 ]
+  guard_behaviour; local c=$?
+  rm -f "${SITE_FILE:?}"; rm -rf "${GUARD_DIR:?}"
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$c" -eq 0 ]
 }
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -369,22 +430,23 @@ if [ "${1:-}" = "--self-test" ]; then
   exmut "owner shape: non-digit characters allowed" "s/\*\[!0-9:\]\*|//" "$F_OG"
   exmut "owner shape: a second colon allowed" "s/|\*:\*:\*|/|/" "$F_O3"
   # --- r13: WORK_ROOT must not be a symlink or a non-directory; guard at every site, executed mutants ---
-  WG='if \[ -L "\$WORK_ROOT" \] || \[ ! -d "\$WORK_ROOT" \]; then'
+  WG='if \[ -L "\$WORK_ROOT" \] || \[ ! -d "\$WORK_ROOT" \] || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then'
   F_SL='WORK_ROOT is a symlink to a dir holding wrong-owned files'; F_DL='WORK_ROOT is a dangling symlink'; F_RF='WORK_ROOT is a regular file'
-  exmut "FINDING r13: WORK_ROOT guard removed at every marked site (symlinked root reports restored)" 's/'"$WG"'/if false; then/' "$F_SL" "$F_DL" "$F_RF"
-  exmut "WORK_ROOT guard weakened to -d only (a link to a dir passes)" 's/if \[ -L "\$WORK_ROOT" \] || \[ ! -d/if [ ! -d/' "$F_SL"
-  exmut "WORK_ROOT guard weakened to -L only (a regular file passes)" 's/ || \[ ! -d "\$WORK_ROOT" \]; then$/; then/' "$F_RF"
-  exmut "WORK_ROOT guard exit removed" '/WORK_ROOT .* is a symlink or not a directory/{n;s/exit 1/true/}' "$F_SL" "$F_DL" "$F_RF"
-  swap "WORK_ROOT guard removed at one marked site" DRIFT 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then' 'if false; then'
+  F_SP='WORK_ROOT has a symlinked parent (probe/lnk/work)'
+  exmut "FINDING r13: WORK_ROOT guard removed at every marked site (symlinked root reports restored)" 's/'"$WG"'/if false; then/' "$F_SL" "$F_DL" "$F_RF" "$F_SP"
+  exmut "FINDING round M: resolved-path check removed at every site (a symlinked PARENT passes)" 's/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_SP"
+  exmut "WORK_ROOT guard weakened to -L only (a regular file passes)" 's/ || \[ ! -d "\$WORK_ROOT" \] || \[ "\$(cd .*$/; then/' "$F_RF" "$F_SP"
+  exmut "WORK_ROOT guard exit removed" '/WORK_ROOT .* has a symlinked parent or is not a directory/{n;s/exit 1/true/}' "$F_SL" "$F_DL" "$F_RF" "$F_SP"
+  swap "WORK_ROOT guard removed at one marked site" DRIFT 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then' 'if false; then'
   swap "WORK_ROOT guard is a warning" DRIFT 'echo "::error::WORK_ROOT' 'echo "::warning::WORK_ROOT'
   # --- r14: WORK_ROOT is normalised (trailing slashes stripped) and refused when empty, "/", relative or with a . / .. component ---
   F_SS="WORK_ROOT is a symlink spelled with one trailing slash"; F_S2="WORK_ROOT is a symlink spelled with two trailing slashes"; F_R1="WORK_ROOT is /"; F_R3="WORK_ROOT is ///"
   F_EM="WORK_ROOT is empty"; F_RL="WORK_ROOT is relative"; F_DD="WORK_ROOT has a .. component"; F_D1="WORK_ROOT has a . component"; F_ED="WORK_ROOT ends in /."; F_E2="WORK_ROOT ends in /.."
-  exmut "FINDING r14: trailing-slash strip dropped at every site (link/ passes -L)" 's/^\( *\)while \[ "\$WORK_ROOT" != "\/" \] .*$/\1:/' "$F_SS" "$F_S2"
-  exmut "\"/\" refusal dropped at every site" 's/^\( *\)""|\/|\[!\/\]\*|/\1""|[!\/]*|/' "$F_R1" "$F_R3"
-  exmut "absolute-path refusal dropped at every site" 's/|\[!\/\]\*|/|/' "$F_RL"
-  exmut ". / .. component refusal dropped at every site" 's/|\*\/\.\/\*|\*\/\.\.\/\*|\*\/\.|\*\/\.\.)/)/' "$F_DD" "$F_D1" "$F_ED" "$F_E2"
-  exmut "normalisation case removed at every site" 's/^\( *\)""|\/|\[!\/\]\*|.*)$/\1__never__)/' "$F_R1" "$F_RL" "$F_DD" "$F_D1"
+  exmut "FINDING r14: trailing-slash strip and resolved-path check dropped at every site (link/ passes -L)" 's/^\( *\)while \[ "\$WORK_ROOT" != "\/" \] .*$/\1:/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_SS" "$F_S2"
+  exmut "\"/\" refusal dropped at every site (resolved-path check also dropped)" 's/^\( *\)""|\/|\[!\/\]\*|/\1""|[!\/]*|/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_R1" "$F_R3"
+  exmut "absolute-path refusal dropped at every site (resolved-path check also dropped)" 's/|\[!\/\]\*|/|/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_RL"
+  exmut ". / .. component refusal dropped at every site (resolved-path check also dropped)" 's/|\*\/\.\/\*|\*\/\.\.\/\*|\*\/\.|\*\/\.\.)/)/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_DD" "$F_D1" "$F_ED" "$F_E2"
+  exmut "normalisation case removed at every site (resolved-path check also dropped)" 's/^\( *\)""|\/|\[!\/\]\*|.*)$/\1__never__)/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_R1" "$F_RL" "$F_DD" "$F_D1"
   swap "agreement check removed"   AGREE   "$AGREE" '          if [ -z "$OWNER_UG" ]; then'
   swap "agreement is a warning"    AGREE    '::error::cannot establish the runner owner' '::warning::cannot establish the runner owner'
   cp "$WF"/*.yml "$tmp"/   # agreement check reports but does not exit
@@ -512,16 +574,16 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "norm: xargs \$X unresolved"            VARCMD 'ls | xargs -n1 $X "$OWNER_UG"'
   nm "norm: \"\$X\" after if !"              VARCMD 'if ! "$X" -R a:b "$GITHUB_WORKSPACE"; then exit 1; fi'
   # finding 1: ANY command word that holds an expansion is a variable command word, not only a lone $VAR
-  nm "concat: \"\$X\$Y\" (X=ch Y=own)"      OPAQUE 'X=ch; Y=own; "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: \$X\$Y unquoted"               OPAQUE 'X=ch; Y=own; $X$Y -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: \${X}\${Y} braces"             OPAQUE 'X=ch; Y=own; "${X}${Y}" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: ch\$Y prefix literal"          OPAQUE 'Y=own; ch$Y -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: \$Xown suffix literal"         OPAQUE 'X=ch; "$X"own -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: sudo -n \"\$X\$Y\""            OPAQUE 'X=ch; Y=own; sudo -n "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: env A=1 \"\$X\$Y\""            OPAQUE 'X=ch; Y=own; env A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: leading assignment A=1 \"\$X\$Y\"" OPAQUE 'X=ch; Y=own; A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: \$DIR/\$TOOL path command"     OPAQUE 'D=/usr/bin; T=ch; U=own; "$D/$T$U" -R "$OWNER_UG" "$WORK_ROOT"'
-  nm "concat: after && in an if"             OPAQUE 'X=ch; Y=own; if true && "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"; then :; fi'
+  nm "concat: \"\$X\$Y\" (X=ch Y=own)"      VARCMD 'X=ch; Y=own; "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$X\$Y unquoted"               VARCMD 'X=ch; Y=own; $X$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \${X}\${Y} braces"             VARCMD 'X=ch; Y=own; "${X}${Y}" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: ch\$Y prefix literal"          VARCMD 'Y=own; ch$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$Xown suffix literal"         VARCMD 'X=ch; "$X"own -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: sudo -n \"\$X\$Y\""            VARCMD 'X=ch; Y=own; sudo -n "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: env A=1 \"\$X\$Y\""            VARCMD 'X=ch; Y=own; env A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: leading assignment A=1 \"\$X\$Y\"" VARCMD 'X=ch; Y=own; A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$DIR/\$TOOL path command"     VARCMD 'D=/usr/bin; T=ch; U=own; "$D/$T$U" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: after && in an if"             VARCMD 'X=ch; Y=own; if true && "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"; then :; fi'
   # rule 2: the ownership primitives, each spelling normalised
   nm "prim: install -o 1000 -g 1000"         TARGET 'install -o 1000 -g 1000 -m 755 a b'
   nm "prim: install -o root"                 TARGET 'install -o root a b'
@@ -551,27 +613,10 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "prim: var resolved to install"         VARCMD 'I=install\n          $I -o 1000 a b'
   nm "prim: var resolved to setfacl"         VARCMD 'S=/usr/bin/setfacl\n          $S -b x'
   # rule 3: eval / sh -c / source with a non-literal argument, in a step that deals with ownership
-  nm "opaque: eval \"\$CMD\""                OPAQUE 'eval "$CMD"'
-  nm "opaque: eval \$CMD"                    OPAQUE 'eval $CMD'
-  nm "opaque: eval-built command word"       OPAQUE 'X=ls; eval "$X -R a b"'
-  nm "opaque: eval \$(build)"                OPAQUE 'eval $(build_cmd)'
-  nm "opaque: eval \"\$(printf ...)\""       OPAQUE 'eval "$(printf "%s" x)"'
-  nm "opaque: \\eval \"\$CMD\""              OPAQUE '\\eval "$CMD"'
-  nm "opaque: sh -c \"\$CMD\""               OPAQUE 'sh -c "$CMD"'
-  nm "opaque: bash -c \"\$CMD\""             OPAQUE 'bash -c "$CMD"'
-  nm "opaque: bash -lc \"\$CMD\""            OPAQUE 'bash -lc "$CMD"'
-  nm "opaque: sudo -n bash -c \"\$CMD\""     OPAQUE 'sudo -n bash -c "$CMD"'
-  nm "opaque: sh -c \"\$(build)\""           OPAQUE 'sh -c "$(build_cmd)"'
-  nm "opaque: source \"\$F\""                OPAQUE 'source "$F"'
-  nm "opaque: dot-source \"\$F\""            OPAQUE '. "$F"'
-  nm "opaque: \${SH:-sh} -c \"\$CMD\""       OPAQUE '${SH:-sh} -c "$CMD"'
-  nm "opaque: find -exec sh -c \"\$CMD\""    OPAQUE 'find . -exec sh -c "$CMD" sh {} +'
-  # the step deals with ownership by OWNER_UG alone (no chown word anywhere in it)
-  app "opaque: mention by OWNER_UG alone"    OPAQUE "      - name: x\n        run: |\n          U=\"\$OWNER_UG\"\n          eval \"\$CMD\""
   # rule 5: controls. A resolved non-ownership command of the same shape stays GREEN (no FAIL at all).
   keep() { # name line : append a step that mentions chown, demand a clean run
     cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
-    out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"   # the chown scanner alone: the OPAQUE class below is stricter by design
+    out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)" # the chown scanner alone
     if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
   }
   keep "ctl: \\ls -R"                        '\\ls -R "$GITHUB_WORKSPACE"'
@@ -605,6 +650,12 @@ if [ "${1:-}" = "--self-test" ]; then
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
   out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"
   if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red in the chown scanner"; else echo "  kept  [green] eval in a step with no ownership text (chown scanner)"; fi
+  # FINDING (2645481, round M): the OPAQUE class was still in the scan although the body says it moved out (C324 s7). eval / sh -c / source
+  # with a non-literal argument in a step that DOES deal with ownership must not be an OPAQUE failure of this gate any more.
+  cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: x\n        run: |\n          U="$OWNER_UG"  # chown audit\n          eval "$CMD"\n          sh -c "$CMD"\n          source "$F"' >> "$tmp/${F:-sovereign-ci.yml}"
+  out="$(awk -v F="x" -f "$SCAN_AWK" "$tmp/${F:-sovereign-ci.yml}" 2>&1 || true)"
+  if echo "$out" | grep -q 'FAIL\[OPAQUE\]'; then miss "the OPAQUE class is still in the gate scan: $(echo "$out" | grep -m1 'FAIL\[OPAQUE\]' | cut -c1-120)"; else echo "  kept  [moved out] no OPAQUE class in the gate scan"; fi
+  [ "$(grep -c 'OPAQ' "$SCAN_AWK")" -eq 0 ] || miss "OPAQ remnants remain in $SCAN_AWK: $(grep -c 'OPAQ' "$SCAN_AWK") line(s)"
   # --- finding 2: every fail-closed exit in each self-heal site (and the unified-gate sites) ---------
   # For every `exit 1` that sits in a step with a chown / OWNER_UG, in sovereign-ci.yml and unified-gate.yml,
   # one mutant per replacement: true, :, nothing, exit 0. The guard (the scan, [EXIT]) must go red on each.
@@ -755,6 +806,28 @@ if [ "${1:-}" = "--self-test" ]; then
   res="$(bash -c "sudo() { return 1; }; chown() { return 1; }; OWNER=o; WORK_ROOT=/w; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
   { [ "$rc" -ne 0 ] && ! echo "$res" | grep -q CONTINUED; } || miss "r12 control: the unmutated sudo branch is not fail-closed when executed"
   echo "  caught [EXIT/TARGET] $r12n mutants of the \`if ! sudo -n chown\` body, each at every site (the finding: true / : / exit 0 / empty / second command / unchecked chown)"
+  # --- round M (2645481): the four bare-metal unified-gate.yml steps carry the SAME refusal block as the sovereign-ci.yml sites ---
+  # Before this round those steps had only `-L` / `-d` (so "/", "//", "/./" and "link/" passed and `chown -R` ran) and no marker, so no
+  # drift check saw them. Each mutant is applied to unified-gate.yml, so the sovereign sites stay untouched and only the unified steps can fail.
+  F=unified-gate.yml
+  swap "unified: resolved-path guard removed at one step"        DRIFT,UNGUARDED "$GUARD_IF" 'if false; then'
+  swap "unified: refusal block marker removed at one step"       UNGUARDED '# Normalise WORK_ROOT before the guard:' '# Normalise WORK_ROOT:'
+  swap "unified: old -L/-d guard only (the 2645481 state)"       DRIFT,UNGUARDED "$GUARD_IF" 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then'
+  swap "unified: case refusal dropped at one step"               DRIFT '""|/|[!/]*|*/./*|*/../*|*/.|*/..)' '__never__)'
+  swap "unified: trailing-slash strip dropped at one step"       DRIFT 'while [ "$WORK_ROOT" != "/" ]' 'while false'
+  # executed mutant at ALL unified steps (DRIFT stays quiet between them, so only running the block can catch it)
+  gmut() { # name sed-expr fixture-fragment : sed over every unified-gate step, the executed block must be seen to accept the fixture
+    local n="$1" e="$2" fx="$3" gout
+    cp "$WF"/*.yml "$tmp"/; sed -i "$e" "$tmp/unified-gate.yml"
+    cmp -s "$WF/unified-gate.yml" "$tmp/unified-gate.yml" && { echo "SELF-TEST FAIL: mutation '$n' changed nothing"; exit 1; }
+    gout="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    grep -qE "FAIL\[BEHAVIOUR\] [^ ]*unified-gate.yml: WORK_ROOT '$fx' was not refused" <<< "$gout" || miss "'$n': the executed unified-gate block still refused '$fx'"
+    echo "  caught [BEHAVIOUR] $n: executed unified-gate block accepted '$fx'"
+  }
+  gmut "unified, all steps: resolved-path check removed (symlinked parent passes)" 's/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "[^']*/lnk/w"
+  gmut "unified, all steps: old -L/-d guard only (WORK_ROOT=/ and // pass)"      's/^\( *\)""|\/|\[!\/\]\*|.*)$/\1__never__)/' '/'
+  gmut "unified, all steps: guard removed entirely"                                 's/'"$WG"'/if false; then/' "[^']*/link"
+  F=sovereign-ci.yml
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

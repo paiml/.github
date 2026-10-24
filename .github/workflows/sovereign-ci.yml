@@ -295,10 +295,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -578,10 +579,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -709,10 +711,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -986,10 +989,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -1123,10 +1127,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -1461,10 +1466,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -1578,10 +1584,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -1833,10 +1840,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
@@ -1908,10 +1916,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"
@@ -2239,10 +2248,11 @@ jobs:
               exit 1
               ;;
           esac
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"

@@ -97,10 +97,20 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"
@@ -403,10 +413,20 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"
@@ -551,10 +571,20 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"
@@ -679,10 +709,20 @@ jobs:
           fi
           # Fail-hard by design (fail-closed rule; a third state on a PR path is banned, C324 s6):
           # a bare-metal runner that cannot be repaired fails this step with an ::error::, never silently.
-          # WORK_ROOT must be a real directory and never a symlink: find does not descend into a symlinked root (it would
-          # count 0 wrong-owned paths and report "restored"), and a chown through the link would touch a target outside the tree.
-          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then
-            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink or not a directory: refusing to scan or chown through it"
+          # Normalise WORK_ROOT before the guard: -L is false on "link/" (the trailing slash makes the test follow the link), so strip
+          # every trailing slash first. After that it must be absolute, not "/" or empty, with no "." or ".." component.
+          while [ "$WORK_ROOT" != "/" ] && [ "${WORK_ROOT%/}" != "$WORK_ROOT" ]; do WORK_ROOT="${WORK_ROOT%/}"; done
+          case "$WORK_ROOT" in
+            ""|/|[!/]*|*/./*|*/../*|*/.|*/..)
+              echo "::error::WORK_ROOT '$WORK_ROOT' is empty, '/', not absolute or has a . or .. component: refusing to scan or chown"
+              exit 1
+              ;;
+          esac
+          # WORK_ROOT must be a real directory, not a symlink and not under one: find does not descend into a symlinked root (it would
+          # count 0 wrong-owned paths and report "restored"), and a chown through a link, or through a symlinked parent, would touch a target
+          # outside the tree. The physical path (pwd -P) must equal the name, so a link anywhere in the path is refused.
+          if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then
+            echo "::error::WORK_ROOT '$WORK_ROOT' is a symlink, has a symlinked parent or is not a directory: refusing to scan or chown through it"
             exit 1
           fi
           OWNER="$(id -un):$(id -gn)"

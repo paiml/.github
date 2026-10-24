@@ -27,6 +27,7 @@ function fail(tag, ln, msg) { print "FAIL[" tag "] " F ":" ln ": " msg; bad = 1 
 BEGIN {
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
+  GUARD_IF = ENVIRON["GUARD_IF"]; GUARD_MARK = ENVIRON["GUARD_MARK"]
   ALLOW_CMD = "^$NEVERMATCH"; sn = 0; total = 0; container = 0
 }
 # --- NORMALISE a command word the way the shell would, then match CLASSES, not spellings ---------
@@ -90,8 +91,8 @@ function nonlit(a) {
   return (a ~ /[$`\001]/)
 }
 # walk(s, d): s is a kq() line (quotes kept). Sets PRIM (ownership primitive other than chown/chgrp,
-# which the command-word regex already catches) and OPAQ (eval / sh -c / source with a non-literal
-# argument). A literal eval / sh -c argument is scanned again, one level down.
+# which the command-word regex already catches). A literal eval / sh -c argument is scanned again, one level down; a non-literal one is
+# not read (the opaque-capability scan moved out of this gate under C324 s7: LAB, paiml/.github#98).
 function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
   if (d > 3) return
   gsub(/(^|[ \t])-(exec|execdir|ok|okdir)[ \t]/, " ; ", s)
@@ -113,15 +114,13 @@ function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
     } else if (w == "setfacl") addprim(w, st)
     else if (w == "eval" || w == "source" || w == ".") {
       args = ""; for (k = j + 1; k <= m; k++) args = args " " R[k]
-      if (nonlit(args)) OPAQ = 1
-      else if (w == "eval") walk(qs(args), d + 1)
+      if (w == "eval" && !nonlit(args)) walk(qs(args), d + 1)
     } else if (w ~ /^(sh|bash|dash|zsh|ksh|ash)$/) {
       sc = 0
       for (k = j + 1; k <= m && N[k] ~ /^-/; k++) if (N[k] ~ /^-[A-Za-z]*c$/) { sc = k + 1; break }
       if (sc) {
         args = ""; for (k = sc; k <= m; k++) args = args " " R[k]
-        if (nonlit(args)) OPAQ = 1
-        else walk(qs(args), d + 1)
+        if (!nonlit(args)) walk(qs(args), d + 1)
       }
     }
   }
@@ -214,7 +213,7 @@ function errshape(i, n,   lg, k, off, p, e, pre, rest, nx, RMF) {
   }
   return ""
 }
-function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
+function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, nl) {
   if (sn == 0) return
   n = 0; acc = ""; start = 0; text = ""
   for (i = 1; i <= sn; i++) {
@@ -227,14 +226,14 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
   }
   if (acc != "") { n++; LG[n] = acc; LN[n] = start }
   textn = qs(kq(text))
-  nc = 0; siteA = 0; ownother = 0; haveown = 0
+  nc = 0; siteA = 0; ownother = 0; haveown = 0; gi = 0; fc = 0
   for (i = 1; i <= n; i++) {
     lg = LG[i]; ln = LN[i]; u = lg
     sub(/^(- )?run:[ \t]*/, "", u)
     # A message line is text, not a command, unless its output is PIPED somewhere: `printf 'chown ..' | sh` runs the
-    # text, so a piped message keeps its quoted text and is classified like any other line (opaque scan: | sh is RED).
+    # text, so a piped message keeps its quoted text and is classified like any other line (`| sh` is then a TARGET failure).
     if (u ~ /^(echo|printf)[ \t]/) { tq = unquote(u); if (tq ~ /(^|[^|])\|([^|]|$)/) tq = u; u = tq }
-    vcmd = 0; prim = 0; opaq = 0; PRIM = ""; OPAQ = 0
+    vcmd = 0; prim = 0; PRIM = ""
     ku = kq(u); nu = qs(ku)
     # INTREE (r6): the owner is never read from the tree being chowned. Any stat command, in any step of
     # any file, whose operand is a path inside the _work tree (RUNNER_TEMP, WORK_ROOT, the workspaces,
@@ -246,21 +245,20 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
       CHOWN_RE = "(^|[;&|({`\"'/=[:space:]])(chown|chgrp)([ \t;&|)\"']|$)"
       cmd = (u ~ CHOWN_RE || nu ~ CHOWN_RE)
       walk(ku, 0)
-      opaq = OPAQ
       if (!cmd && PRIM != "") { cmd = 1; prim = 1 }
       if (!cmd && u !~ /^(echo|printf)[ \t]/) { tq = ku; gsub(/["']/, "\002", tq); vw = cmdword(tq); if (vw != "") { vcmd = 1; cmd = 1 } }
     }
-    if (opaq && owns_step(textn)) fail("OPAQUE", ln, "eval / sh -c / source with a non-literal argument in a step that deals with ownership: the scanner cannot see what will run: " lg)
     if (lg == OWN) haveown = 1
+    if (lg == GUARD_IF && gi == 0) gi = i
     if (u ~ /(^|[ \t;])OWNER=/ && lg != OWN) ownother = 1
     if (!cmd) continue
     nc++; total++
+    if (fc == 0) fc = i
     if (prim) { fail("TARGET", ln, "ownership primitive (" PRIM ") is not the uid-agnostic owner_ug form: " lg); continue }
     if (vcmd) {
       # enforced only in a step that deals with ownership (names chown/chgrp/OWNER_UG/OWNER=/an ownership
       # primitive); another step's variable commands ("$PV" codegen, ...) are not an ownership question
       if ((tolower(textn) !~ /chown|chgrp|owner_ug|owner=/ && !owns_step(textn))) { nc--; total-- }
-      else if (vw != "$(...)" && vw !~ /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/) fail("OPAQUE", ln, "command word " vw " holds an expansion that is not a lone resolvable $VAR (concatenated $X$Y, prefix$X, $X/tool ...) in a step that deals with ownership: the scanner cannot see what will run: " lg)
       else if (resolves(vw, text)) { nc--; total-- }
       else fail("VARCMD", ln, "command word " vw " is a variable whose value cannot be resolved to a non-chown command: " lg)
       continue
@@ -290,6 +288,9 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
     } else fail("TARGET", ln, "chown/chgrp is not the ruled owner on the ruled path: " lg)
   }
   if (nc > 0) {
+    # UNGUARDED (round M, 2645481): every step with a chown (the self-heal sites AND the bare-metal steps) carries the one WORK_ROOT
+    # refusal block, and its guard line comes BEFORE the first chown command. The block is compared byte-for-byte across all files by the shell guard.
+    if (index(text, GUARD_MARK) == 0 || gi == 0 || gi > fc) fail("UNGUARDED", SN[1], "a step with a chown has no WORK_ROOT refusal block (marker + resolved-path guard line) before its first chown")
     if (ownother) fail("ASSIGN", SN[1], "OWNER assigned from something other than " OWN)
     if (siteA && index(text, MARK) == 0) fail("UNMARKED", SN[1], "self-heal site without the \"" MARK "\" marker")
     for (i = 1; i <= n; i++) {
