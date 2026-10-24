@@ -81,14 +81,18 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
   { [ "$nfiles" -eq 0 ] || [ "$nchown" -eq 0 ]; } && { echo "FAIL[NOSCAN] scanned $nfiles file(s) and $nchown chown command(s) under $WF"; fails=1; }
   # OPAQUE class (scripts/uid-agnostic-opaque-scan.awk): in EVERY run step of EVERY scanned file, a command
   # word must be a plain literal word, unless its file+step+line is a row of the committed allowlist.
-  local osteps=0 owords=0 orows=0 oo ar
+  local osteps=0 oseen=0 ounp=0 owords=0 orows=0 oo ar
   : > "$tmp/used"
   for f in $(list_files); do
     oo="$(ALLOW="$OPAQUE_ALLOW" awk -v F="$f" -f "$OPAQUE_AWK" "$f")" || { echo "FAIL[NOSCAN] opaque scan of $f errored"; fails=1; continue; }
     printf '%s\n' "$oo" | grep -aE '^(FAIL|ROW)' && fails=1
     printf '%s\n' "$oo" | grep -a '^ALLOWUSED ' >> "$tmp/used"
-    osteps=$((osteps + $(printf '%s\n' "$oo" | awk '/^OSCAN /{print $2}')))
-    owords=$((owords + $(printf '%s\n' "$oo" | awk '/^OSCAN /{print $3}')))
+    # OSCAN <seen> <scanned> <unparseable> <words> <allowed>. seen must equal scanned + unparseable, per file: a step
+    # the scanner counted but neither scanned nor flagged is a silent skip.
+    set -- $(printf '%s\n' "$oo" | awk '/^OSCAN /{print $2, $3, $4, $5}')
+    if [ "$#" -ne 4 ]; then echo "FAIL[COUNT] opaque scan of $f printed no OSCAN line"; fails=1; continue; fi
+    if [ "$1" -ne $(($2 + $3)) ]; then echo "FAIL[COUNT] $f: $1 step(s) seen but $2 scanned + $3 unparseable"; fails=1; fi
+    oseen=$((oseen + $1)); osteps=$((osteps + $2)); ounp=$((ounp + $3)); owords=$((owords + $4))
   done
   if [ -e "$OPAQUE_ALLOW" ]; then
     ar="$(awk -F'\t' 'FILENAME == ARGV[1] { if ($0 ~ /^ALLOWUSED /) u[substr($0, 11)] = 1; next }
@@ -103,7 +107,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     echo "FAIL[ALLOWLIST] the committed allowlist $OPAQUE_ALLOW is missing"; fails=1
   fi
   [ "$osteps" -eq 0 ] || [ "$owords" -eq 0 ] && { echo "FAIL[NOSCAN] opaque scan read $osteps run step(s) and $owords command word(s)"; fails=1; }
-  OPAQUE_SUMMARY="opaque: $osteps run step(s), $owords command word(s) scanned, $orows allowlist row(s)"
+  OPAQUE_SUMMARY="opaque: $oseen step(s) seen = $osteps scanned + $ounp unparseable, $owords command word(s) scanned, $orows allowlist row(s)"
   for f in $(list_files); do
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
     for s in "$tmp"/d/site.*; do
@@ -475,7 +479,15 @@ if [ "${1:-}" = "--self-test" ]; then
   keep "ctl: eval 'ls' literal"              "eval 'ls -l'"
   keep "ctl: source ./file literal"          'source ./env.sh'
   keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
-  keep "ctl: install -o from OWNER_UG"       'install -o "${OWNER_UG%%:*}" a b'
+  # r4a: an OWNER_UG mention (argument or comment) exempts nothing: only the two ruled chown shapes are approved
+  nm "r4a: install -o \"\${OWNER_UG%%:*}\" is not approved" TARGET 'install -o "${OWNER_UG%%:*}" a b'
+  nm "r4a: tar --owner=root # OWNER_UG"                    TARGET 'tar --owner=root -xf a.tar # OWNER_UG'
+  nm "r4a: cp --chown=root # OWNER_UG"                     TARGET 'cp --chown=root a b # OWNER_UG'
+  nm "r4a: setfacl # OWNER_UG"                             TARGET 'setfacl -m u:root:rwx /w # OWNER_UG'
+  # r4b: a message line whose output is piped is a command, not a message
+  nm "r4b: printf 'chown ..' | sh (SCAN was 0)"            TARGET "printf 'chown -R root:root /w' | sh"
+  nm "r4b: echo \"chown ..\" | bash"                       TARGET 'echo "chown -R root:root /w" | bash'
+  nm "r4b: echo \"\$(chown ..)\" (expansion kept)"         TARGET 'echo "$(chown -R root:root /w)"'
   # eval in a step that does not deal with ownership is not an ownership question for the chown scanner,
   # but it IS an OPAQUE-class RED (ruling: every run step): the chown scanner stays quiet, the class scan does not.
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
@@ -512,8 +524,8 @@ if [ "${1:-}" = "--self-test" ]; then
     printf 'jobs:\n  j:\n    steps:\n%b\n' "$3" > "$tmp/om.yml"
     local o; o="$(ALLOW=/dev/null awk -v F=om.yml -f "$OAWK" "$tmp/om.yml" 2>&1)"
     case "$2" in
-      red)   echo "$o" | grep -q 'FAIL\[OPAQUE\]' || miss "OPAQUE mutant not caught: $1" ;;
-      green) echo "$o" | grep -q 'FAIL\[OPAQUE\]' && miss "OPAQUE false positive: $1: $(echo "$o" | grep -m1 'FAIL\[OPAQUE\]' | cut -c1-160)" ;;
+      red)   echo "$o" | grep -q 'FAIL\[' || miss "OPAQUE mutant not caught: $1" ;;
+      green) echo "$o" | grep -q 'FAIL\[' && miss "OPAQUE false positive: $1: $(echo "$o" | grep -m1 'FAIL\[' | cut -c1-160)" ;;
     esac
     case "$2" in red) OP_RED=$((OP_RED + 1)) ;; *) OP_GREEN=$((OP_GREEN + 1)) ;; esac
   }
@@ -600,9 +612,70 @@ if [ "${1:-}" = "--self-test" ]; then
   om "g: wrappers over literals"             green 'sudo -n -u root ls\nenv A=1 ls\nxargs -n1 echo < f\ntimeout 5 ls\nnice -n 5 ls\ncommand -v "$X"'
   om "g: eval-free sh -c with a literal"     green "bash -c 'echo hi'\nsh -c \"echo hi\"\ntrap 'rm -f f' EXIT"
   om "g: find -exec literal"                 green "find . -type f -exec ls {} +\nfind . -exec sh -c 'ls \"\$1\"' sh {} \\\;"
-  om "g: source of a literal path"           green 'source ./env.sh\n. /etc/profile'
-  omy "g: python shell step is not bash"     green '      - name: t\n        shell: python\n        run: |\n          "$X$Y" = 1'
+  om "g: source of a literal path (r4: RED, source runs a file)" red 'source ./env.sh\n. /etc/profile'
+  omy "g: python shell step is not bash (r4: RED, shell: other)" red '      - name: t\n        shell: python\n        run: |\n          "$X$Y" = 1'
   omy "g: run: key with a nested map"        green '    defaults:\n      run:\n        shell: bash\n    steps:\n      - name: t\n        run: echo ok'
+  # --- r4: the third and fourth rounds of parser holes. Each RED below was GREEN at 3346687; a comment, a wrapper,
+  # a shell: value or a flow-style step must change nothing.
+  # (a) a "# OWNER_UG" comment (or a "$OWNER_UG" argument) is not evidence: tar / install / cp / setfacl are never approved
+  om "r4a: tar --owner + trailing # OWNER_UG"       red   'tar --owner=root -xf x.tar # OWNER_UG'
+  om "r4a: install -o + trailing # OWNER_UG"        red   'install -o root a b # OWNER_UG'
+  om "r4a: cp --chown + trailing # OWNER_UG"        red   'cp --chown=root a b # OWNER_UG'
+  om "r4a: setfacl + trailing # OWNER_UG"           red   'setfacl -m u:root:rwx /w # OWNER_UG'
+  om "r4a: tar --owner=\"\$OWNER_UG\""              red   'tar --owner="$OWNER_UG" -xf x.tar'
+  om "r4a: comment line above a tar --owner"        red   '# OWNER_UG\ntar --owner=root -xf x.tar'
+  # (b) text piped or fed into an interpreter
+  om "r4b: printf 'chown ..' | sh (unquoted)"       red   "printf 'chown -R root:root /w' | sh"
+  om "r4b: echo \"chown ..\" | bash"                red   'echo "chown -R root:root /w" | bash'
+  om "r4b: printf .. | sh -s"                       red   "printf 'chown -R root:root /w' | sh -s"
+  om "r4b: printf .. | xargs sh (no -c, stdin script)" red   "printf 'id' | xargs sh"
+  om "r4b: here-string to a shell"                  red   "sh <<< 'id'"
+  om "r4b: heredoc to a shell"                      red   'sh <<EOT\nid\nEOT'
+  om "r4b: sh -c with a non-literal payload"        red   'sh -c "$CMD"'
+  om "r4b: bash -s"                                 red   'bash -s'
+  om "r4b: bash -"                                  red   'bash -'
+  om "r4b: bash with no payload and no script"      red   'bash'
+  om "r4b: shell on a script file"                  red   'bash ./gen.sh'
+  om "r4b: shell on /dev/stdin"                     red   'sh /dev/stdin'
+  om "r4b: shell on a process substitution"         red   "bash <(printf 'id')"
+  om "r4b: exec fd then sh /dev/fd/3"               red   "exec 3<<<'id'; sh /dev/fd/3"
+  om "r4b: write a script, run it by path"          red   "printf 'id' > f.sh; ./f.sh"
+  om "r4b: write a script, source it"               red   "printf 'id' > f.sh; . ./f.sh"
+  om "r4b: source of a literal path"                red   'source ./env.sh'
+  om "r4b: xargs -I into sh -c"                     red   "printf 'id' | xargs -I{} sh -c '{}'"
+  om "r4b: busybox sh -s"                           red   "printf 'id' | busybox sh -s"
+  om "r4b: su -c with a non-literal payload"        red   'su -c "$CMD" root'
+  om "r4b: env -S string"                           red   'env -S "sh -c id"'
+  om "r4b: docker exec .. sh -c \"\$X\""            red   'docker exec c sh -c "$X"'
+  om "r4b: piped text into a non-consumer"          red   "printf 'id' | runit"
+  om "r4b: piped into an interpreter"               red   "printf 'x' | perl"
+  om "r4b: .. | sh -c with a literal payload is fine" green "printf 'x' | sh -c 'cat'"
+  om "r4b: .. | grep / sed / jq are data consumers"   green "printf 'x' | grep -q x\nprintf 'x' | sed s/x/y/\ncat f | jq -r .a"
+  # (c) every step is counted; shell: and flow-style entries cannot hide a step
+  omy "r4c: shell: /bin/bash -e {0} + \$CMD"       red   '      - name: t\n        shell: /bin/bash -e {0}\n        run: $CMD --go'
+  omy "r4c: shell: python + \$CMD"                 red   '      - name: t\n        shell: python\n        run: $CMD --go'
+  omy "r4c: shell: python is itself RED"           red   '      - name: t\n        shell: python\n        run: echo ok'
+  omy "r4c: shell: bash -e {0} is the default form" green '      - name: t\n        shell: bash -e {0}\n        run: echo ok'
+  omy "r4c: shell: \"bash -e {0}\" quoted + comment" green '      - name: t\n        shell: "bash -e {0}" # c\n        run: echo ok'
+  omy "r4c: flow-style step"                       red   '      - {name: t, run: "$CMD --go"}'
+  omy "r4c: flow-style step, tight"                red   "      - {name: t,run: 'eval \"\$X\"'}"
+  omy "r4c: flow sequence entry"                   red   '      - [a, b]'
+  omy "r4c: anchor and alias"                      red   '      - &s1 {name: t}\n      - *s1'
+  omy "r4c: bare dash"                             red   '      -\n        run: $CMD --go'
+  omy "r4c: quoted run key"                        red   '      - name: t\n        "run": $CMD --go'
+  omy "r4c: duplicate run key"                     red   '      - name: t\n        run: echo a\n        run: $CMD --go'
+  omy "r4c: second YAML document"                  red   '      - name: t\n        run: echo ok\n---\njobs:\n  z:\n    steps:\n      - run: $CMD --go'
+  omy "r4c: github-script chownSync"               red   '      - uses: actions/github-script@v7\n        with:\n          script: |\n            require("fs").chownSync("/w", 0, 0)'
+  omy "r4c: defaults.run.shell python"             red   '    defaults:\n      run:\n        shell: python\n    steps:\n      - name: t\n        run: echo ok'
+  # (d) five more forms, from the break-my-own-checker pass
+  om "r4d: tar --ow=root (GNU abbreviation)"        red   'tar --ow=root -xf x.tar'
+  om "r4d: tar \$OPT with the option held in a variable" red 'OPT=--owner=root\ntar $OPT -xf x.tar'
+  om "r4d: here-string to make"                     red   'make -f - <<< "all: ; tar --owner=root -x"'
+  om "r4d: docker run image tar --owner"            red   'docker run --rm alpine tar --owner=root -xf /x.tar'
+  om "r4d: tar with an ANSI-C hex-escaped option"   red   "tar \$'\\\\x2d-owner=root' -x"
+  om "r4d: cp -a (keeps the owner when root)"       red   'cp -a src dst'
+  om "r4d: tar -C \"\$dir\" is a path, not an option" green 'tar -xzf "$f" -C "$d" actionlint'
+  om "r4d: cargo install is not install(1)"         green 'cargo install cargo-audit --locked --root "$CARGO_HOME"'
   [ "$MISSES" -eq "$m0" ] && echo "  caught [OPAQUE] $OP_RED run-step mutants RED, $OP_GREEN non-shell / literal cases GREEN"
   # the allowlist: an unused row, a row with no reason, a missing file, a row that lets a RED word through
   cp "$WF"/*.yml "$tmp"/; printf 'ci.yml\tno such step\tno such line\tbecause\n' > "$tmp/al.txt"; cat "$OPAQUE_ALLOW" >> "$tmp/al.txt"

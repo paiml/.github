@@ -7,7 +7,22 @@
 # Prints FAIL[TAG] lines and one "SCAN <n>" line (chown commands examined).
 # Constants arrive through the environment so the shell guard stays the single place they live.
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-function unquote(s) { gsub(/"[^"]*"/, "\"\"", s); gsub(/'[^']*'/, "''", s); return s }
+# unquote(): blank the quoted text of a message line. A double-quoted segment that holds an expansion ($( ) or a
+# backtick) is EXECUTED text, so it is kept.
+function unquote(s,   o, i, n, c, q, seg) {
+  o = ""; n = length(s); i = 1
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (c == "'") { q = index(substr(s, i + 1), "'"); if (q == 0) { o = o substr(s, i); break } o = o "''"; i += q + 1; continue }
+    if (c == "\"") {
+      q = i + 1; while (q <= n && substr(s, q, 1) != "\"") { if (substr(s, q, 1) == "\\") q++; q++ }
+      seg = substr(s, i, q - i + 1)
+      o = o ((seg ~ /\$\(|`/) ? seg : "\"\""); i = q + 1; continue
+    }
+    o = o c; i++
+  }
+  return o
+}
 function fail(tag, ln, msg) { print "FAIL[" tag "] " F ":" ln ": " msg; bad = 1 }
 BEGIN {
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
@@ -111,8 +126,9 @@ function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
     }
   }
 }
-# a primitive aimed at the uid-agnostic owner_ug form is the only approved one
-function addprim(what, st) { if (st !~ /OWNER_UG/) PRIM = (PRIM == "" ? "" : PRIM "; ") what }
+# An ownership primitive other than the two ruled chown shapes is never approved. A mention of OWNER_UG in the
+# statement, in a comment or anywhere else, is NOT evidence: there is no exemption and no allowlist for this class.
+function addprim(what, st) { PRIM = (PRIM == "" ? "" : PRIM "; ") what }
 # does the (normalised) step text deal with ownership at all?
 function owns_step(t) { t = tolower(t); return (t ~ /chown|chgrp|owner_ug|setfacl|--same-owner|install[ \t][^\n]*(-o|-g|--owner|--group)/) }
 # A variable command resolves when the step has at least one plain assignment to it and every
@@ -151,7 +167,9 @@ function flush(   tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, 
   for (i = 1; i <= n; i++) {
     lg = LG[i]; ln = LN[i]; u = lg
     sub(/^(- )?run:[ \t]*/, "", u)
-    if (u ~ /^(echo|printf)[ \t]/) u = unquote(u)
+    # A message line is text, not a command, unless its output is PIPED somewhere: `printf 'chown ..' | sh` runs the
+    # text, so a piped message keeps its quoted text and is classified like any other line (opaque scan: | sh is RED).
+    if (u ~ /^(echo|printf)[ \t]/) { tq = unquote(u); if (tq ~ /(^|[^|])\|([^|]|$)/) tq = u; u = tq }
     vcmd = 0; prim = 0; opaq = 0; PRIM = ""; OPAQ = 0
     ku = kq(u); nu = qs(ku)
     # INTREE (r6): the owner is never read from the tree being chowned. Any stat command, in any step of
