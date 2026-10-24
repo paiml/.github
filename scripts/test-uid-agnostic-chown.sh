@@ -593,10 +593,11 @@ if [ "${1:-}" = "--self-test" ]; then
   omy "c: inline run: value"                       red   '      - name: t\n        run: "$X$Y" -R /etc'
   omy "c: second step of a job"                    red   '      - name: ok\n        run: echo hi\n      - name: bad\n        run: |\n          "$X$Y" -R /etc'
   # --- text that is not shell must stay GREEN (each is a false positive the old scanner fought) ---
-  omy "g: github-script JS body" green '      - uses: actions/github-script@v7\n        with:\n          script: |\n            const x = `${a}${b}`;\n            const r = await github.rest.pulls.get({ owner, repo });\n            "$X$Y" -R /etc\n            eval(x); alias = 1\n      - name: t\n        run: echo ok'
-  om "g: awk program in single quotes"       green 'awk '"'"'\nBEGIN { x = "$X$Y"; eval = 1 }\n{ print $1 | "sort" }\n'"'"' file'
+  omy "g: github-script JS body" green '      - uses: actions/github-script@v7\n        with:\n          script: |\n            const x = `${a}${b}`;\n            const r = await github.rest.pulls.get({ owner, repo });\n            "$X$Y" -R /etc\n            evaluate(x); alias = 1\n      - name: t\n        run: echo ok'
+  om "g: awk program in single quotes"       green 'awk '"'"'\nBEGIN { x = "$X$Y"; eval = 1 }\n{ print $1 }\n'"'"' file'
   om "g: jq program in single quotes"        green "jq -r '.[] | \"\\(.a)\$X\$Y\"' file.json"
-  om "g: heredoc fed to awk is data"         green 'awk -f - file <<'"'"'AWK'"'"'\n{ "$X$Y" -R /etc }\nAWK'
+  om "g: heredoc fed to awk is data"         green 'awk '"'"'{ print $1 }'"'"' <<'"'"'AWK'"'"'\n{ "$X$Y" -R /etc }\nAWK'
+  om "g: awk -f - (program from a heredoc) is not read" red 'awk -f - file <<'"'"'AWK'"'"'\nBEGIN{system("id")}\nAWK'
   om "g: quoted heredoc to cat is data"      green 'cat > f <<'"'"'EOF'"'"'\n"$X$Y" -R /etc\nalias eval\nEOF'
   om "g: unquoted heredoc text is data"      green 'cat > f <<EOF\nuser $USER ran "$X$Y"\nEOF'
   om "g: heredoc <<- with tabs"              green 'cat <<-EOF\n\t"$X$Y"\n\tEOF'
@@ -676,6 +677,286 @@ if [ "${1:-}" = "--self-test" ]; then
   om "r4d: cp -a (keeps the owner when root)"       red   'cp -a src dst'
   om "r4d: tar -C \"\$dir\" is a path, not an option" green 'tar -xzf "$f" -C "$d" actionlint'
   om "r4d: cargo install is not install(1)"         green 'cargo install cargo-audit --locked --root "$CARGO_HOME"'
+  # --- r5 (PMAT-2359): close the string-built-command class by CAPABILITY, not by spelling. Quorum at 09f5e90: awk
+  # system("\143hown ..") / system("ch" "own ..") and github-script ['ch','own'].join('') were GREEN. An awk program that
+  # uses system(, a pipe to or from a command or a dynamic command string, and a github-script body that reaches
+  # child_process / exec / spawn / any chown / a dynamic property, are RED whatever the spelling. Bodies are read raw
+  # from stdin (here-docs), so no printf escape is applied to them.
+  r5() { # name verdict : the run: body comes on stdin
+    local body; body="$(sed 's/^/          /')"
+    omy "$1" "$2" "      - name: t\n        run: |\n$(printf '%s' "$body" | sed 's/\\/\\\\/g')"
+  }
+  r5js() { # name verdict : a github-script body comes on stdin
+    local body; body="$(sed 's/^/            /')"
+    printf 'jobs:\n  j:\n    steps:\n      - name: t\n        uses: actions/github-script@v7\n        with:\n          script: |\n%s\n' "$body" > "$tmp/om.yml"
+    local o; o="$(ALLOW=/dev/null awk -v F=om.yml -f "$OAWK" "$tmp/om.yml" 2>&1)"
+    case "$2" in
+      red)   echo "$o" | grep -q 'FAIL\[' || miss "r5 JS mutant not caught: $1" ;;
+      green) echo "$o" | grep -q 'FAIL\[' && miss "r5 JS false positive: $1: $(echo "$o" | grep -m1 'FAIL\[' | cut -c1-160)" ;;
+    esac
+    case "$2" in red) OP_RED=$((OP_RED + 1)) ;; *) OP_GREEN=$((OP_GREEN + 1)) ;; esac
+  }
+  # the findings, verbatim from the sign-off at 09f5e90
+  r5 "r5 awk: system(\"\\143hown ..\") octal escape"  red <<'EOF'
+awk 'BEGIN{system("\143hown -R 1001:1001 /tmp/x")}'
+EOF
+  r5 "r5 awk: system(\"ch\" \"own ..\") concatenation" red <<'EOF'
+awk 'BEGIN{system("ch" "own -R root:root /w")}'
+EOF
+  r5 "r5 awk: cmd | getline"                          red <<'EOF'
+awk 'BEGIN{c = "ch" "own -R root:root /w"; c | getline x; close(c)}'
+EOF
+  r5 "r5 awk: print | cmd (dynamic command string)"   red <<'EOF'
+awk 'BEGIN{c = "ch" "own"; print "x" | c}'
+EOF
+  r5 "r5 awk: print | \"sh\""                         red <<'EOF'
+awk '{ print $0 | "sh" }' cmds.txt
+EOF
+  r5 "r5 awk: coprocess |&"                           red <<'EOF'
+gawk 'BEGIN{ "id" |& getline x }'
+EOF
+  r5 "r5 awk: system (space before paren)"            red <<'EOF'
+awk 'BEGIN{system ("id")}'
+EOF
+  r5 "r5 awk: mawk system"                            red <<'EOF'
+mawk 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: busybox awk"                            red <<'EOF'
+busybox awk 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: sudo awk"                               red <<'EOF'
+sudo -n awk 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: env awk"                                red <<'EOF'
+env A=1 awk 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: xargs awk"                              red <<'EOF'
+ls | xargs -n1 awk 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: find -exec awk"                         red <<'EOF'
+find . -type f -exec awk 'BEGIN{system("id")}' {} +
+EOF
+  r5 "r5 awk: inside sh -c payload"                   red <<'EOF'
+sh -c 'awk "BEGIN{system(\"id\")}"'
+EOF
+  r5 "r5 awk: inside \$( )"                           red <<'EOF'
+v="$(awk 'BEGIN{system("id")}')"
+EOF
+  r5 "r5 awk: in a pipeline after a data command"     red <<'EOF'
+cat f | awk '{ print | "sh" }'
+EOF
+  r5 "r5 awk: -e program"                             red <<'EOF'
+gawk -e 'BEGIN{system("id")}'
+EOF
+  r5 "r5 awk: --source program"                       red <<'EOF'
+gawk --source 'BEGIN{system("id")}'
+EOF
+  # the five-plus new forms from the break-my-own-checker pass
+  r5 "r5 new1 awk: -f program file (the step may have written it)" red <<'EOF'
+printf 'BEGIN{system("id")}' > gen.awk
+awk -f gen.awk /dev/null
+EOF
+  r5 "r5 new2 awk: program built by shell expansion"  red <<'EOF'
+awk "BEGIN{system(\"$C\")}"
+EOF
+  r5 "r5 new2b awk: whole program in a variable"      red <<'EOF'
+awk "$PROG" f
+EOF
+  r5 "r5 new3 awk: x++ / 2 then print | (slash after ++ is a division)" red <<'EOF'
+awk 'BEGIN{x++ / 2; print | "sh"; y = 1 / 2}'
+EOF
+  r5 "r5 new3b awk: slash after ) is ambiguous (regex hiding a quote)" red <<'EOF'
+awk 'BEGIN { if (a) /"/ ; print | "sh" }'
+EOF
+  r5 "r5 new3c awk: regex with an unclosed [ (implementations end it differently)" red <<'EOF'
+awk '$0 ~ /[/]/ { print | "sh" }' f
+EOF
+  r5 "r5 new4 awk: gawk @load / indirect call"        red <<'EOF'
+gawk '@load "filefuncs"; BEGIN{}'
+EOF
+  r5 "r5 new5 awk: -i include / -l load extension"    red <<'EOF'
+gawk -i inplace '{print}' f
+EOF
+  r5 "r5 new6 awk: \${{ }} expression pasted into the program" red <<'EOF'
+awk 'BEGIN{ ${{ inputs.prog }} }'
+EOF
+  r5 "r5 interp: perl5.34 / lua5.3 / ruby3.0 / luajit" red <<'EOF'
+perl5.34 -e 'system("id")'
+EOF
+  r5 "r5 interp: lua5.3 -e"                           red <<'EOF'
+lua5.3 -e 'os.execute("id")'
+EOF
+  r5 "r5 interp: tclsh8.6"                            red <<'EOF'
+tclsh8.6 <<'T'
+exec id
+T
+EOF
+  r5 "r5 interp: ruby3.0 -e"                          red <<'EOF'
+ruby3.0 -e 'system("id")'
+EOF
+  r5 "r5 tar: --to-command runs a command"            red <<'EOF'
+tar -xf a.tar --to-command='chown -R 0:0 /w'
+EOF
+  r5 "r5 tar: -I / --use-compress-program"            red <<'EOF'
+tar -I 'sh -c id' -xf a.tar
+EOF
+  # awk controls: plain text-processing awk stays green
+  r5 "r5 ctl awk: the real lcov field split"         green <<'EOF'
+read -r COVERED TOTAL < <(awk -F'[:,]' '
+  /^DA:/ { total++; if ($3 > 0) covered++ }
+  END { printf "%d %d\n", covered, total }
+' lcov.info) || true
+EOF
+  r5 "r5 ctl awk: -v with a division and a multiply"  green <<'EOF'
+PCT=$(awk -v c="$COVERED" -v t="$TOTAL" 'BEGIN { printf "%.2f", (c / t) * 100 }')
+EOF
+  r5 "r5 ctl awk: exit !(p < f)"                      green <<'EOF'
+if awk -v p="$PCT" -v f="$FLOOR" 'BEGIN { exit !(p < f) }'; then :; fi
+EOF
+  r5 "r5 ctl awk: regex alternation is not a pipe"    green <<'EOF'
+awk '/a|b/ { print $1 }' f
+EOF
+  r5 "r5 ctl awk: || is not a pipe"                   green <<'EOF'
+awk 'BEGIN { if (a || b) print "x" }'
+EOF
+  r5 "r5 ctl awk: division by a field"                green <<'EOF'
+awk '{ s += $1 / 2 } END { print s }' f
+EOF
+  r5 "r5 ctl awk: double-quoted program, escaped \$1"  green <<'EOF'
+awk "{print \$1}" f
+EOF
+  r5 "r5 ctl awk: data pipeline into awk"             green <<'EOF'
+sort f | awk '{print $2}' | uniq
+EOF
+  r5 "r5 ctl awk: string holding system( and | is data" green <<'EOF'
+awk 'BEGIN { print "call system(x) | cat" }'
+EOF
+  r5 "r5 ctl awk: getline from a file"                green <<'EOF'
+awk 'BEGIN { while ((getline line < "f") > 0) n++; print n }'
+EOF
+  # github-script / JS bodies
+  r5js "r5 js: ['ch','own'].join('') on fs[...]"      red <<'EOF'
+const fs = require('fs');
+const n = ['ch', 'own'].join('');
+fs[n]('/w', 0, 0);
+EOF
+  r5js "r5 js: join + Sync suffix, require(...)[name]" red <<'EOF'
+require('fs')[['ch', 'ownSync'].join('')]('/w', 0, 0);
+EOF
+  r5js "r5 js: template \${'ch'}\${'own'}"            red <<'EOF'
+const n = `${'ch'}${'own'}Sync`;
+require('fs')[n]('/w', 0, 0);
+EOF
+  r5js "r5 js: 'ch' + 'ownSync' on an alias of fs"    red <<'EOF'
+const f = require('fs');
+f['ch' + 'ownSync']('/w', 0, 0);
+EOF
+  r5js "r5 js: newline between fs and [x]"            red <<'EOF'
+const f = require('fs');
+f
+['ch' + 'ownSync']('/w', 0, 0);
+EOF
+  r5js "r5 js: a regex with a quote before fs[k]"     red <<'EOF'
+/'/.test(a); const f = require('fs'); f[k]('/w', 0, 0); /'/.test(b);
+EOF
+  r5js "r5 js: computed key in a destructuring"       red <<'EOF'
+const { ['ch' + 'ownSync']: c } = require('fs');
+c('/w', 0, 0);
+EOF
+  r5js "r5 js: fs.chownSync"                          red <<'EOF'
+require('fs').chownSync('/w', 0, 0);
+EOF
+  r5js "r5 js: fs.promises.chown / lchownSync"        red <<'EOF'
+await require('fs').promises.chown('/w', 0, 0);
+EOF
+  r5js "r5 js: require('child_process')"              red <<'EOF'
+require('child_process').execSync('id');
+EOF
+  r5js "r5 js: require('node:child_process')"         red <<'EOF'
+const cp = require('node:child_process');
+EOF
+  r5js "r5 js: require('child_' + 'process')"         red <<'EOF'
+require('child_' + 'process').execSync('id');
+EOF
+  r5js "r5 js: require(name)"                         red <<'EOF'
+const m = require(name);
+EOF
+  r5js "r5 js: require as a value"                    red <<'EOF'
+const r = require; r('fs');
+EOF
+  r5js "r5 js: require.main"                          red <<'EOF'
+require.main.require('fs');
+EOF
+  r5js "r5 js: exec.exec (the injected @actions/exec)" red <<'EOF'
+await exec.exec('sh', ['-c', 'id']);
+EOF
+  r5js "r5 js: spawn"                                 red <<'EOF'
+const { spawn } = require('fs');
+EOF
+  r5js "r5 js: Object.values(fs) then find by name"   red <<'EOF'
+Object.values(require('fs')).find(f => f.name === 'ch' + 'ownSync')('/w', 0, 0);
+EOF
+  r5js "r5 js: this['constr'+'uctor'] reaches Function" red <<'EOF'
+this['constr' + 'uctor']('return process')();
+EOF
+  r5js "r5 js: .constructor"                          red <<'EOF'
+(async () => {}).constructor('return process')();
+EOF
+  r5js "r5 js: code-from-text global"                                  red <<'EOF'
+eval(code);
+EOF
+  r5js "r5 js: new Function"                          red <<'EOF'
+new Function('return process')();
+EOF
+  r5js "r5 js: process.binding"                       red <<'EOF'
+process.binding('spawn_sync');
+EOF
+  r5js "r5 js: process['binding'] (dynamic on process)" red <<'EOF'
+process['bind' + 'ing']('spawn_sync');
+EOF
+  r5js "r5 js: dynamic import()"                      red <<'EOF'
+await import('node:child_process');
+EOF
+  r5js "r5 js: \\x63hown escape"                      red <<'EOF'
+const n = '\x63hownSync';
+EOF
+  r5js "r5 js: \${{ }} pasted into the source"        red <<'EOF'
+const x = ${{ inputs.value }};
+EOF
+  r5js "r5 js: Reflect.get(fs, n)"                    red <<'EOF'
+Reflect.get(require('fs'), n)('/w', 0, 0);
+EOF
+  r5js "r5 js: arbitrary array index var items[i]"    red <<'EOF'
+const x = items[i];
+EOF
+  r5js "r5 ctl js: the real close-PR comment + update" green <<'EOF'
+const author = context.payload.pull_request.user.login;
+const number = context.payload.pull_request.number;
+await github.rest.issues.createComment({
+  owner: context.repo.owner,
+  repo: context.repo.repo,
+  issue_number: number,
+  body: [
+    `Thank you for your interest in this project, @${author}.`,
+    '',
+    'Your PR has been closed automatically.',
+  ].join('\n'),
+});
+await github.rest.pulls.update({ owner: context.repo.owner, repo: context.repo.repo, pull_number: number, state: 'closed' });
+EOF
+  r5js "r5 ctl js: literal indexes, require('fs') readFileSync, return [..]" green <<'EOF'
+const fs = require('fs');
+const t = fs.readFileSync('/etc/hostname', 'utf8').split('\n')[0];
+const a = [1, 2, 3];
+const b = a[0] + a[2];
+return [t, b];
+EOF
+  omy "r5 js: github-script step with no script: key" red '      - uses: actions/github-script@v7\n        with:\n          result-encoding: string'
+  omy "r5 js: script in a flow mapping"              red '      - uses: actions/github-script@v7\n        with: {script: "require(\x27fs\x27).chownSync(1)"}'
+  omy "r5 js: another action with script: key is judged too" red '      - uses: some/action@v1\n        with:\n          script: |\n            require("child_process").execSync("id")'
+  omy "r5 js: env: values are not script text"       green '      - uses: actions/github-script@v7\n        env:\n          REASON: ${{ steps.a.outputs.r }}\n        with:\n          script: |\n            core.setOutput("x", process.env.REASON);'
+  omy "r5 uses: docker:// runs an unread image"      red '      - uses: docker://alpine:3\n        with:\n          args: id'
+  omy "r5 uses: a pinned third-party action is data" green '      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4'
   [ "$MISSES" -eq "$m0" ] && echo "  caught [OPAQUE] $OP_RED run-step mutants RED, $OP_GREEN non-shell / literal cases GREEN"
   # the allowlist: an unused row, a row with no reason, a missing file, a row that lets a RED word through
   cp "$WF"/*.yml "$tmp"/; printf 'ci.yml\tno such step\tno such line\tbecause\n' > "$tmp/al.txt"; cat "$OPAQUE_ALLOW" >> "$tmp/al.txt"

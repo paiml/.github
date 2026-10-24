@@ -1,6 +1,15 @@
 # infra#2349 OPAQUE class scan, one workflow / composite-action file per run (called by
 # test-uid-agnostic-chown.sh). Closes the class behind three scanner holes found at f0e60da:
 #   X+=own appends, `alias c=chown`, and "$X$Y" in a step with no chown token.
+# CAPABILITY RULES (PMAT-2359): judged by what the code can do, never by how a command is spelled.
+#   - awk/gawk/mawk/nawk are interpreters: RED [INTERP] for a program using system(, a pipe to or from a
+#     command (print |, | getline, |&), @ (gawk directives), a program from -f/-E/-i/-l/-W or --file/--exec/
+#     --include/--load, or a program text that is dynamic ($, backtick, ${{ }}). Plain text-processing awk is green.
+#     perl, ruby, node, lua, tclsh and the other embedded languages are interpreters too.
+#   - github-script (or any step with a script: key): RED [JS] for child_process / exec / spawn / @actions/exec,
+#     any chown-like name, eval / Function / constructor / Reflect / import(), a non-literal require, or dynamic
+#     property access (X[expr]); uses: docker:// and runs.using node|docker are RED (code not read).
+#   Exceptions only through a committed allowlist row (exact step and line, with a reason).
 #
 # RULE. In EVERY shell run step of the file, every command word must be a plain literal word
 # (letters, digits and _ . / + : @ % , = ~ -, or one whole quoted word of those). RED [OPAQUE] when it is not:
@@ -162,6 +171,7 @@ function primscan(a, b,   i, w, m, P, parts, np, q, j, base, k, x, V) {
     base = bn(P[j])
     if (base ~ /^(tar|bsdtar|gtar|pax|cpio)$/) {
       # GNU long options may be abbreviated (--ow=0 is --owner=0); a bare $VAR word could hold any option
+      for (k = j + 1; k <= m; k++) if (P[k] ~ /^--(to-command|use-compress-program|checkpoint-action|info-script|new-volume-script|rmt-command|rsh-command)$/ || P[k] ~ /^-[A-Za-z]*[IF]$/) { redt("TARGET", TKL[RAWI[k]], base " " P[k] " runs a command"); return }
       for (k = j + 1; k <= m; k++) if (P[k] ~ /^--(ow|gr|same-o|owner-|group-)[a-z-]*$/ || (base == "cpio" && P[k] ~ /^-[A-Za-z]*p/)) { redt("TARGET", TKL[RAWI[k]], base " " P[k] " sets file ownership"); return }
       # (the word after an option that takes a path -C/-f/-T/-X/--directory/--file is a path, not an option)
       for (i = a + 1; i <= b; i++) if (!RD[i] && V[i] && !(TK[i - 1] ~ /^-[A-Za-z]*[CfTX]$/ || TK[i - 1] ~ /^--(directory|file|files-from|exclude-from|exclude)$/)) { redt("TARGET", TKL[i], base " with a bare variable word " shown(TK[i]) ": it can hold an ownership option"); return }
@@ -209,6 +219,130 @@ function shellrange(j, b,   k, t, hasc, fed, p, e, ok) {
     return
   }
   redt("INTERP", TKL[j], fed ? "text fed to a shell by a redirect, heredoc or here-string" : "shell with no -c payload and no script reads stdin (a pipe feeds it)")
+}
+# --- capability checks for embedded languages (r5) --------------------------------------------------------------
+# awk is an interpreter: system(), a pipe to or from a command and a dynamic command string run arbitrary commands
+# whatever the spelling ("\143hown", "ch" "own"). Plain text-processing awk stays green. JavaScript bodies (github-script)
+# are judged the same way: by what they can reach, never by how a name is spelled.
+# deq(w): the text the shell passes for the quoted word w. DQDYN is set when any part of it is an expansion / ${{ }}.
+function deq(w,   n, i, c, c2, o, e) {
+  n = length(w); o = ""; DQDYN = 0
+  for (i = 1; i <= n; i++) {
+    c = substr(w, i, 1)
+    if (c == "\003" || c == "`") { DQDYN = 1; o = o c; continue }
+    if (c == "'") { e = index(substr(w, i + 1), "'"); if (e == 0) { o = o substr(w, i + 1); break } o = o substr(w, i + 1, e - 1); i += e; continue }
+    if (c == "\"") {
+      for (i++; i <= n; i++) {
+        c = substr(w, i, 1)
+        if (c == "\"") break
+        if (c == "\\") { c2 = substr(w, i + 1, 1); if (c2 == "$" || c2 == "`" || c2 == "\"" || c2 == "\\") { o = o c2; i++; continue } o = o c; continue }
+        if (c == "\003" || c == "`") DQDYN = 1
+        if (c == "$" && substr(w, i + 1, 1) ~ /[A-Za-z0-9_{(@*#?!$'-]/) DQDYN = 1
+        o = o c
+      }
+      continue
+    }
+    if (c == "\\") { o = o substr(w, i + 1, 1); i++; continue }
+    if (c == "$" && substr(w, i + 1, 1) ~ /[A-Za-z0-9_{(@*#?!$'-]/) DQDYN = 1
+    o = o c
+  }
+  return o
+}
+# awkbad(t): why the awk program text t can run a command (or cannot be read with certainty), else "".
+# Strings and regex literals are blanked first; what is left is code. A slash is a regex only where a division is
+# impossible (after an operator, a statement start, a keyword); a slash after ")" is ambiguous and RED.
+function awkbad(t,   n, i, c, o, prev, e, body, nb, np, lastw, w) {
+  n = length(t); o = ""; prev = "\n"; lastw = ""
+  for (i = 1; i <= n; i++) {
+    c = substr(t, i, 1)
+    if (c ~ /[A-Za-z0-9_]/) { w = ""; for (e = i; e <= n && substr(t, e, 1) ~ /[A-Za-z0-9_]/; e++) w = w substr(t, e, 1); o = o w; lastw = w; prev = "w"; i = e - 1; continue }
+    if (c == "\"") {
+      for (i++; i <= n; i++) { c = substr(t, i, 1); if (c == "\\") { i++; continue } if (c == "\"") break }
+      if (i > n) return "unterminated string"
+      o = o "S"; prev = "S"; lastw = ""; continue
+    }
+    if (c == "#") { e = index(substr(t, i), "\n"); if (e == 0) break; i += e - 2; continue }
+    if (c == "\n") { o = o c; prev = "\n"; lastw = ""; continue }
+    if (c == " " || c == "\t") { o = o " "; continue }
+    if (c == "/") {
+      if (prev == ")") return "a slash after a closing parenthesis: division or regex cannot be told apart"
+      if (prev == "\n" || (prev == "w" && lastw ~ /^(print|printf|return|else|do|in|getline|exit|case)$/) || (prev != "w" && prev != "S" && prev != "R" && prev != "]" && index("(,~!{};&|=<>?:", prev))) {
+        body = ""
+        for (i++; i <= n; i++) {
+          c = substr(t, i, 1)
+          if (c == "\\") { body = body c substr(t, i + 1, 1); i++; continue }
+          if (c == "/") break
+          if (c == "\n") return "unterminated regex"
+          body = body c
+        }
+        if (i > n) return "unterminated regex"
+        nb = gsub(/\[/, "[", body); np = gsub(/\]/, "]", body)
+        if (nb > np) return "regex with an unclosed bracket expression (awk implementations end it differently)"
+        o = o "R"; prev = "R"; lastw = ""; continue
+      }
+    }
+    o = o c; prev = c; lastw = ""
+  }
+  if (index(o, "@")) return "@ (gawk indirect call, @load or @include)"
+  gsub(/\|\|/, "  ", o)
+  if (index(o, "|")) return "a pipe to or from a command (print |, | getline, |&)"
+  if (o ~ /(^|[^A-Za-z0-9_])system[ ]*\(/ || o ~ /(^|[^A-Za-z0-9_])system[ ]*$/) return "system()"
+  return ""
+}
+function awkwhy(w,   t) {
+  if (index(w, "\003")) return "the program holds a ${{ }} expression"
+  t = deq(w)
+  if (DQDYN) return "the program is built by shell expansion"
+  return awkbad(t)
+}
+function awkscan(j, b,   k, t, why, got) {
+  got = 0
+  for (k = j + 1; k <= b; k++) {
+    if (RD[k]) continue
+    t = TK[k]
+    if (t ~ /^-[fEilW]/ || t ~ /^--(file|exec|include|load)/) { redt("INTERP", TKL[j], "awk reads its program from a file or loads an extension: the program is not read by this scanner"); return }
+    if (t == "-v" || t == "-F") { k++; continue }
+    if (t == "-e" || t == "--source") {
+      k++; if (k > b) return
+      got = 1; why = awkwhy(TK[k]); if (why != "") { redt("INTERP", TKL[j], "awk program can run a command or is not readable (" why ")"); return }
+      continue
+    }
+    if (t ~ /^--source=/) { got = 1; why = awkwhy(substr(t, 10)); if (why != "") { redt("INTERP", TKL[j], "awk program can run a command or is not readable (" why ")"); return } continue }
+    if (t == "--" || t ~ /^-/) continue
+    if (!got) { why = awkwhy(t); if (why != "") redt("INTERP", TKL[j], "awk program can run a command or is not readable (" why ")") }
+    return
+  }
+}
+# jsbad(t): why the JavaScript body t can run a command or reach an ownership call, else "". Raw text, no masking:
+# a quote or a regex literal can never hide code from it. The price is a false RED on a bracket inside a string,
+# which the allowlist (exact step + line) is for.
+function jsbad(t,   n, i, j, k, c, pc, wd, idx, depth, s, n1, n2, af) {
+  if (index(t, "\003") || index(t, "${{")) return "a ${{ }} expression is pasted into the JavaScript source"
+  if (t ~ /child_process|@actions\/exec|shelljs|execa|cross-spawn|node-pty/) return "child_process / @actions/exec or another process-spawning module"
+  if (t ~ /(^|[^A-Za-z0-9_$])(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork|getExecOutput)([^A-Za-z0-9_$]|$)/) return "exec / spawn / fork"
+  if (tolower(t) ~ /chown|chgrp|setfacl|chacl/) return "an ownership call (chown / chgrp / setfacl)"
+  if (t ~ /(^|[^A-Za-z0-9_$])(eval|Function|constructor|__proto__|globalThis|global|Reflect|Proxy|vm|__original_require__|arguments)([^A-Za-z0-9_$]|$)/) return "code-from-text or reflection (eval, Function, constructor, __proto__, global, Reflect, Proxy, vm, arguments)"
+  if (t ~ /(^|[^A-Za-z0-9_$])import[ \t\n]*\(/) return "dynamic import()"
+  if (t ~ /process[ \t\n]*\.[ \t\n]*(binding|dlopen|mainModule|_linkedBinding)/) return "process.binding / dlopen / mainModule"
+  if (t ~ /Object[ \t\n]*\.[ \t\n]*(getPrototypeOf|setPrototypeOf|getOwnProperty[A-Za-z]*|values|entries|fromEntries|defineProperty|defineProperties)/) return "Object reflection (it can enumerate fs and call a member by name)"
+  if (t ~ /\\[xu0-7]/) return "escape sequence in the source (it can spell any name)"
+  s = t; n1 = gsub(/(^|[^A-Za-z0-9_$])require([^A-Za-z0-9_$]|$)/, "&", s)
+  s = t; n2 = gsub(/(^|[^A-Za-z0-9_$.])require[ \t]*\([ \t]*('[A-Za-z0-9_@.:\/-]+'|"[A-Za-z0-9_@.:\/-]+")[ \t]*\)/, "&", s)
+  if (n1 != n2) return "require() with a non-literal argument, or require used as a value"
+  if (t ~ /require[ \t]*\([ \t]*['"](node:)?(module|worker_threads|cluster|repl|inspector|v8|wasi|process)['"]/) return "require of a module that can run or load code"
+  n = length(t)
+  for (i = 1; i <= n; i++) {
+    if (substr(t, i, 1) != "[") continue
+    for (j = i - 1; j >= 1 && substr(t, j, 1) ~ /[ \t\n]/; j--) ;
+    pc = (j >= 1) ? substr(t, j, 1) : ""
+    af = (pc != "" && pc ~ /[])'"`A-Za-z0-9_$]/)
+    if (af && pc ~ /[A-Za-z0-9_$]/) { s = substr(t, 1, j); match(s, /[A-Za-z0-9_$]+$/); wd = substr(s, RSTART, RLENGTH); if (wd ~ /^(return|typeof|in|of|case|await|yield|throw|new|delete|void|else|do|instanceof)$/) af = 0 }
+    depth = 0; for (k = i; k <= n; k++) { c = substr(t, k, 1); if (c == "[") depth++; else if (c == "]") { depth--; if (depth == 0) break } }
+    idx = substr(t, i + 1, k - i - 1)
+    if (af && (k > n || idx !~ /^[ \t\n]*-?[0-9]+[ \t\n]*$/)) return "computed property access (obj[expr]) with an index that is not an integer literal"
+    if (pc ~ /[{,]/ && k <= n) { for (j = k + 1; j <= n && substr(t, j, 1) ~ /[ \t\n]/; j++) ; if (substr(t, j, 1) == ":") return "computed property key ({[expr]: ...})" }
+  }
+  return ""
 }
 # a pipe may feed only a consumer that reads data: anything else could execute the text
 function safe_consumer(b) {
@@ -259,7 +393,8 @@ function evalrange(a, b, depth,   j, t, bt, w, v, k, e, p, pl, sc, ex, s2) {
   if (bt == "alias") { red(TKL[j], "alias redefines a command word"); return }
   if (bt == "source" || bt == ".") { redt("INTERP", TKL[j], bt " runs a file the scanner does not read"); return }
   if (bt ~ /^(sh|bash|dash|zsh|ksh|ash)$/) { shellrange(j, b); return }
-  if (bt ~ /^(python[0-9.]*|perl|ruby|node|nodejs|php|pwsh|lua|deno|bun|tclsh|osascript|expect|irb|jshell|Rscript|julia|swift|go)$/ && bt != "go") { redt("INTERP", TKL[j], bt " is an interpreter: the program it runs is not read by this scanner"); return }
+  if (bt ~ /^(awk|gawk|mawk|nawk|original-awk)$/) { awkscan(j, b); return }
+  if (bt ~ /^(python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|node|nodejs|php[0-9.]*|pwsh|lua[0-9.]*|luajit|deno|bun|tclsh[0-9.]*|wish|osascript|expect|irb|jshell|Rscript|julia|swift|groovy|escript|guile|racket|ocaml|runghc|ghci|npx|ts-node|tsx)$/) { redt("INTERP", TKL[j], bt " is an interpreter: the program it runs is not read by this scanner"); return }
   if (bt ~ /^(nsenter|chroot|flock|script|watch|parallel|stdbuf|taskset|docker|podman|ssh|unshare|setpriv|capsh|sg|newgrp|sshpass|kubectl|lxc|systemd-run|firejail|bwrap)$/) {
     for (k = j + 1; k <= b; k++) if (!RD[k] && bn(lit(TK[k])) ~ /^(sh|bash|dash|zsh|ksh|ash|eval|su|runuser)$/) { evalrange(k, b, depth + 1); return }
     if (PIPED && bt ~ /^(nsenter|chroot|script|ssh|unshare|setpriv|capsh|sg|newgrp|sshpass|kubectl|lxc|systemd-run|firejail|bwrap)$/) redt("INTERP", TKL[j], "piped text reaches " bt ", which can run it as a command on the other side")
@@ -458,6 +593,23 @@ function shell_ok(v) {
 # an ownership word in a step's NON-run text (github-script body, with: values, env): fs.chownSync, setfacl, ...
 function nonrun_prim(txt) { return (txt ~ /(^|[^A-Za-z0-9_])(l|f)?(chown|chgrp)(Sync)?([^A-Za-z0-9_]|$)|setfacl|chacl/) }
 function unp(msg) { if (!UNPF) { UNPF = 1; UNPM = msg } }
+# jsstep(): every `script:` body of a github-script step (or of any step with a script: key) must pass jsbad()
+function jsstep(   L, ind, v, body, k, why, first, found, bl) {
+  found = 0; why = ""
+  if (OTHERTXT ~ /[{,][ \t]*["']?script["']?[ \t]*:/ || OTHERTXT ~ /(^|\n)[ \t]*["']script["'][ \t]*:/) { redt("JS", ITEMLN, "script: sits in a flow mapping or a quoted key: its JavaScript body is not read"); return }
+  for (L = ITEMLN; L < CURLI; L++) {
+    if (FL[L] !~ /^[ \t]*(- )?script[ \t]*:/) continue
+    found++; ind = indent(FL[L]); v = FL[L]; sub(/^[ \t]*(- )?script[ \t]*:[ \t]*/, "", v); body = ""
+    if (v ~ /^[|>][-+0-9]*[ \t]*(#.*)?$/) { for (k = L + 1; k < CURLI; k++) { if (FL[k] ~ /^[ \t]*$/) { body = body "\n"; continue } if (indent(FL[k]) <= ind) break; body = body FL[k] "\n" } }
+    else { body = v "\n"; for (k = L + 1; k < CURLI; k++) { if (FL[k] ~ /^[ \t]*$/ || indent(FL[k]) <= ind) break; body = body FL[k] "\n" } }
+    why = jsbad(body)
+    if (why != "") {
+      bl = L; for (k = L; k < CURLI; k++) if (jsbad(FL[k]) != "") { bl = k; break }
+      redt("JS", bl, "JavaScript body can run a command or reach an ownership call (" why ")")
+    }
+  }
+  if (!found && USESV ~ /github-script/) redt("JS", ITEMLN, "github-script step without a block-form script: key: its JavaScript body is not read")
+}
 function flushstep() {
   if (!INSTEP) return
   if (UNPF) { UNPARSE++; redt("UNPARSE", ITEMLN, "step cannot be read with certainty (" UNPM ")") }
@@ -465,17 +617,20 @@ function flushstep() {
     SCANNED++
     if (!shell_ok(SHELLK)) redt("SHELL", SHELLLN, "shell: " SHELLK " is not bash, sh or an exact default form: the step's text is read by an interpreter the scanner does not model")
     if (OTHERTXT != "" && nonrun_prim(OTHERTXT)) redt("PRIM", ITEMLN, "a non-run field of the step names an ownership primitive (chown/chgrp/setfacl)")
+    if (USESV ~ /^["']?docker:\/\//) redt("INTERP", ITEMLN, "uses: docker:// runs an image the scanner does not read")
+    if (USESV ~ /github-script/ || OTHERTXT ~ /(^|\n)[ \t]*script[ \t]*:/) jsstep()
     if (RUNTXT != "") {
       STEPS++; SID = 1; SEQ = 0; qn = 0
       queue(repl_expr(RUNTXT), RUNLN); drain(); resolve_all()
     }
   }
-  INSTEP = 0; RUNTXT = ""; SHELLK = ""; STEP = ""; OTHERTXT = ""; UNPF = 0; HASRUN = 0; HASSHELL = 0
+  INSTEP = 0; RUNTXT = ""; SHELLK = ""; STEP = ""; OTHERTXT = ""; UNPF = 0; HASRUN = 0; HASSHELL = 0; USESV = ""
   delete ASGN; delete ASGV; delete ASGS; delete PLUS; delete BIND
 }
 function parse(   li, line, p, key, val, kcol, k, first, ind, txt, folded, cont, last, l2, v2, ii, rest, instr, stind, itind, kind, blk, hit) {
   instr = 0; stind = -1; itind = -1; kind = -1; INSTEP = 0; UNPF = 0; HASC = 0
   for (li = 1; li <= NR; li++) {
+    CURLI = li
     line = FL[li]
     if (line ~ /^[ \t]*(#.*)?$/) continue
     if (line ~ /^\.\.\.([ \t]|$)/ || (line ~ /^---([ \t]|$)/ && HASC)) { flushstep(); instr = 0; pseudo(li, "second YAML document or document end marker: the reader scans one document"); continue }
@@ -485,6 +640,7 @@ function parse(   li, line, p, key, val, kcol, k, first, ind, txt, folded, cont,
     # leaving the steps list
     if (instr && (ii < stind || (ii == stind && line !~ /^[ \t]*-([ \t]|$)/))) { flushstep(); instr = 0 }
     if (!instr) {
+      if (line ~ /^[ \t]*using:[ \t]*["']?(node|docker)/) { pseudo(li, "action runs a JavaScript file or an image (runs.using node/docker): its code is not read"); continue }
       if (line ~ /^[ \t]*["']?steps["']?[ \t]*:/ && line !~ /^[ \t]*steps:[ \t]*(#.*)?$/) { pseudo(li, "steps: is not a plain block sequence (flow, alias, quoted key or inline value)"); continue }
       if (line ~ /[{,][ \t]*["']?(steps|run)["']?[ \t]*:/) { pseudo(li, "steps/run inside a flow mapping"); continue }
       if (line ~ /(:|-)[ \t]+[&*][A-Za-z_][A-Za-z0-9_-]*([ \t]|$)/ || line ~ /^[ \t]*<<[ \t]*:/) { pseudo(li, "YAML anchor, alias or merge key: the content it stands for is not read"); continue }
@@ -544,6 +700,7 @@ function parse(   li, line, p, key, val, kcol, k, first, ind, txt, folded, cont,
         for (k = li + 1; k <= NR; k++) { if (FL[k] ~ /^[ \t]*$/ || indent(FL[k]) <= ii) break; txt = txt " " trim(FL[k]); cont = k }
         RUNTXT = txt; RUNLN = li; li = cont; continue
       }
+      if (key == "uses") USESV = val
       OTHERTXT = OTHERTXT "\n" val
       continue
     }
@@ -551,7 +708,7 @@ function parse(   li, line, p, key, val, kcol, k, first, ind, txt, folded, cont,
     if (ii > kind) { OTHERTXT = OTHERTXT "\n" line; continue }
     unp("line shallower than the step's keys but inside the steps list")
   }
-  flushstep()
+  CURLI = NR + 1; flushstep()
 }
 BEGIN {
   F = ""; STEPS = 0; WORDS = 0; allowed = 0; SEEN = 0; SCANNED = 0; UNPARSE = 0; qn = 0
