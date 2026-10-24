@@ -21,6 +21,7 @@
 #   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp)
 #   [NOUID0]   no uid-0 check (error + exit 1, before the find) on the owner
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
+#   [EXIT]     an ::error:: branch that is not EXACTLY the error echo, `exit 1` alone, then the branch close (or `|| { echo "::error::..."; [rm -f ...;] exit 1; }`), or a trap in a step with a chown
 #   [DRIFT]    sites not byte-identical, or an unterminated site
 #   [NOSITE]   no site found; [NOSCAN] no workflow file or no chown command scanned
 # It prints how many files and chown commands it scanned. It also runs the first site for real:
@@ -169,6 +170,14 @@ STUB
     danglingenv) rm -f "${d:?}/fc/set_env"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_env" ;;
     envdir) rm -f "${d:?}/fc/set_env"; mkdir "${d:?}/fc/set_env" ;;   # a directory where the file-command file should be
     outdir) rm -f "${d:?}/fc/set_output"; mkdir "${d:?}/fc/set_output" ;;
+    # GITHUB_ENV / GITHUB_OUTPUT INSIDE the tree being chowned (the listener keeps them under _work/_temp). The stat is taken
+    # before the find/chown, so a wrong-owned tree cannot change what it reads; a wrong-owned file-command file cannot be used.
+    intree) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
+            GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; export GITHUB_ENV GITHUB_OUTPUT ;;   # listener-owned 4242:4343, rest of the tree 9999:9999
+    intreemixed) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
+            GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; S_ENV=9999:9999; export GITHUB_ENV GITHUB_OUTPUT S_ENV ;;   # in-tree GITHUB_ENV wrong-owned, GITHUB_OUTPUT the listener's
+    intreeroot) mkdir -p "${d:?}/w/_temp/_runner_file_commands"; : > "${d:?}/w/_temp/_runner_file_commands/set_env"; : > "${d:?}/w/_temp/_runner_file_commands/set_output"
+            GITHUB_ENV="$d/w/_temp/_runner_file_commands/set_env"; GITHUB_OUTPUT="$d/w/_temp/_runner_file_commands/set_output"; S_ENV=0:0 S_OUT=0:0; export GITHUB_ENV GITHUB_OUTPUT S_ENV S_OUT ;;   # both in-tree files root-owned (a container step ran as root)
   esac
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
   [ -s "$d/log" ] && out="$out"$'\n'"CHOWN-CALLED $(tr '\n' ' ' < "$d/log")"
@@ -201,6 +210,12 @@ behaviour() {
   for m in danglingout:"dangling GITHUB_OUTPUT symlink" foreignout:"GITHUB_OUTPUT symlink to a file of another owner" danglingenv:"dangling GITHUB_ENV symlink" envdir:"GITHUB_ENV is a directory" outdir:"GITHUB_OUTPUT is a directory"; do
     o="$(run_site "${m%%:*}")"; r=$?
     if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  o="$(run_site intree)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   GITHUB_ENV and GITHUB_OUTPUT inside the chowned tree, tree wrong-owned -> the listener uid (stat is taken before the chown)"; else echo "FAIL[BEHAVIOUR] in-tree GITHUB_ENV changed the owner: $o"; rc=1; fi
+  for m in intreemixed:"in-tree GITHUB_ENV wrong-owned, GITHUB_OUTPUT the listener's" intreeroot:"in-tree GITHUB_ENV and GITHUB_OUTPUT root-owned"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && echo "$o" | grep -qE '::error::(cannot establish the runner owner|runner user mismatch)' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
   done
   return "$rc"
 }
@@ -530,6 +545,84 @@ if [ "${1:-}" = "--self-test" ]; then
   done
   [ "$exitmut" -gt 0 ] && echo "  caught [EXIT] $exitmut fail-closed-exit mutants (true / : / nothing / exit 0) over sovereign-ci.yml and unified-gate.yml"
   F=sovereign-ci.yml
+  # --- r11 (finding on de1f305): the fail-closed branch is EXACT TEXT --------------------------------------
+  # `echo "::error::x"; exit 0; exit 1; }` ended in `; exit 1; }` and so passed the old tail pattern, while the
+  # step carried on. Class: anything between the ::error:: and the exit 1 that can end, skip or neutralise the exit
+  # (exit 0, return, true, :, a trap, ||/&& chaining, a newline plus another command, `exit 1` in a comment or in
+  # a string). Each mutant is applied to the real workflow, the scan must say [EXIT], and where the mutant is
+  # really fail-open the mutated branch is EXECUTED and must be seen to carry on (CONTINUED, or rc 0).
+  r11n=0
+  r11run() { # name expect(open|any) mutated-file : run the branch the mutation touched
+    local a="$WF/$F" b="$3" L s e frag res
+    L="$(cmp "$a" "$b" | sed -n 's/.*line \([0-9]*\).*/\1/p')"
+    if sed -n "${L}p" "$b" | grep -q '|| { echo'; then
+      frag="$(sed -n "${L}p" "$b" | sed 's/^.*|| { echo/{ echo/')"; res="$(bash -c "false || $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+    else
+      s="$(awk -v L="$L" '/^ *if / && NR <= L { s = NR } END { print s }' "$b")"; e="$(awk -v L="$L" 'NR >= L && /^ *fi$/ { print NR; exit }' "$b")"
+      frag="$(sed -n "${s},${e}p" "$b")"; res="$(bash -c "OWNER_UG=; OWNER_CHK=; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+    fi
+    if [ "$rc" -eq 0 ] || echo "$res" | grep -q CONTINUED; then echo "  executed '$1': the mutated branch is FAIL-OPEN (rc=$rc, carried on)"; else miss "r11 '$1' was meant to be fail-open but the executed branch exited rc=$rc"; fi
+  }
+  r11chk() { # name expect mutated-file
+    r11n=$((r11n + 1))
+    awk -v F="$F" -f "$SCAN_AWK" "$3" | grep -q 'FAIL\[EXIT\]' || miss "r11 mutant '$1' not caught as [EXIT]"
+    [ "$2" = open ] && r11run "$1" "$2" "$3"
+  }
+  r11inline() { # name expect old new : first OLD -> NEW
+    OLD="$3" NEW="$4" awk '!d && (i = index($0, ENVIRON["OLD"])) { $0 = substr($0, 1, i-1) ENVIRON["NEW"] substr($0, i+length(ENVIRON["OLD"])); d=1 } {print}' "$WF/$F" > "$tmp/m11.yml"
+    cmp -s "$WF/$F" "$tmp/m11.yml" && { miss "r11 mutant '$1' changed nothing"; return; }
+    r11chk "$1" "$2" "$tmp/m11.yml"
+  }
+  r11next() { # name expect new-text : the line after the runner-owner agreement ::error:: becomes NEW (may hold newlines)
+    REP="$3" awk '!d && p { $0 = ENVIRON["REP"]; d = 1 } { p = index($0, "unreadable or disagree\"") > 0 && !d; print }' "$WF/$F" > "$tmp/m11.yml"
+    cmp -s "$WF/$F" "$tmp/m11.yml" && { miss "r11 mutant '$1' changed nothing"; return; }
+    r11chk "$1" "$2" "$tmp/m11.yml"
+  }
+  MK='"::error::mktemp failed"; exit 1; }'
+  r11inline "THE FINDING: echo ::error::; exit 0; exit 1; }" open "$MK" '"::error::mktemp failed"; exit 0; exit 1; }'
+  r11inline "one-line: true; exit 1"                 any  "$MK" '"::error::mktemp failed"; true; exit 1; }'
+  r11inline "one-line: : ; exit 1"                   any  "$MK" '"::error::mktemp failed"; : ; exit 1; }'
+  r11inline "one-line: return 0; exit 1"             any  "$MK" '"::error::mktemp failed"; return 0; exit 1; }'
+  r11inline "one-line: trap EXIT exit 0"             open "$MK" '"::error::mktemp failed"; trap '"'exit 0'"' EXIT; exit 1; }'
+  r11inline "one-line: (exit 1) subshell"            open "$MK" '"::error::mktemp failed"; (exit 1); }'
+  r11inline "one-line: exit 0 || exit 1"             open "$MK" '"::error::mktemp failed"; exit 0 || exit 1; }'
+  r11inline "one-line: extra command, then exit 1"   any  "$MK" '"::error::mktemp failed"; touch /dev/null; exit 1; }'
+  r11inline "one-line: exit 1 held in a string"      open "$MK" '"::error::mktemp failed"; echo "; exit 1; }"; }'
+  r11inline "one-line: exit 1 inside the message"    open "$MK" '"::error::mktemp failed; exit 1"; }'
+  r11inline "one-line: exit 1; } || true"            any  "$MK" '"::error::mktemp failed"; exit 1; } || true'
+  r11inline "one-line: rm -f variant exit 0; exit 1" any  'rm -f "${CHOWN_FAILED:?}"; exit 1; }' 'rm -f "${CHOWN_FAILED:?}"; exit 0; exit 1; }'
+  r11inline "one-line: rm -f swapped for other rm"   any  'rm -f "${CHOWN_FAILED:?}"; exit 1; }' 'rm -f /; exit 1; }'
+  r11inline "chain: && { echo ::error:: }"           any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" && { echo "::error::mktemp'
+  r11inline "chain: true || { echo ::error:: }"      any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" || true || { echo "::error::mktemp'
+  r11inline "chain: : || { echo ::error:: }"         any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" ; : || { echo "::error::mktemp'
+  r11inline "echo not first in the group"            any  '|| { echo "::error::mktemp failed"' '|| { true; echo "::error::mktemp failed"'
+  r11inline "unclosed message quote"                 any  '"::error::mktemp failed"; exit 1; }' '"::error::mktemp failed; exit 1; }'
+  r11inline "backtick in the message"                any  '"::error::mktemp failed"; exit 1; }' '"::error::mktemp `true` failed"; exit 1; }'
+  r11next "multi-line: exit 0"                       open 'exit 0'
+  r11next "multi-line: return 0"                     open 'return 0'
+  r11next "multi-line: (exit 1) subshell"            open '(exit 1)'
+  r11next "multi-line: exit 1 deleted"               open ''
+  r11next "multi-line: exit 1 only in a comment"     open '# exit 1'
+  r11next "multi-line: exit 1 only in a string"      open 'echo "exit 1"'
+  r11next "multi-line: trap then exit 1"             open $'trap '"'exit 0'"' EXIT\n            exit 1'
+  r11next "multi-line: true then exit 1"             any  $'true\n            exit 1'
+  r11next "multi-line: : then exit 1"                any  $':\n            exit 1'
+  r11next "multi-line: other command then exit 1"    any  $'touch /dev/null\n            exit 1'
+  r11next "multi-line: exit 1 || true"               any  'exit 1 || true'
+  r11next "multi-line: exit 1 # trailing"            any  'exit 1 # ok'
+  r11next "multi-line: exit 1; true"                 any  'exit 1; true'
+  r11next "multi-line: exit 1 then a command"        any  $'exit 1\n            true'
+  r11inline "multi-line: echo ...; exit 0 on the echo line" open 'unreadable or disagree"' 'unreadable or disagree"; exit 0'
+  r11inline "multi-line: echo ... && exit 0 on the echo line" open 'unreadable or disagree"' 'unreadable or disagree" && exit 0'
+  # trap set earlier in the step (not between the error and the exit) rewrites every exit after it
+  r11inline "trap EXIT exit 0 earlier in the step"   any  'OWNER_UG="$(stat -L -c' $'trap '"'exit 0'"' EXIT\n          OWNER_UG="$(stat -L -c'
+  # controls: the unmutated file is green, and so is a harmless blank line and comment after the exit
+  awk -v F="$F" -f "$SCAN_AWK" "$WF/$F" | grep -q 'FAIL\[EXIT\]' && miss "r11 control: [EXIT] fired on the unmutated $F"
+  # the executed fail-open check must itself be able to fail: the unmutated one-line branch has to be seen CLOSED
+  res="$(bash -c 'false || { echo "::error::mktemp failed"; exit 1; }; echo CONTINUED' 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && ! echo "$res" | grep -q CONTINUED; } || miss "r11 control: the unmutated branch is not fail-closed when executed"
+  rm -f "${tmp:?}/m11.yml"
+  echo "  caught [EXIT] $r11n exact-text mutants of the fail-closed branch (the finding, exit 0 / return / true / : / trap / chaining / newline / comment / string)"
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"

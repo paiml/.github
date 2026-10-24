@@ -150,7 +150,71 @@ function resolves(w, text,   nm, n, L, i, v, found) {
   }
   return found
 }
-function flush(   tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
+# --- EXIT shape (finding on de1f305): a fail-closed branch is matched as EXACT TEXT, never as a pattern -----
+# The old rule only asked that the text from ::error:: to the end of the line finish with `; exit 1`, so
+# `echo "::error::x"; exit 0; exit 1` (and return / true / : / a trap / `|| true` chaining / a second command /
+# `exit 1` held in a comment or inside a string) passed. The only two accepted shapes are:
+#   one line   <...> || { echo "::error::MSG"; exit 1; }      (or ...; rm -f "${CHOWN_FAILED:?}"; exit 1; })
+#   multi-line echo "::error::MSG"  /  [rm -f "${CHOWN_FAILED:?}"]  /  exit 1  /  the branch close (fi, } or ;;)
+# MSG is read by a quote-aware scanner (nested $( ) and "..." honoured); a backtick or an unclosed quote in MSG,
+# or anything the scanner cannot classify, is RED. dqend(): s[i] is an opening ", returns the index of its closing
+# ", or 0.
+function dqend(s, i,   n, c) {
+  n = length(s); i++
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (c == "\\") { i += 2; continue }
+    if (c == "`") return 0
+    if (c == "\"") return i
+    if (c == "$" && substr(s, i + 1, 1) == "(") { i = csend(s, i + 2); if (i == 0) return 0; continue }
+    i++
+  }
+  return 0
+}
+# csend(): i is just after "$(" ; returns the index after the matching ")", or 0.
+function csend(s, i,   n, c, d, q) {
+  n = length(s); d = 1
+  while (i <= n) {
+    c = substr(s, i, 1)
+    if (c == "\\") { i += 2; continue }
+    if (c == "'") { q = index(substr(s, i + 1), "'"); if (q == 0) return 0; i += q + 1; continue }
+    if (c == "\"") { q = dqend(s, i); if (q == 0) return 0; i = q + 1; continue }
+    if (c == "`") return 0
+    if (c == "(") d++
+    else if (c == ")") { d--; if (d == 0) return i + 1 }
+    i++
+  }
+  return 0
+}
+# errshape(i, n): "" when every ::error:: on logical line i is in an approved fail-closed shape, else the reason.
+function errshape(i, n,   lg, k, off, p, e, pre, rest, nx, RMF) {
+  lg = LG[i]; off = 0; RMF = "rm -f \"${CHOWN_FAILED:?}\""
+  if (lg ~ /^(- )?(name|if|uses|run|env|with):/) return "::error:: inside a YAML key line"
+  while ((k = index(substr(lg, off + 1), "::error::")) > 0) {
+    k += off; p = k - 6
+    if (p < 1 || substr(lg, p, 6) != "echo \"") return "::error:: is not the start of an echo \"...\" statement"
+    e = dqend(lg, p + 5)
+    if (e == 0) return "the ::error:: message is not closed on this line or holds a backtick"
+    off = e
+    rest = substr(lg, e + 1)
+    if (p == 1) {
+      if (rest != "") return "something follows the ::error:: echo on its own line: " rest
+      nx = i + 1
+      if (nx <= n && LG[nx] == RMF) nx++
+      if (nx > n || LG[nx] != "exit 1") return "the line after ::error:: is not exactly `exit 1` (nor the one approved rm -f then `exit 1`)"
+      for (nx++; nx <= n && LG[nx] == ""; nx++) ;
+      if (nx <= n && LG[nx] !~ /^(fi|\}|;;)$/) return "`exit 1` is not followed by the branch close (fi, } or ;;): " LG[nx]
+    } else {
+      pre = substr(lg, 1, p - 1)
+      if (pre != "{ " && pre !~ /\|\| \{ $/) return "the ::error:: echo is not the first statement of a `|| { ...; }` group"
+      sub(/\|\| \{ $/, "", pre)
+      if (pre ~ /(^|[;&|({ \t])(true|:|exit 0|return( [0-9]+)?)[ \t]*$/) return "the `|| { ::error::; exit 1; }` group follows a command that cannot fail"
+      if (rest != "; exit 1; }" && rest != "; " RMF "; exit 1; }" && rest != "; exit 1; }; }" && rest != "; " RMF "; exit 1; }; }") return "the group is not exactly `; exit 1; }` after the message: " rest
+    }
+  }
+  return ""
+}
+function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
   if (sn == 0) return
   n = 0; acc = ""; start = 0; text = ""
   for (i = 1; i <= sn; i++) {
@@ -221,29 +285,19 @@ function flush(   tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, 
       lg = LG[i]; sw = unquote(lg); nl = qs(kq(lg))
       if (sw ~ /^(echo|printf)[ \t]/) continue
       if (sw ~ /(^|[^a-zA-Z_])set[ \t]+\+(e|o[ \t]+errexit)/) fail("SWALLOW", LN[i], "set +e in a step with a chown: " lg)
+      if (sw ~ /(^|[;&|({ \t])trap[ \t]/) fail("EXIT", LN[i], "a trap in a step with a chown can rewrite the fail-closed exit status: " lg)
       if (lg !~ /(^|[;&|({`"'\/[:space:]])(chown|chgrp|find)([ \t;&|)"']|$)/ && nl !~ /(^|[;&|({`\/[:space:]])(chown|chgrp|find)([ \t;&|)]|$)/) continue
       if (lg ~/\|\|[ \t]*(true|:|\/bin\/true|\/usr\/bin\/true|echo)([ \t;)'"]|$)/ || sw ~ /\|\|[ \t]*printf([ \t;)]|$)/ || lg ~ /;[ \t]*true[ \t]*$/ || lg ~ /2>[ \t]*\/dev\/null/ || lg ~ /&>[ \t]*\/dev\/null/ || lg ~ />[ \t]*\/dev\/null[ \t]*2>&1/)
         fail("SWALLOW", LN[i], "error swallowed on a chown/find line: " lg)
     }
-    # EXIT: every ::error:: in a step with a chown is a fail-closed path and must END in `exit 1`.
-    # One-line form: the logical line is `... echo "::error::..."; [rm -f ...;] exit 1; }`, i.e. the text
-    # from ::error:: to the end of the line finishes with `; exit 1` (+ optional `;` and `}`).
-    # Multi-line form: the line is a plain echo statement (starts with echo, ends with a quote) and the
-    # next logical lines, after any `rm -f ...` cleanup lines, are exactly `exit 1`. `true`, `:`, `exit 0`,
-    # `exit 10`, a deleted exit, or anything else between the error and its exit is a swallowed failure.
+    # EXIT: every ::error:: in a step with a chown is a fail-closed path. errshape() matches the branch as
+    # EXACT TEXT: the error echo, then `exit 1` alone (one approved rm -f may sit between), then the branch close;
+    # or the one-line `|| { echo "::error::MSG"; [rm -f ...;] exit 1; }`. Anything else, including `exit 0`,
+    # return, true, :, a second command, a `|| true` chain, `exit 1` in a comment or inside a string, is RED.
     for (i = 1; i <= n; i++) {
-      lg = LG[i]
-      if ((k = index(lg, "::error::")) == 0) continue
-      if (lg !~ /^(- )?(name|if|uses):/ && substr(lg, k) ~ /;[ \t]*exit 1[ \t]*;?[ \t]*\}?[ \t]*$/) continue
-      ok = 0
-      if (lg ~ /^echo[ \t]/ && lg ~ /"[ \t]*$/) {
-        for (nx = i + 1; nx <= n; nx++) {
-          if (LG[nx] == "" || LG[nx] ~ /^rm -f [^;&|]*$/) continue
-          ok = (LG[nx] ~ /^exit 1[ \t]*$/)
-          break
-        }
-      }
-      if (!ok) fail("EXIT", LN[i], "::error:: is not followed by exit 1 in the same block (a swallowed fail-closed exit): " lg)
+      if (index(LG[i], "::error::") == 0) continue
+      why = errshape(i, n)
+      if (why != "") fail("EXIT", LN[i], why ": " LG[i])
     }
     for (i = 1; i <= sn; i++) if (S[i] ~ /^[ \t]*continue-on-error:/ && S[i] !~ /continue-on-error:[ \t]*false/) fail("SWALLOW", SN[i], "continue-on-error on a step with a chown")
   }
