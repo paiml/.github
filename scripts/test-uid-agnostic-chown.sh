@@ -250,7 +250,7 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "site: 2>/dev/null on find" SWALLOW  '+ > "$CHOWN_FAILED"' '+ > "$CHOWN_FAILED" 2>/dev/null'
   swap "site: &>/dev/null on find" SWALLOW  '+ > "$CHOWN_FAILED"' '+ > "$CHOWN_FAILED" &>/dev/null'
   swap "site: set +e"              SWALLOW  '          OWNER_UG="$(stat' $'          set +e\n          OWNER_UG="$(stat'
-  swap "site: continue-on-error"   SWALLOW  'name: Pre-checkout ownership restore (EACCES self-heal)' $'name: Pre-checkout ownership restore (EACCES self-heal)\n        continue-on-error: true'
+  swap "site: continue-on-error"   SWALLOW  'name: Restore runner ownership of the runner _work tree' $'name: Restore runner ownership of the runner _work tree\n        continue-on-error: true'
   # --- ruling 2: whole file, not only the markers ---
   swap "marker removed, site intact"  UNMARKED 'uid-agnostic (infra#2349)' 'uid-x'
   cp "$WF"/*.yml "$tmp"/
@@ -269,7 +269,9 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "bare-metal: ; true at eol" SWALLOW  "$BT" '; true'
   swap "bare-metal: 2>/dev/null"   SWALLOW  "$CHOWN_B ||" "$CHOWN_B 2>/dev/null ||"
   swap "bare-metal: &>/dev/null"   SWALLOW  "$CHOWN_B ||" "$CHOWN_B &>/dev/null ||"
+  F=unified-gate.yml   # sovereign-ci.yml no longer carries the bare-metal LEFT find (R2); unified-gate.yml still does
   swap "bare-metal: 2>/dev/null on find" SWALLOW '-print -quit)"' '-print -quit 2>/dev/null)"'
+  F=sovereign-ci.yml
   swap "bare-metal: set +e"        SWALLOW  '          OWNER="$(id -un):$(id -gn)"' $'          set +e\n          OWNER="$(id -un):$(id -gn)"'
   swap "bare-metal: owner not id"  ASSIGN   '          OWNER="$(id -un):$(id -gn)"' '          OWNER="$(id -u):$(id -g)"'
   swap "bare-metal: sudo and plain, both bare" TARGET "if ! sudo -n $CHOWN_B; then" "sudo -n $CHOWN_B \"\$X\"; if false; then"
