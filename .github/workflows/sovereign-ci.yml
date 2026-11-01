@@ -169,7 +169,7 @@ jobs:
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
+      image: localhost:5000/sovereign-ci:stable@sha256:dd8b9b7032e9a113ad468e3d544d9610d1bf77c12c422110799b96e0d1609120
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -515,7 +515,7 @@ jobs:
     name: lint
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
+      image: localhost:5000/sovereign-ci:stable@sha256:dd8b9b7032e9a113ad468e3d544d9610d1bf77c12c422110799b96e0d1609120
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -833,7 +833,7 @@ jobs:
         || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
+      image: localhost:5000/sovereign-ci:stable@sha256:dd8b9b7032e9a113ad468e3d544d9610d1bf77c12c422110799b96e0d1609120
       # infra#148 (PMAT-191): per-container CPU ceiling. Job containers run in
       # /system.slice/docker-*.scope (siblings of the runner service), so a
       # runner-service cgroup cap can't bound them; uncapped, a post-reboot
@@ -1205,7 +1205,7 @@ jobs:
     if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && inputs.run_benchmarks }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
-      image: localhost:5000/sovereign-ci:stable@sha256:70f2cdc9e537fe4447306d33c317fea33017f78f1ffa3b7af99095391419ef36
+      image: localhost:5000/sovereign-ci:stable@sha256:dd8b9b7032e9a113ad468e3d544d9610d1bf77c12c422110799b96e0d1609120
       # Phase 3 §5.3 — sccache volumes (see test job for rationale).
       volumes:
         - /home/noah/data/sccache:/sccache
