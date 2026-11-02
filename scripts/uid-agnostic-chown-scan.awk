@@ -64,9 +64,32 @@ function skipwrap(T, m, j,   t) {
   }
   return j
 }
+# cnt(s, re): number of matches of re in s.
+function cnt(s, re,   c) { c = 0; while (match(s, re)) { c++; s = substr(s, RSTART + RLENGTH) } return c }
+# subword(s): a command word that CONTAINS a command substitution ($( ) or a backtick) is executed text whatever
+# surrounds it: "$(tool)" (quoted), ch$(printf own) (prefixed), sudo $(tool) (wrapped), "`tool`". s is the tq line
+# (quotes already turned into \002). Returns "$(...)" or "". An assignment's value (X=$(a b), X="$(a b)") is consumed
+# whole, so what runs inside an assignment is not mistaken for a command word of the statement.
+function subword(s,   t, n, a, i, m, T, j, acc, d) {
+  t = s; gsub(/\$\{/, "$", t); gsub(/\$\(\(/, "\004", t); gsub(/\$\(/, "\003", t); gsub(/`/, "\005", t)
+  n = split(t, a, /;|&&|\|\||\||&|\(|\{/)
+  for (i = 1; i <= n; i++) {
+    m = split(trim(a[i]), T, /[ \t]+/); if (m == 0 || T[1] == "") continue
+    j = skipwrap(T, m, 1)
+    while (j <= m && T[j] ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) {
+      acc = T[j]
+      while (j < m && (cnt(acc, "\003") > cnt(acc, ")") || cnt(acc, "\002") % 2 || cnt(acc, "\005") % 2)) { j++; acc = acc " " T[j] }
+      j++
+    }
+    if (j > m) continue
+    if (T[j] ~ /[\003\005]/) return "$(...)"
+  }
+  return ""
+}
 # cmdword() returns the first command word of a statement of the (quote-stripped, normalised) line s
 # that is a $variable / $( ) / backtick word ("" if none).
 function cmdword(s,   ww, n, a, i, m, T, j, st, w) {
+  if ((ww = subword(s)) != "") return ww
   if (s ~ /(^|[;&|({])[ \t]*(\$\([^(]|`)/) return "$(...)"
   gsub(/\$\{/, "$", s); gsub(/\+?=\(/, "=X ", s); gsub(/[<>]\(/, ";", s); gsub(/\$\(/, ";", s); gsub(/`/, ";", s)
   n = split(s, a, /;|&&|\|\||\||&|\(|\{|\)/)
@@ -91,8 +114,8 @@ function nonlit(a) {
   return (a ~ /[$`\001]/)
 }
 # walk(s, d): s is a kq() line (quotes kept). Sets PRIM (ownership primitive other than chown/chgrp,
-# which the command-word regex already catches). A literal eval / sh -c argument is scanned again, one level down; a non-literal one is
-# not read (the opaque-capability scan moved out of this gate under C324 s7: LAB, paiml/.github#98).
+# which the command-word regex already catches) and OPAQ (eval / sh -c / source with a non-literal
+# argument). A literal eval / sh -c argument is scanned again, one level down.
 function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
   if (d > 3) return
   gsub(/(^|[ \t])-(exec|execdir|ok|okdir)[ \t]/, " ; ", s)
@@ -114,13 +137,15 @@ function walk(s, d,   n, a, i, st, m, R, N, j, k, w, args, sc) {
     } else if (w == "setfacl") addprim(w, st)
     else if (w == "eval" || w == "source" || w == ".") {
       args = ""; for (k = j + 1; k <= m; k++) args = args " " R[k]
-      if (w == "eval" && !nonlit(args)) walk(qs(args), d + 1)
+      if (nonlit(args)) OPAQ = 1
+      else if (w == "eval") walk(qs(args), d + 1)
     } else if (w ~ /^(sh|bash|dash|zsh|ksh|ash)$/) {
       sc = 0
       for (k = j + 1; k <= m && N[k] ~ /^-/; k++) if (N[k] ~ /^-[A-Za-z]*c$/) { sc = k + 1; break }
       if (sc) {
         args = ""; for (k = sc; k <= m; k++) args = args " " R[k]
-        if (!nonlit(args)) walk(qs(args), d + 1)
+        if (nonlit(args)) OPAQ = 1
+        else walk(qs(args), d + 1)
       }
     }
   }
@@ -213,7 +238,7 @@ function errshape(i, n,   lg, k, off, p, e, pre, rest, nx, RMF) {
   }
   return ""
 }
-function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, nl) {
+function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, siteA, isB, pre, rest, ownother, text, textn, hascmd, vcmd, vw, ku, nu, prim, opaq, nl) {
   if (sn == 0) return
   n = 0; acc = ""; start = 0; text = ""
   for (i = 1; i <= sn; i++) {
@@ -233,7 +258,7 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
     # A message line is text, not a command, unless its output is PIPED somewhere: `printf 'chown ..' | sh` runs the
     # text, so a piped message keeps its quoted text and is classified like any other line (`| sh` is then a TARGET failure).
     if (u ~ /^(echo|printf)[ \t]/) { tq = unquote(u); if (tq ~ /(^|[^|])\|([^|]|$)/) tq = u; u = tq }
-    vcmd = 0; prim = 0; PRIM = ""
+    vcmd = 0; prim = 0; opaq = 0; PRIM = ""; OPAQ = 0
     ku = kq(u); nu = qs(ku)
     # INTREE (r6): the owner is never read from the tree being chowned. Any stat command, in any step of
     # any file, whose operand is a path inside the _work tree (RUNNER_TEMP, WORK_ROOT, the workspaces,
@@ -245,9 +270,11 @@ function flush(   why, tq, ok, nx, haveown, i, k, n, acc, start, raw, t, lg, ln,
       CHOWN_RE = "(^|[;&|({`\"'/=[:space:]])(chown|chgrp)([ \t;&|)\"']|$)"
       cmd = (u ~ CHOWN_RE || nu ~ CHOWN_RE)
       walk(ku, 0)
+      opaq = OPAQ
       if (!cmd && PRIM != "") { cmd = 1; prim = 1 }
       if (!cmd && u !~ /^(echo|printf)[ \t]/) { tq = ku; gsub(/["']/, "\002", tq); vw = cmdword(tq); if (vw != "") { vcmd = 1; cmd = 1 } }
     }
+    if (opaq && owns_step(textn)) fail("OPAQUE", ln, "eval / sh -c / source with a non-literal argument in a step that deals with ownership: the scanner cannot see what will run: " lg)
     if (lg == OWN) haveown = 1
     if (lg == GUARD_IF && gi == 0) gi = i
     if (u ~ /(^|[ \t;])OWNER=/ && lg != OWN) ownother = 1

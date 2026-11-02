@@ -681,6 +681,12 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "concat: leading assignment A=1 \"\$X\$Y\"" VARCMD 'X=ch; Y=own; A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
   nm "concat: \$DIR/\$TOOL path command"     VARCMD 'D=/usr/bin; T=ch; U=own; "$D/$T$U" -R "$OWNER_UG" "$WORK_ROOT"'
   nm "concat: after && in an if"             VARCMD 'X=ch; Y=own; if true && "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"; then :; fi'
+  # round-2 FINDING (3/3 FAIL on 4d5255c): cmdword(tq) lost command words that CONTAIN a substitution. One fixture per form variant.
+  nm "subst: quoted \"\$(find_tool)\""          VARCMD '"$(find_tool)" -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: quoted backtick"                 VARCMD '"`find_tool`" -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: prefixed ch\$(printf own)"       VARCMD 'ch$(printf own) -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: wrapped sudo \$(find_tool)"      VARCMD 'sudo $(find_tool) -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: wrapped sudo -n \"\$(find_tool)\"" VARCMD 'sudo -n "$(find_tool)" -R a:b "$GITHUB_WORKSPACE"'
   # rule 2: the ownership primitives, each spelling normalised
   nm "prim: install -o 1000 -g 1000"         TARGET 'install -o 1000 -g 1000 -m 755 a b'
   nm "prim: install -o root"                 TARGET 'install -o root a b'
@@ -709,7 +715,23 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "prim: \${SETFACL:-setfacl}"            TARGET '${SETFACL:-setfacl} -b "$GITHUB_WORKSPACE"'
   nm "prim: var resolved to install"         VARCMD 'I=install\n          $I -o 1000 a b'
   nm "prim: var resolved to setfacl"         VARCMD 'S=/usr/bin/setfacl\n          $S -b x'
-  # rule 3: eval / sh -c / source with a non-literal argument, in a step that deals with ownership
+  nm "opaque: eval \"\$CMD\""                OPAQUE 'eval "$CMD"'
+  nm "opaque: eval \$CMD"                    OPAQUE 'eval $CMD'
+  nm "opaque: eval-built command word"       OPAQUE 'X=ls; eval "$X -R a b"'
+  nm "opaque: eval \$(build)"                OPAQUE 'eval $(build_cmd)'
+  nm "opaque: eval \"\$(printf ...)\""       OPAQUE 'eval "$(printf "%s" x)"'
+  nm "opaque: \\eval \"\$CMD\""              OPAQUE '\\eval "$CMD"'
+  nm "opaque: sh -c \"\$CMD\""               OPAQUE 'sh -c "$CMD"'
+  nm "opaque: bash -c \"\$CMD\""             OPAQUE 'bash -c "$CMD"'
+  nm "opaque: bash -lc \"\$CMD\""            OPAQUE 'bash -lc "$CMD"'
+  nm "opaque: sudo -n bash -c \"\$CMD\""     OPAQUE 'sudo -n bash -c "$CMD"'
+  nm "opaque: sh -c \"\$(build)\""           OPAQUE 'sh -c "$(build_cmd)"'
+  nm "opaque: source \"\$F\""                OPAQUE 'source "$F"'
+  nm "opaque: dot-source \"\$F\""            OPAQUE '. "$F"'
+  nm "opaque: \${SH:-sh} -c \"\$CMD\""       OPAQUE '${SH:-sh} -c "$CMD"'
+  nm "opaque: find -exec sh -c \"\$CMD\""    OPAQUE 'find . -exec sh -c "$CMD" sh {} +'
+  # the step deals with ownership by OWNER_UG alone (no chown word anywhere in it)
+  app "opaque: mention by OWNER_UG alone"    OPAQUE "      - name: x\n        run: |\n          U=\"\$OWNER_UG\"\n          eval \"\$CMD\""
   # rule 5: controls. A resolved non-ownership command of the same shape stays GREEN (no FAIL at all).
   keep() { # name line : append a step that mentions chown, demand a clean run
     cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
@@ -733,6 +755,8 @@ if [ "${1:-}" = "--self-test" ]; then
   keep "ctl: eval 'ls' literal"              "eval 'ls -l'"
   keep "ctl: source ./file literal"          'source ./env.sh'
   keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
+  keep "ctl: assignment with a substitution value" 'X=$(id -un $(whoami))'
+  keep "ctl: quoted assignment with a substitution" 'OWNER="$(id -un):$(id -gn)"'
   # r4a: an OWNER_UG mention (argument or comment) exempts nothing: only the two ruled chown shapes are approved
   nm "r4a: install -o \"\${OWNER_UG%%:*}\" is not approved" TARGET 'install -o "${OWNER_UG%%:*}" a b'
   nm "r4a: tar --owner=root # OWNER_UG"                    TARGET 'tar --owner=root -xf a.tar # OWNER_UG'
@@ -743,16 +767,10 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "r4b: echo \"chown ..\" | bash"                       TARGET 'echo "chown -R root:root /w" | bash'
   nm "r4b: echo \"\$(chown ..)\" (expansion kept)"         TARGET 'echo "$(chown -R root:root /w)"'
   # eval in a step that does not deal with ownership is not an ownership question for the chown scanner,
-  # the chown scanner stays quiet on it (the opaque-capability scan moved out under C324 s7).
+  # the chown scanner stays quiet on it (OPAQUE is still a gate class; this step has no ownership text).
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
   out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"
   if gq "$out" -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red in the chown scanner"; else echo "  kept  [green] eval in a step with no ownership text (chown scanner)"; fi
-  # FINDING (2645481, round M): the OPAQUE class was still in the scan although the body says it moved out (C324 s7). eval / sh -c / source
-  # with a non-literal argument in a step that DOES deal with ownership must not be an OPAQUE failure of this gate any more.
-  cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: x\n        run: |\n          U="$OWNER_UG"  # chown audit\n          eval "$CMD"\n          sh -c "$CMD"\n          source "$F"' >> "$tmp/${F:-sovereign-ci.yml}"
-  out="$(awk -v F="x" -f "$SCAN_AWK" "$tmp/${F:-sovereign-ci.yml}" 2>&1 || true)"
-  if gq "$out" -q 'FAIL\[OPAQUE\]'; then miss "the OPAQUE class is still in the gate scan: $(gq "$out" -m1 'FAIL\[OPAQUE\]' | cut -c1-120)"; else echo "  kept  [moved out] no OPAQUE class in the gate scan"; fi
-  [ "$(grep -c 'OPAQ' "$SCAN_AWK")" -eq 0 ] || miss "OPAQ remnants remain in $SCAN_AWK: $(grep -c 'OPAQ' "$SCAN_AWK") line(s)"
   # --- finding 2: every fail-closed exit in each self-heal site (and the unified-gate sites) ---------
   # For every `exit 1` that sits in a step with a chown / OWNER_UG, in sovereign-ci.yml and unified-gate.yml,
   # one mutant per replacement: true, :, nothing, exit 0. The guard (the scan, [EXIT]) must go red on each.
