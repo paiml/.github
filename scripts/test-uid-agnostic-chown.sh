@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 # infra#2349 guard (shell + awk only). Usage: test-uid-agnostic-chown.sh [--self-test]
 #
+# SCOPE (PMAT-2359) -- why the hardening below is part of this ticket and not a separate one:
+#   PMAT-2359 replaces the chown TARGET with a value read from the runner at run time (the owner of the
+#   listener-created GITHUB_ENV/GITHUB_OUTPUT, no longer /__e). That makes the root-level recursive chown
+#   depend on two inputs the old literal did not: the derived owner and WORK_ROOT. So the fix carries (1) the
+#   owner checks (both files, agree, regular, numeric, non-root), (2) the WORK_ROOT guard + readonly, which
+#   bounds where a derived owner can be applied, and (3) this scanner/self-test, whose old assumption
+#   ("OWNER_UG is the stat of /__e") is exactly the code being replaced: left alone it would fail on the new
+#   line, and relaxed without a discriminating test it would stop guarding the infra#2349 invariant (no
+#   literal uid). The one control that changed class is "install -o from OWNER_UG": keep -> nm. That was a
+#   deliberate fail-closed change (r4, 09f5e90): a "# OWNER_UG" mention must exempt no ownership primitive.
+#   No workflow here uses install -o, so no real step is affected; it is not a weakened check.
+#   The pwd -P test on bare-metal runners (unified-gate.yml, 4 steps; sovereign-ci.yml, 2): what the code
+#   shows is that it is FAIL-CLOSED and NEVER SILENT -- a runner whose _work path has a symlinked component
+#   goes red with an ::error:: naming WORK_ROOT, it is never chowned through the link. In containers
+#   WORK_ROOT is the /__w bind mount, a real directory. What the code does NOT show is that every bare-metal
+#   _work path is link-free: that is UNMEASURED here (no runner host is reachable from this worktree). It is
+#   measured per runner class by: readlink -f "$(dirname "$RUNNER_TEMP")" compared with the unlinked name,
+#   in one step on [self-hosted, clean-room] and on [self-hosted, gpu, lambda-labs].
+#
 # A "site" is the uid-agnostic self-heal block: from the line carrying
 # "uid-agnostic (infra#2349)" to the closing `rm -f "${CHOWN_FAILED:?}"` at step indent.
 # The self-heal runs before checkout, so it is inline; all sites must be byte-identical.
@@ -33,7 +52,7 @@ WF=${WF_DIR:-.github/workflows}
 MARK='uid-agnostic (infra#2349)'
 # The owner source (r7): the step runs as uid 0 inside the job container, so the owner is the stat of the
 # listener-created file-command file GITHUB_ENV, which must agree with GITHUB_OUTPUT; uid 0 is refused.
-# (r6 read /__e, the HOST externals dir: 1000:1000 on gx10 where the listener is uid 1001.)
+# (r6 read /__e, the HOST externals dir; reported, unmeasured here, as 1000:1000 on gx10 where the listener is uid 1001.)
 STAT_LINE='          OWNER_UG="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_ENV:-}")" || OWNER_UG=""'
 STAT_LINE2='          OWNER_CHK="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""'
 REG_LINE='          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then'

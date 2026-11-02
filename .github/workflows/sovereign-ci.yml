@@ -251,9 +251,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -537,9 +539,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -671,9 +675,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -951,9 +957,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -1091,9 +1099,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -1432,9 +1442,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -1552,9 +1564,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.
@@ -1810,9 +1824,11 @@ jobs:
           # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
           # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
           # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts (on gx10 it is 1000:1000 while the listener runs as 1001, which made
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
           # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied"). Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
+          # is denied").
+          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
+          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
           # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
           # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
           # anything to root.

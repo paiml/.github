@@ -28,7 +28,7 @@ BEGIN {
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
   GUARD_IF = ENVIRON["GUARD_IF"]; GUARD_MARK = ENVIRON["GUARD_MARK"]
-  ALLOW_CMD = "^$NEVERMATCH"; sn = 0; total = 0; container = 0
+  sn = 0; total = 0; container = 0
 }
 # --- NORMALISE a command word the way the shell would, then match CLASSES, not spellings ---------
 # kq(): remove backslashes and expand ${V:-w} ${V-w} ${V:=w} ${V=w} to w (quotes kept).
@@ -100,9 +100,9 @@ function cmdword(s,   ww, n, a, i, m, T, j, st, w) {
     if (j > m) continue
     w = T[j]
     # CLASS: any command word that holds an expansion ($, `) is a variable command word, whatever its
-    # shape ($X, $X$Y, ${X}${Y}, pre$X, $X/bin/tool). Only a lone $VAR that the step resolves to a
-    # static non-chown word (resolves()) or a word on the named allowlist below is let through.
-    if (w ~ /[$`]/) { ww = w; sub(/^\002/, "", ww); sub(/\002$/, "", ww); if (ww ~ /\002/) ww = ww "~"; if (!(ww ~ ALLOW_CMD)) return ww }
+    # shape ($X, $X$Y, ${X}${Y}, pre$X, $X/bin/tool). It is returned to the caller, which lets a lone $VAR
+    # through only when the step resolves it to a static non-chown word (resolves()). There is no allowlist.
+    if (w ~ /[$`]/) { ww = w; sub(/^\002/, "", ww); sub(/\002$/, "", ww); if (ww ~ /\002/) ww = ww "~"; return ww }
   }
   return ""
 }
