@@ -225,6 +225,10 @@ jobs:
       # which sit outside the repo workspace and a workspace-scoped restore
       # would miss. Cost is negligible: a full walk of a 155k-entry _work
       # measures ~0.3s on intel.
+      - name: Measure runner file owners (receipt)
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Pre-checkout ownership restore (EACCES self-heal)
         run: |
           set -u
@@ -248,17 +252,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -475,6 +485,11 @@ jobs:
       # _work/_actions — both live OUTSIDE the repo workspace, so the old scope
       # left root-owned .pmat/ dbs and action caches behind on *every* exit,
       # clean or not. Observed 2026-07-27 on runners 7/8/14.
+      - name: Measure runner file owners (receipt)
+        if: always()
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Restore runner ownership of the runner _work tree
         if: always()
         run: |
@@ -497,17 +512,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -571,6 +592,10 @@ jobs:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
       # the next job inside actions/checkout, before any of its steps run.
+      - name: Measure runner file owners (receipt)
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Pre-checkout ownership restore (EACCES self-heal)
         run: |
           set -u
@@ -594,17 +619,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -815,6 +846,11 @@ jobs:
       # _work/_actions — both live OUTSIDE the repo workspace, so the old scope
       # left root-owned .pmat/ dbs and action caches behind on *every* exit,
       # clean or not. Observed 2026-07-27 on runners 7/8/14.
+      - name: Measure runner file owners (receipt)
+        if: always()
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Restore runner ownership of the runner _work tree
         if: always()
         run: |
@@ -837,17 +873,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -917,6 +959,10 @@ jobs:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
       # the next job inside actions/checkout, before any of its steps run.
+      - name: Measure runner file owners (receipt)
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Pre-checkout ownership restore (EACCES self-heal)
         run: |
           set -u
@@ -940,17 +986,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -1222,6 +1274,11 @@ jobs:
       # _work/_actions — both live OUTSIDE the repo workspace, so the old scope
       # left root-owned .pmat/ dbs and action caches behind on *every* exit,
       # clean or not. Observed 2026-07-27 on runners 7/8/14.
+      - name: Measure runner file owners (receipt)
+        if: always()
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Restore runner ownership of the runner _work tree
         if: always()
         run: |
@@ -1244,17 +1301,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -1304,6 +1367,10 @@ jobs:
       # Pre-checkout EACCES self-heal — see the `test` job for the five-whys
       # (paiml/.github#42). Root-owned leftovers from a hard-killed job break
       # the next job inside actions/checkout, before any of its steps run.
+      - name: Measure runner file owners (receipt)
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Pre-checkout ownership restore (EACCES self-heal)
         run: |
           set -u
@@ -1327,17 +1394,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
@@ -1526,6 +1599,11 @@ jobs:
       # _work/_actions — both live OUTSIDE the repo workspace, so the old scope
       # left root-owned .pmat/ dbs and action caches behind on *every* exit,
       # clean or not. Observed 2026-07-27 on runners 7/8/14.
+      - name: Measure runner file owners (receipt)
+        if: always()
+        run: |
+          # Receipt for the owner premise in the next step. Never fails the job: absent paths are tolerated.
+          stat -c '%n %u:%g' /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" || true
       - name: Restore runner ownership of the runner _work tree
         if: always()
         run: |
@@ -1548,17 +1626,23 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. The runner creates them fresh before each step, as its
-          # own uid, so their owner is the listener's uid by construction. Two of them must agree, else
-          # fail closed. NOT /__e: that is the HOST's externals dir and merely happens to match the
-          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a listener at 1001; it made
-          # the next step's setup fail with "Access to the path .../_temp/_github_workflow/event.json
-          # is denied").
-          # To measure: stat -c %u:%g /__e "$GITHUB_ENV" "$GITHUB_OUTPUT" in a container step on gx10.
-          # Never a long-lived path inside the chowned tree ($WORK_ROOT, $GITHUB_WORKSPACE,
-          # $HOME): a wrong-owned leftover there would be copied back as the owner. No literal uid and
-          # no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step never chowns
-          # anything to root.
+          # files GITHUB_ENV and GITHUB_OUTPUT. PREMISE (UNMEASURED): the listener creates them fresh
+          # before each step as its own uid, so their owner would be the listener's uid. That is what
+          # the runner design implies; nobody has measured it on gx10, and the self-tests stub stat, so
+          # they prove only this script's logic. The step "Measure runner file owners (receipt)" just
+          # before this one prints the real owners; the first real run on gx10 is the receipt. Two files
+          # must agree, else fail closed. NOT /__e: that is the HOST's externals dir and matches the
+          # listener on some hosts, not all (REPORTED, not measured here, for gx10: 1000:1000 vs a
+          # listener at 1001; it made the next step's setup fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
           OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
           OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
           if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
