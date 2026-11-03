@@ -244,24 +244,42 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -479,24 +497,42 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -562,24 +598,42 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -791,24 +845,42 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -880,24 +952,42 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1170,24 +1260,42 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1239,24 +1347,42 @@ jobs:
           fi
           # Container steps run as root, so a plain chown is enough. Numeric
           # uid:gid because the runner user has no entry in the image's passwd.
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
@@ -1446,24 +1572,42 @@ jobs:
             echo "::warning::could not resolve the runner _work root ('$WORK_ROOT') — narrowing to the repo workspace"
             WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"
           fi
-          # uid-agnostic (infra#2349): own the tree as the runner user's uid:gid. This step runs
-          # INSIDE the job container as uid 0 (the image sets no USER and the job passes no `user:`
-          # option), so `id -u` is 0 and cannot name the runner user. The owner is therefore read from a
-          # source OUTSIDE the tree being repaired: /__e, the runner's externals dir, bind-mounted from
-          # beside _work and created by the runner install as the runner user. Never a path inside the
-          # chowned tree ($RUNNER_TEMP, $WORK_ROOT, $GITHUB_WORKSPACE, $HOME): a wrong-owned leftover
-          # there would be copied back as the owner. No literal uid and no fallback: unreadable or
-          # uid 0 = fail, so this step never chowns anything to root.
-          OWNER_UG="$(stat -c '%u:%g' /__e)" || OWNER_UG=""
-          if [ -z "$OWNER_UG" ]; then
-            echo "::error::cannot read the runner owner: /__e is unreadable"
+          # uid-agnostic (infra#2349): own the tree as the uid:gid of the process that writes the
+          # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
+          # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
+          # The owner is read from objects the runner LISTENER created for THIS step: the file-command
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
+          # which made the next step fail with "Access to the path
+          # .../_temp/_github_workflow/event.json is denied").
+          # Why per-step files under _temp are safe INSIDE the chowned tree: (a) both are read before
+          # the find runs, so the chown cannot influence the owner this step uses; (b) the listener
+          # makes new ones for every step, so a wrong-owned leftover is never reused as the next
+          # source; (c) the chown sets them to the owner they were just read as, a no-op for them. The
+          # rule is: no LONG-LIVED path inside the tree ($WORK_ROOT, $GITHUB_WORKSPACE, $HOME) may be
+          # the source, since a wrong-owned leftover there would be copied back as the owner. No
+          # literal uid and no fallback: unset, unreadable, disagreeing or uid 0 = fail, so this step
+          # never chowns anything to root.
+          OWNER_UG="$(stat -L -c '%u:%g' "${GITHUB_ENV:-}")" || OWNER_UG=""
+          OWNER_CHK="$(stat -L -c '%u:%g' "${GITHUB_OUTPUT:-}")" || OWNER_CHK=""
+          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV ('$OWNER_UG') and GITHUB_OUTPUT ('$OWNER_CHK') are unreadable or disagree"
+            exit 1
+          fi
+          # stat -L above follows links (a dangling link fails, a link reads its TARGET). -f follows them too and
+          # also refuses a directory or device: both listener files must be regular files, else fail closed.
+          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then
+            echo "::error::cannot establish the runner owner: GITHUB_ENV and GITHUB_OUTPUT must both be regular files (missing, dangling or not a regular file)"
             exit 1
           fi
           if [ "${OWNER_UG%%:*}" = "0" ]; then
-            echo "::error::runner user mismatch: the owner source /__e is uid 0, refusing to chown the tree to root"
+            echo "::error::runner user mismatch: the listener's file-command files are uid 0, refusing to chown the tree to root"
             exit 1
           fi
-          echo "runner owner (stat of /__e): $OWNER_UG"
+          echo "runner owner (stat of GITHUB_ENV, confirmed by GITHUB_OUTPUT): $OWNER_UG"
           export OWNER_UG
           CHOWN_FAILED="$(mktemp)" || { echo "::error::mktemp failed"; exit 1; }
           find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c 'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done' sh {} + > "$CHOWN_FAILED" \
