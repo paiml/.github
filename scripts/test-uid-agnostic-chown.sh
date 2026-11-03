@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # infra#2349 guard (shell + awk only). Usage: test-uid-agnostic-chown.sh [--self-test]
 #
+# SCOPE (PMAT-2884, split from PMAT-2359): this file carries the WORK_ROOT hardening and the scanner
+# hardening, apart from the owner-source change (PMAT-2359 owns that). The owner source here is still
+# main's: the stat of /__e. What this ticket adds on top of it:
+#   (1) the WORK_ROOT guard + readonly at every chown site, (2) the CHOWN_N and owner-shape validation,
+#   (3) the scanner/self-test that holds both.
+#   Two facts are UNMEASURED and still need a measurement before this lands: (a) who owns /__e on gx10 (its
+#   GITHUB_ENV owner and /__e owner can differ), (b) that every bare-metal _work path is link-free.
+#   The pwd -P test on bare-metal runners (unified-gate.yml, 4 steps; sovereign-ci.yml, 2): what the code
+#   Two facts are UNMEASURED and still need a measurement before this lands: (a) who owns /__e on gx10 (its
+#   goes red with an ::error:: naming WORK_ROOT, it is never chowned through the link. In containers
+#   WORK_ROOT is the /__w bind mount, a real directory. What the code does NOT show is that every bare-metal
+#   _work path is link-free: that is UNMEASURED here (no runner host is reachable from this worktree). It is
+#   measured per runner class by: readlink -f "$(dirname "$RUNNER_TEMP")" compared with the unlinked name,
+#   in one step on [self-hosted, clean-room] and on [self-hosted, gpu, lambda-labs].
+#
 # A "site" is the uid-agnostic self-heal block: from the line carrying
 # "uid-agnostic (infra#2349)" to the closing `rm -f "${CHOWN_FAILED:?}"` at step indent.
 # The self-heal runs before checkout, so it is inline; all sites must be byte-identical.
@@ -20,7 +35,8 @@
 #   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp)
 #   [NOUID0]   no uid-0 check (error + exit 1, before the find) on the owner
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
-#   [DRIFT]    sites not byte-identical, or an unterminated site
+#   [EXIT]     an ::error:: branch that is not EXACTLY the error echo, `exit 1` alone, then the branch close (or `|| { echo "::error::..."; [rm -f ...;] exit 1; }`), or a trap in a step with a chown
+#   [DRIFT]    sites not byte-identical (incl. the WORK_ROOT derivation block before each site), or an unterminated site
 #   [NOSITE]   no site found; [NOSCAN] no workflow file or no chown command scanned
 # It prints how many files and chown commands it scanned. It also runs the first site for real:
 # owner read, unreadable owner exits 1 with ::error::, a failing chown exits 1 with a count, and a
@@ -35,10 +51,14 @@ STAT_LINE='          OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
 UID0_LINE='          if [ "${OWNER_UG%%:*}" = "0" ]; then'
 INTREE_RE='RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
 ACT=${ACT_DIR:-.github/actions}   # composite actions: scanned like workflows (their run steps are shell)
+gq() { local in="$1"; shift; grep "$@" <<<"$in"; }   # grep a captured string without a pipe: under pipefail, `grep -q` exiting early SIGPIPEs the writer and a MATCH reads as a miss (nondeterministic)
 list_files() { local f; for f in "$WF"/*.yml "$WF"/*.yaml "$ACT"/*/action.yml "$ACT"/*/action.yaml "$ACT"/action.yml; do [ -e "$f" ] && echo "$f"; done; }
 # Constants for the whole-file scan (logical lines are trimmed and continuation-joined).
 CH=chown; BR='{}'
 export MARK
+# The WORK_ROOT refusal guard line: not a link, a directory, and its physical path (pwd -P) equals the name (a symlinked PARENT fails the third test).
+export GUARD_IF='if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then'
+export GUARD_MARK="# Normalise WORK_ROOT before the guard:"
 export FIND_A='find "$WORK_ROOT" \( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \) -exec sh -c '"'"'for p; do chown -h "$OWNER_UG" "$p" || printf "%s\n" "$p"; done'"'"' sh '"$BR"' + > "$CHOWN_FAILED"'
 export FIND_TAIL=' || { echo "::error::find under $WORK_ROOT failed"; rm -f "${CHOWN_FAILED:?}"; exit 1; }'
 export OWNER_LINE='OWNER="$(id -un):$(id -gn)"'
@@ -47,9 +67,44 @@ SCAN_AWK="${SCAN_AWK:-$(dirname "$0")/uid-agnostic-chown-scan.awk}"
 
 extract_sites() { # file outdir -> writes outdir/site.N
   awk -v out="$2" -v mark="$MARK" '
-    index($0, mark) && !on { on=1; n++; f=out "/site." n }
+    # pre: from the last WORK_ROOT derivation line before the marker, up to the line before it
+    !on && /^          WORK_ROOT="\$\(dirname / { pre = "" ; inpre = 1 }
+    index($0, mark) && !on { on=1; n++; f=out "/site." n; p=out "/pre." n; printf "%s", pre > p; close(p); inpre = 0; pre = "" }
+    !on && inpre { pre = pre $0 "\n" }
     on { print > f }
     on && $0 == "          rm -f \"${CHOWN_FAILED:?}\"" { on=0; close(f) }
+  ' "$1"
+}
+
+# extract_guard: the WORK_ROOT refusal block, from its "# Normalise WORK_ROOT before the guard:" comment to the first line that is
+# exactly `fi` at step indent. It is in EVERY chown step of EVERY file (the sovereign-ci.yml self-heal sites and the bare-metal
+# unified-gate.yml steps). All copies must be byte-identical, and each is EXECUTED (guard_behaviour).
+extract_guard() { # file outdir -> outdir/guard.N (+ outdir/unterminated)
+  awk -v out="$2" '
+    index($0, "# Normalise WORK_ROOT before the guard:") == 11 && !on { on=1; n++; f=out "/guard." n }
+    on { print > f }
+    on && $0 == "          readonly WORK_ROOT" { on=0; close(f) }
+    END { if (on) { close(f); print "x" > (out "/unterminated") } }
+  ' "$1"
+}
+
+# extract_deriv: the WORK_ROOT derivation (first assignment, the "could not resolve" warning and the fallback assignment), up to its
+# closing `fi`. Every guarded step in every file has one; all must be byte-identical and each is EXECUTED with the guard (fallback_behaviour).
+extract_deriv() { # file outdir -> outdir/deriv.N (+ outdir/unterminated)
+  awk -v out="$2" '
+    !on && index($0, "          WORK_ROOT=\"$(dirname \"${RUNNER_WORKSPACE") == 1 { on=1; n++; f=out "/deriv." n }
+    on { print > f }
+    on && $0 == "          fi" { on=0; close(f) }
+    END { if (on) { close(f); print "x" > (out "/unterminated") } }
+  ' "$1"
+}
+
+# extract_bare: the privileged restore of a bare-metal step (OWNER=..., sudo -n chown -R, plain chown fallback), up to its closing `fi`.
+extract_bare() { # file outdir -> outdir/bare.N
+  awk -v out="$2" '
+    !on && $0 == "          OWNER=\"$(id -un):$(id -gn)\"" { on=1; n++; f=out "/bare." n }
+    on { print > f }
+    on && $0 == "          fi" { on=0; close(f) }
   ' "$1"
 }
 
@@ -76,7 +131,8 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
     mkdir "$tmp/d"; extract_sites "$f" "$tmp/d"
     for s in "$tmp"/d/site.*; do
       [ -e "$s" ] || continue
-      sites=$((sites + 1)); cp "$s" "$tmp/all.$sites"
+      sites=$((sites + 1)); cp "$s" "$tmp/all.$sites"; grep -vE "^[[:space:]]*[#]" "${s%/site.*}/pre.${s##*site.}" > "$tmp/pre.$sites" 2>/dev/null || : > "$tmp/pre.$sites"
+      [ -s "$tmp/pre.$sites" ] || { echo "FAIL[DRIFT] $f: no WORK_ROOT derivation before the site"; fails=1; }
       grep -q '^          rm -f "${CHOWN_FAILED:?}"$' "$s" || { echo "FAIL[DRIFT] $f: unterminated site"; fails=1; }
       # ASSIGN: OWNER_UG is assigned only by the one stat line (and exported); nothing else
       bad="$(grep -nE '(^|[[:space:];])OWNER_UG=' "$s" | grep -vF "$STAT_LINE" | grep -vE 'export OWNER_UG' || true)"
@@ -85,22 +141,84 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       grep -qxF "$STAT_LINE" "$s" || { echo "FAIL[OWNER_SRC] $f: the owner is not read by the stat of /__e"; fails=1; }
       [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -cE '(^|[^A-Za-z_-])stat[[:space:]]')" -eq 1 ] || { echo "FAIL[OWNER_SRC] $f: the site must have exactly one stat (of /__e)"; fails=1; }
       # INTREE: no stat of a path inside the chowned tree, whatever else the site has
-      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
+      gq "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]')" -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
       # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
       u0="$(grep -nxF "$UID0_LINE" "$s" | head -n 1 | cut -d: -f1)"; fd="$(grep -nE '^          find "\$WORK_ROOT"' "$s" | head -n 1 | cut -d: -f1)"
       if [ -z "$u0" ] || [ -z "$fd" ] || [ "$u0" -ge "$fd" ] \
-         || ! sed -n "$((u0 + 1))p" "$s" | grep -qF '::error::runner user mismatch' || [ "$(sed -n "$((u0 + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
+         || ! gq "$(sed -n "$((u0 + 1))p" "$s")" -qF '::error::runner user mismatch' || [ "$(sed -n "$((u0 + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
         echo "FAIL[NOUID0] $f: no uid-0 check (::error::runner user mismatch + exit 1) before the find"; fails=1; fi
       # FALLBACK
-      if grep -vE '^[[:space:]]*#' "$s" | grep -qiE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
+      if gq "$(grep -vE '^[[:space:]]*#' "$s")" -qiE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
         echo "FAIL[FALLBACK] $f: fallback branch in a site"; fails=1; fi
     done
     rm -rf "${tmp:?}/d"
   done
+  # GUARD: the refusal blocks of all files are one text (drift = red) and terminated; guard_behaviour executes each.
+  local gn=0 g
+  for f in $(list_files); do
+    mkdir "$tmp/g"; extract_guard "$f" "$tmp/g"
+    [ -e "$tmp/g/unterminated" ] && { echo "FAIL[DRIFT] $f: unterminated WORK_ROOT refusal block"; fails=1; }
+    for g in "$tmp"/g/guard.*; do
+      [ -e "$g" ] || continue
+      gn=$((gn + 1)); cp "$g" "$tmp/guard.$gn"; echo "$f" > "$tmp/gfile.$gn"
+      grep -qxF "          $GUARD_IF" "$g" || { echo "FAIL[DRIFT] $f: the WORK_ROOT refusal block lacks the resolved-path guard line"; fails=1; }
+    done
+    rm -rf "${tmp:?}/g"
+  done
+  i=2
+  while [ "$i" -le "$gn" ]; do
+    cmp -s "$tmp/guard.1" "$tmp/guard.$i" || { echo "FAIL[DRIFT] WORK_ROOT refusal block $i ($(cat "$tmp/gfile.$i")) differs from block 1 ($(cat "$tmp/gfile.1"))"; fails=1; }
+    i=$((i + 1))
+  done
+  [ "$gn" -eq 0 ] && { echo "FAIL[UNGUARDED] no WORK_ROOT refusal block under $WF"; fails=1; }
+  # DERIV / BARE: the derivation that feeds the guard, and the privileged restore of the bare-metal steps, are compared at EVERY guarded
+  # step (the pre.N check above only reaches the marked sites). A step whose derivation or restore differs, or a guarded step that has
+  # none, is red; the derivation + guard of each step is executed by fallback_behaviour.
+  local dn=0 bn=0 d b
+  for f in $(list_files); do
+    mkdir "$tmp/g"; extract_deriv "$f" "$tmp/g"; extract_bare "$f" "$tmp/g"
+    [ -e "$tmp/g/unterminated" ] && { echo "FAIL[DRIFT] $f: unterminated WORK_ROOT derivation"; fails=1; }
+    for d in "$tmp"/g/deriv.*; do [ -e "$d" ] || continue; dn=$((dn + 1)); cp "$d" "$tmp/deriv.$dn"; done
+    for b in "$tmp"/g/bare.*; do [ -e "$b" ] || continue; bn=$((bn + 1)); cp "$b" "$tmp/bare.$bn"; done
+    rm -rf "${tmp:?}/g"
+  done
+  [ "$dn" -eq "$gn" ] || { echo "FAIL[DRIFT] $dn WORK_ROOT derivation(s) but $gn guarded step(s): every guarded step needs the one derivation"; fails=1; }
+  [ "$((bn + sites))" -eq "$gn" ] || { echo "FAIL[DRIFT] $sites site(s) + $bn bare restore(s) but $gn guarded step(s): a guarded step is neither"; fails=1; }
+  i=2
+  while [ "$i" -le "$dn" ]; do
+    cmp -s "$tmp/deriv.1" "$tmp/deriv.$i" || { echo "FAIL[DRIFT] WORK_ROOT derivation $i differs from derivation 1 (all $dn guarded steps must match)"; fails=1; }
+    i=$((i + 1))
+  done
+  i=2
+  while [ "$i" -le "$bn" ]; do
+    cmp -s "$tmp/bare.1" "$tmp/bare.$i" || { echo "FAIL[DRIFT] bare restore $i differs from bare restore 1 (all $bn bare steps must match)"; fails=1; }
+    i=$((i + 1))
+  done
+  if [ -n "${GUARD_DIR:-}" ]; then
+    rm -f "${GUARD_DIR:?}"/guard.* "${GUARD_DIR:?}"/gfile.* "${GUARD_DIR:?}"/deriv.*
+    cp "$tmp"/guard.* "$tmp"/gfile.* "$tmp"/deriv.* "$GUARD_DIR"/ 2>/dev/null
+  fi
+  # LATE / NORO: WORK_ROOT is frozen (readonly) right after the guard that validated it, and nothing after the guard
+  # may assign, read into, unset, re-evaluate or loop over it: the chown/find must run on the value the guard saw.
+  for f in $(list_files); do
+    awk -v F="$f" -v GI="$GUARD_IF" '
+      /^      - / { g = 0; ro = 0; chk = 0 }
+      /^[[:space:]]*#/ { next }
+      g == 0 && index($0, GI) == 11 { g = 1; next }
+      g == 1 {
+        if ($0 == "          readonly WORK_ROOT") { ro = 1; next }
+        if ($0 ~ /^[[:space:]]*(echo|printf)[[:space:]]/ && $0 !~ /printf[[:space:]]+-v/) next
+        if ($0 ~ /(^|[^A-Za-z_$])WORK_ROOT[+]?=/ || $0 ~ /(^|[[:space:];&|(])(read|unset|ev[a]l|declare|typeset|mapfile|readarray|getopts|export|local|printf[[:space:]]+-v|for)[[:space:]]+(.*[^$A-Za-z_{])?WORK_ROOT([^A-Za-z_]|$)/) print "FAIL[LATE] " F ":" NR ": WORK_ROOT reassigned after the guard that validated it: " $0
+        if (!ro && !chk && $0 ~ /(^|[[:space:];|&(])(chown|find)[[:space:]]/) { chk = 1; print "FAIL[NORO] " F ":" NR ": no readonly WORK_ROOT between the guard and the first find/chown" }
+      }
+    ' "$f"
+  done > "$tmp/late"
+  [ -s "$tmp/late" ] && { cat "$tmp/late"; fails=1; }
   [ "$sites" -eq 0 ] && { echo "FAIL[NOSITE] no uid-agnostic site under $WF"; fails=1; }
   i=2
   while [ "$i" -le "$sites" ]; do
     cmp -s "$tmp/all.1" "$tmp/all.$i" || { echo "FAIL[DRIFT] site $i differs from site 1"; fails=1; }
+    cmp -s "$tmp/pre.1" "$tmp/pre.$i" || { echo "FAIL[DRIFT] site $i WORK_ROOT derivation differs from site 1"; fails=1; }
     i=$((i + 1))
   done
   [ "$fails" -eq 0 ] && echo "ok   $sites site(s), byte-identical; scanned $nfiles workflow file(s), $nchown chown command(s): all ruled shapes, none swallowed, no fallback"
@@ -109,36 +227,66 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
   return "$fails"
 }
 
-run_site() { # behavioural run of the first site: mode = ok | unreadable | chownfail
+# Behavioural run of the first site against stubs. The stat stub answers by PATH, as the real files
+# would: the owner stand-in /__e answers S_E ("uid:gid", empty = unreadable); any
+# other path (RUNNER_TEMP, WORK_ROOT, workspace) is wrong-owned 9999:9999.
+# mode = ok | uid0 | unreadable | chownfail | gidonly | unsetrt | wrongtemp, plus the wc* owner* and WORK_ROOT modes below
+FSTUB() { printf '#!/bin/sh\necho "find $1" >> "$LOG"\nexit 0\n' > "${d:?}/bin/find"; chmod +x "${d:?}/bin/find"; }   # a find that only logs: a mutant that lets "/" through must not walk the real root
+run_site() {
   local mode="$1" d site rc out
-  d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin"
+  d="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
+  : > "$d/fc/set_env"; : > "$d/fc/set_output"; : > "$d/w/ws/x"
   site="$d/site.sh"
   mkdir -p "$d/e"
   { echo 'set -u'; echo 'WORK_ROOT="$W"'; sed -e 's/^          //' -e "s#/__e#$d/e#g" "$SITE_FILE"; } > "$site"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"
+  cat > "$d/bin/stat" <<'STUB'
+#!/bin/sh
+case "$3" in
+  */e) [ -n "$S_E" ] && echo "$S_E" || exit 1 ;;
+  "") exit 1 ;;
+  *) echo 9999:9999 ;;
+esac
+STUB
+  chmod +x "$d/bin/chown" "$d/bin/stat"
+  export LOG="$d/log" RUNNER_TEMP="$d/w/_temp" W="$d/w" S_E=4242:4343
   case "$mode" in
-    unreadable) rmdir "$d/w/_temp" "$d/w/ws" "$d/e"; export RUNNER_TEMP="$d/none"; W="$d/none2" ;;
-    chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; chown_target="$d/w/ws/x"; : > "$chown_target"
-      export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
-    gidonly) printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\necho "$(id -u):4242"\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;
-    unsetrt) printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      unset RUNNER_TEMP; export LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP unset: the owner never depended on it
-    wrongtemp) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\ncase "$*" in */e) echo 4242:4343 ;; *) echo 9999:9999 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # RUNNER_TEMP (inside the tree) and WORK_ROOT wrong-owned, /__e right
-    uid0) printf '#!/bin/sh\nprintf "%%s\n" "$*" >> "$LOG"\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"; : > "$d/w/ws/x"
-      printf '#!/bin/sh\ncase "$*" in */e) echo 0:0 ;; *) echo 4242:4343 ;; esac\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-      export RUNNER_TEMP="$d/w/_temp" LOG="$d/log"; W="$d/w" ;;   # the owner source reads uid 0: must fail, never chown
-    *) printf '#!/bin/sh\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
-      printf '#!/bin/sh\necho 4242:4343\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"; export RUNNER_TEMP="$d/w/_temp"; W="$d/w" ;;
+    uid0) S_E=0:0; export S_E ;;
+    unreadable) S_E=; export S_E ;;
+    chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; S_E=4242:4242; export S_E ;;
+    gidonly) S_E="$(id -u):4242"; export S_E ;;
+    unsetrt) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset: the owner never depended on it
+    wrongtemp) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset and every tree path wrong-owned: the owner never depended on them
+    # r12: wc (the failed-path counter) is untrusted output. A count that is empty or not a run of digits must fail closed.
+    wcfail) printf '#!/bin/sh\nexit 1\n' > "${d:?}/bin/wc" ;;                       # wc fails and prints nothing
+    wcempty) printf '#!/bin/sh\nexit 0\n' > "${d:?}/bin/wc" ;;                      # wc succeeds and prints nothing
+    wcgarbage) printf '#!/bin/sh\necho oops\n' > "${d:?}/bin/wc" ;;                 # wc prints non-numeric output
+    wcnegative) printf '#!/bin/sh\necho -1\n' > "${d:?}/bin/wc" ;;                  # wc prints a signed number
+    wcspaces) printf '#!/bin/sh\necho "0 x"\n' > "${d:?}/bin/wc" ;;                 # a zero followed by text must not read as zero
+    # r12: the owner read from /__e must be a numeric uid:gid with a non-root uid
+    ownergarbage) S_E=abc:def; export S_E ;;
+    ownernocolon) S_E=4242; export S_E ;;
+    ownerzeropad) S_E=00:0; export S_E ;;                      # uid 0 spelled so that `= "0"` misses it
+    ownertwocolon) S_E=4242:4343:1; export S_E ;;
+    # WORK_ROOT itself is not a plain directory: find would not descend into a link (0 wrong-owned paths, "restored"); never follow it
+    symlinkroot) mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link"; export W ;;   # link to a dir holding wrong-owned files
+    danglingroot) ln -s "${d:?}/nowhere" "${d:?}/link"; W="$d/link"; export W ;;
+    # a symlinked PARENT of WORK_ROOT: [ -L ] on the leaf is false and the leaf is a directory, but chown -R would follow the parent into another tree
+    symlinkparent) FSTUB; mkdir -p "${d:?}/real/w"; : > "${d:?}/real/w/wrong-owned"; ln -s "${d:?}/real" "${d:?}/lnk"; W="$d/lnk/w"; export W ;;
+    fileroot) : > "${d:?}/rf"; W="$d/rf"; export W ;;
+    # r14: spellings of WORK_ROOT that -L / -d alone do not catch (a trailing slash makes -L follow the link); every one must be refused
+    slashlink) FSTUB; mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link/"; export W ;;
+    slashslashlink) FSTUB; mkdir "${d:?}/real"; : > "${d:?}/real/wrong-owned"; ln -s "${d:?}/real" "${d:?}/link"; W="$d/link//"; export W ;;
+    rootslash) FSTUB; W=/; export W ;;
+    rootslashes) FSTUB; W=///; export W ;;
+    emptyroot) FSTUB; W=; export W ;;
+    relroot) FSTUB; W=scripts; export W ;;   # a real directory, spelled relative
+    dotdotroot) FSTUB; mkdir -p "${d:?}/a"; W="$d/a/../w"; export W ;;   # a real directory, spelled through ..
+    dotroot) FSTUB; W="$d/./w"; export W ;;
+    enddotroot) FSTUB; W="$d/w/."; export W ;;
+    enddotdotroot) FSTUB; W="$d/w/.."; export W ;;
   esac
-  export W
-  if [ "$mode" = chownfail ]; then
-    # make a file the owner check selects: pretend the owner uid differs via a stubbed stat
-    printf '#!/bin/sh\necho 4242:4242\n' > "$d/bin/stat"; chmod +x "$d/bin/stat"
-  fi
+  [ -e "$d/bin/wc" ] && chmod +x "$d/bin/wc"
   out="$(PATH="$d/bin:$PATH" bash "$site" 2>&1)"; rc=$?
   [ -s "$d/log" ] && out="$out"$'\n'"CHOWN-CALLED $(tr '\n' ' ' < "$d/log")"
   rm -rf "${d:?}"
@@ -159,18 +307,84 @@ behaviour() {
   o="$(run_site uid0)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner user mismatch' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   owner uid 0 -> ::error:: runner user mismatch + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] uid 0 did not fail closed: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
+  if [ "$r" -ne 0 ] && gq "$o" -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -qE "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && gq "$o" -qE "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
+  # r12: the failed-path count is validated before it is compared. Each wc stub must make the site exit nonzero with the count ::error::.
+  for m in wcfail:"wc stub that fails" wcempty:"wc stub that prints nothing" wcgarbage:"wc stub that prints non-numeric output" wcnegative:"wc stub that prints a negative number" wcspaces:"wc stub that prints a zero followed by text"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && gq "$o" -q '::error::cannot count the failed paths'; then echo "ok   ${m#*:} -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # r12: an owner that is not a numeric uid:gid with a non-root uid is refused before any find/chown.
+  for m in ownergarbage:"owner stat prints non-numeric text" ownernocolon:"owner stat prints a uid with no gid" ownerzeropad:"owner stat prints uid 00 (root spelled with a pad)" ownertwocolon:"owner stat prints three fields"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && gq "$o" -q '::error::runner owner' && ! gq "$o" -q 'CHOWN-CALLED'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # WORK_ROOT must be a real directory: a symlink (even to a good tree), a dangling link or a regular file is ::error:: + exit 1, nothing chowned.
+  for m in symlinkroot:"WORK_ROOT is a symlink to a dir holding wrong-owned files" danglingroot:"WORK_ROOT is a dangling symlink" fileroot:"WORK_ROOT is a regular file" symlinkparent:"WORK_ROOT has a symlinked parent (probe/lnk/work)"; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && gq "$o" -q '::error::WORK_ROOT' && ! gq "$o" -q 'CHOWN-CALLED' && ! gq "$o" -q 'ownership restored'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  # r14: spellings that the plain -L / -d guard misses (trailing slash) or that are never a work root ("/", empty, relative, . / .. components)
+  for m in slashlink:"WORK_ROOT is a symlink spelled with one trailing slash" slashslashlink:"WORK_ROOT is a symlink spelled with two trailing slashes" rootslash:"WORK_ROOT is /" rootslashes:"WORK_ROOT is ///" emptyroot:"WORK_ROOT is empty" relroot:"WORK_ROOT is relative" dotdotroot:"WORK_ROOT has a .. component" dotroot:"WORK_ROOT has a . component" enddotroot:"WORK_ROOT ends in /." enddotdotroot:"WORK_ROOT ends in /.."; do
+    o="$(run_site "${m%%:*}")"; r=$?
+    if [ "$r" -ne 0 ] && gq "$o" -q '::error::WORK_ROOT' && ! gq "$o" -q 'CHOWN-CALLED' && ! gq "$o" -q 'ownership restored'; then echo "ok   ${m#*:} -> ::error:: + nonzero, chown and find never called"; else echo "FAIL[BEHAVIOUR] ${m#*:} did not fail closed: $o"; rc=1; fi
+  done
+  return "$rc"
+}
+
+
+# guard_behaviour: EXECUTE every file's WORK_ROOT refusal block (the unified-gate.yml bare-metal steps included, not only the sovereign-ci.yml
+# sites) against real directory fixtures. A good directory reaches the end; every other spelling is ::error::WORK_ROOT + nonzero, never reached.
+guard_behaviour() {
+  local rc=0 n=0 g d out r name p
+  [ -d "${GUARD_DIR:-}" ] && ls "$GUARD_DIR"/guard.* >/dev/null 2>&1 || { echo "FAIL[UNGUARDED] no refusal block to execute"; return 1; }
+  d="$(cd "$(mktemp -d)" && pwd -P)"
+  mkdir -p "$d/real/w" "$d/good" "$d/a"; : > "$d/rf"; ln -s "$d/real/w" "$d/link"; ln -s "$d/real" "$d/lnk"; ln -s "$d/nowhere" "$d/dangling"
+  for g in "$GUARD_DIR"/guard.*; do
+    n=$((n + 1)); name="$(cat "${g/guard./gfile.}")"
+    out="$(bash -c 'set -u; WORK_ROOT="$1"; '"$(cat "$g")"'; echo REACHED' _ "$d/good" 2>&1)"; r=$?
+    if [ "$r" -eq 0 ] && gq "$out" -q REACHED; then :; else echo "FAIL[BEHAVIOUR] $name: a real directory was refused: $out"; rc=1; fi
+    for p in "/" "//" "///" "" "scripts" "$d/a/../good" "$d/./good" "$d/good/." "$d/good/.." "$d/link" "$d/link/" "$d/link//" "$d/lnk/w" "$d/lnk/w/" "$d/rf" "$d/dangling" "$d/nowhere"; do
+      out="$(bash -c 'set -u; WORK_ROOT="$1"; '"$(cat "$g")"'; echo REACHED' _ "$p" 2>&1)"; r=$?
+      if [ "$r" -ne 0 ] && gq "$out" -q '::error::WORK_ROOT' && ! gq "$out" -q REACHED; then :; else echo "FAIL[BEHAVIOUR] $name: WORK_ROOT '$p' was not refused (rc=$r): $out"; rc=1; fi
+    done
+  done
+  rm -rf "${d:?}"
+  [ "$rc" -eq 0 ] && echo "ok   $n WORK_ROOT refusal block(s) executed: a real directory passes; /, //, empty, relative, ./.., symlink, link/, symlinked parent, file, dangling are refused"
+  return "$rc"
+}
+
+# fallback_behaviour: EXECUTE the derivation + the refusal block of EVERY guarded step (all 14: the 8 self-heal sites and the 6 bare-metal
+# steps), with the runner env that takes the "could not resolve the runner _work root" fallback. The fallback value must go through the same
+# guard (a symlinked fallback is refused, a real one is accepted) and WORK_ROOT must be readonly afterwards (a later assignment fails).
+fallback_behaviour() {
+  local rc=0 n=0 g k name d out r
+  [ -d "${GUARD_DIR:-}" ] && ls "$GUARD_DIR"/deriv.* >/dev/null 2>&1 || { echo "FAIL[UNGUARDED] no derivation to execute"; return 1; }
+  d="$(cd "$(mktemp -d)" && pwd -P)"; mkdir -p "$d/good/ws" "$d/other/t"; ln -s "$d/good" "$d/link"
+  for g in "$GUARD_DIR"/guard.*; do
+    k="${g##*guard.}"; n=$((n + 1)); name="$(cat "$GUARD_DIR/gfile.$k")"
+    [ -s "$GUARD_DIR/deriv.$k" ] || { echo "FAIL[BEHAVIOUR] $name: guarded step $k has no derivation to execute"; rc=1; continue; }
+    # fallback taken (RUNNER_TEMP is not under the same root), lands on a real directory: accepted, warned, then frozen
+    out="$(env -u RUNNER_WORKSPACE GITHUB_WORKSPACE="$d/good/ws" RUNNER_TEMP="$d/other/t" bash -c 'set -u; '"$(cat "$GUARD_DIR/deriv.$k" "$g")"'; echo REACHED; (WORK_ROOT=/etc) 2>/dev/null && echo RO_BROKEN || echo RO_OK; echo "ROOT=$WORK_ROOT"' 2>&1)"; r=$?
+    if [ "$r" -eq 0 ] && gq "$out" -q REACHED && gq "$out" -q RO_OK && ! gq "$out" -q RO_BROKEN && gq "$out" -qF "ROOT=$d/good"; then :; else echo "FAIL[BEHAVIOUR] $name: step $k fallback to a real directory was not accepted and frozen (rc=$r): $out"; rc=1; fi
+    # fallback taken, lands on a symlink: the same guard must refuse it
+    out="$(env -u RUNNER_WORKSPACE GITHUB_WORKSPACE="$d/link/ws" RUNNER_TEMP="$d/other/t" bash -c 'set -u; '"$(cat "$GUARD_DIR/deriv.$k" "$g")"'; echo REACHED' 2>&1)"; r=$?
+    if [ "$r" -ne 0 ] && gq "$out" -q '::error::WORK_ROOT' && ! gq "$out" -q REACHED; then :; else echo "FAIL[BEHAVIOUR] $name: step $k fallback to a symlinked WORK_ROOT was not refused (rc=$r): $out"; rc=1; fi
+  done
+  rm -rf "${d:?}"
+  [ "$rc" -eq 0 ] && echo "ok   $n guarded step(s) executed with the fallback taken: a real directory passes and is frozen readonly, a symlink is refused"
   return "$rc"
 }
 
 run_all() {
-  export SITE_FILE; SITE_FILE="$(mktemp)"
+  export SITE_FILE GUARD_DIR; SITE_FILE="$(mktemp)"; GUARD_DIR="$(mktemp -d)"
   SITE_COPY="$SITE_FILE" check_files; local a=$?
   behaviour; local b=$?
-  rm -f "${SITE_FILE:?}"
-  [ "$a" -eq 0 ] && [ "$b" -eq 0 ]
+  guard_behaviour; local c=$?
+  fallback_behaviour; local e=$?
+  rm -f "${SITE_FILE:?}"; rm -rf "${GUARD_DIR:?}"
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$c" -eq 0 ] && [ "$e" -eq 0 ]
 }
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -184,7 +398,7 @@ if [ "${1:-}" = "--self-test" ]; then
     out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
     local m0=$MISSES
     for t in ${2//,/ }; do
-      echo "$out" | grep -q "FAIL\[$t\]" || miss "'$1' not caught as [$t]"
+      gq "$out" -q "FAIL\[$t\]" || miss "'$1' not caught as [$t]"
     done
     [ "$MISSES" -eq "$m0" ] && echo "  caught [$2] $1"
   }
@@ -219,6 +433,44 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "stat of a path outside the tree, not /__e" OWNER_SRC "/__e)\"" '/opt)"'
   swap "stat loop over _temp and WORK_ROOT" OWNER_SRC,INTREE,ASSIGN "$S" 'for P in "${RUNNER_TEMP:-}" "$WORK_ROOT/_temp"; do OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$P")"; done'
   swap "second stat added"         OWNER_SRC "$S" "$S"$'\n          stat -c %u /__e >/dev/null'
+  # Executed mutants: each variant is applied at ALL 8 sites (so DRIFT stays quiet) and then the
+  # behaviour fixtures are RUN against the mutated site; the named fixtures must go red.
+  exmut() { # name sed-expr fixture... : sed over $F, guard must stay quiet on no tag we assert, each fixture must be FAIL[BEHAVIOUR]
+    local n="$1" e="$2" fx out; shift 2
+    cp "$WF"/*.yml "$tmp"/; sed -i "$e" "$tmp/$F"
+    cmp -s "$WF/$F" "$tmp/$F" && { echo "SELF-TEST FAIL: mutation '$n' changed nothing"; exit 1; }
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    for fx in "$@"; do gq "$out" -qF "FAIL[BEHAVIOUR] $fx did not fail closed" || miss "'$n': fixture '$fx' stayed green"; done
+    echo "  caught [BEHAVIOUR] $n: $# fixture(s) red"
+  }
+  # --- r12: the failed-path count and the owner shape are validated before use; executed mutants at ALL 8 sites ---
+  F_WCF='wc stub that fails'; F_WCE='wc stub that prints nothing'; F_WCG='wc stub that prints non-numeric output'; F_WCS='wc stub that prints a zero followed by text'
+  F_OG='owner stat prints non-numeric text'; F_ONC='owner stat prints a uid with no gid'; F_OZ='owner stat prints uid 00 (root spelled with a pad)'; F_O3='owner stat prints three fields'
+  exmut "FINDING: count validation removed at all 8 sites (empty and garbage pass)" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1__never__)/" "$F_WCF" "$F_WCE" "$F_WCG" "$F_WCS"
+  exmut "count validation keeps only the empty case" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1'')/" "$F_WCG" "$F_WCS"
+  exmut "count validation keeps only the non-digit case (empty passes)" "s/^\( *\)''|\*\[!0-9\]\*)\$/\1*[!0-9]*)/" "$F_WCF" "$F_WCE"
+  exmut "owner shape check removed at all 8 sites" "s/^\( *\)\*\[!0-9:\]\*|.*) ;;\$/\1*) OWNER_SHAPE_OK=1 ;;/" "$F_OG" "$F_ONC" "$F_OZ" "$F_O3"
+  exmut "owner shape: leading-zero uid (00) allowed" "s/|:\*|0\*) ;;/|:*) ;;/" "$F_OZ"
+  exmut "owner shape: non-digit characters allowed" "s/\*\[!0-9:\]\*|//" "$F_OG"
+  exmut "owner shape: a second colon allowed" "s/|\*:\*:\*|/|/" "$F_O3"
+  # --- r13: WORK_ROOT must not be a symlink or a non-directory; guard at every site, executed mutants ---
+  WG='if \[ -L "\$WORK_ROOT" \] || \[ ! -d "\$WORK_ROOT" \] || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then'
+  F_SL='WORK_ROOT is a symlink to a dir holding wrong-owned files'; F_DL='WORK_ROOT is a dangling symlink'; F_RF='WORK_ROOT is a regular file'
+  F_SP='WORK_ROOT has a symlinked parent (probe/lnk/work)'
+  exmut "FINDING r13: WORK_ROOT guard removed at every marked site (symlinked root reports restored)" 's/'"$WG"'/if false; then/' "$F_SL" "$F_DL" "$F_RF" "$F_SP"
+  exmut "FINDING round M: resolved-path check removed at every site (a symlinked PARENT passes)" 's/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_SP"
+  exmut "WORK_ROOT guard weakened to -L only (a regular file passes)" 's/ || \[ ! -d "\$WORK_ROOT" \] || \[ "\$(cd .*$/; then/' "$F_RF" "$F_SP"
+  exmut "WORK_ROOT guard exit removed" '/WORK_ROOT .* has a symlinked parent or is not a directory/{n;s/exit 1/true/}' "$F_SL" "$F_DL" "$F_RF" "$F_SP"
+  swap "WORK_ROOT guard removed at one marked site" DRIFT 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ] || [ "$(cd "$WORK_ROOT" && pwd -P)" != "$WORK_ROOT" ]; then' 'if false; then'
+  swap "WORK_ROOT guard is a warning" DRIFT 'echo "::error::WORK_ROOT' 'echo "::warning::WORK_ROOT'
+  # --- r14: WORK_ROOT is normalised (trailing slashes stripped) and refused when empty, "/", relative or with a . / .. component ---
+  F_SS="WORK_ROOT is a symlink spelled with one trailing slash"; F_S2="WORK_ROOT is a symlink spelled with two trailing slashes"; F_R1="WORK_ROOT is /"; F_R3="WORK_ROOT is ///"
+  F_EM="WORK_ROOT is empty"; F_RL="WORK_ROOT is relative"; F_DD="WORK_ROOT has a .. component"; F_D1="WORK_ROOT has a . component"; F_ED="WORK_ROOT ends in /."; F_E2="WORK_ROOT ends in /.."
+  exmut "FINDING r14: trailing-slash strip and resolved-path check dropped at every site (link/ passes -L)" 's/^\( *\)while \[ "\$WORK_ROOT" != "\/" \] .*$/\1:/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_SS" "$F_S2"
+  exmut "\"/\" refusal dropped at every site (resolved-path check also dropped)" 's/^\( *\)""|\/|\[!\/\]\*|/\1""|[!\/]*|/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_R1" "$F_R3"
+  exmut "absolute-path refusal dropped at every site (resolved-path check also dropped)" 's/|\[!\/\]\*|/|/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_RL"
+  exmut ". / .. component refusal dropped at every site (resolved-path check also dropped)" 's/|\*\/\.\/\*|\*\/\.\.\/\*|\*\/\.|\*\/\.\.)/)/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_DD" "$F_D1" "$F_ED" "$F_E2"
+  exmut "normalisation case removed at every site (resolved-path check also dropped)" 's/^\( *\)""|\/|\[!\/\]\*|.*)$/\1__never__)/;s/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "$F_R1" "$F_RL" "$F_DD" "$F_D1"
   swap "uid-0 check removed"       NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if false; then'
   swap "uid-0 check compares gid"  NOUID0   '          if [ "${OWNER_UG%%:*}" = "0" ]; then' '          if [ "${OWNER_UG##*:}" = "0" ]; then'
   cp "$WF"/*.yml "$tmp"/   # uid-0 check reports but does not exit: the line after the mismatch error becomes `true`
@@ -231,6 +483,22 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "case on OWNER_UG"          FALLBACK '          export OWNER_UG' '          case "$OWNER_UG" in *) : ;; esac'
   swap "0:0 special case"          FALLBACK '          export OWNER_UG' '          [ "$OWNER_UG" = 0:0 ] && :'
   swap "one site drifts"           DRIFT    'runner owner (stat of /__e)' 'runner owner'
+  swap "r14: one site's WORK_ROOT derivation gains a trailing slash" DRIFT 'WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")"' 'WORK_ROOT="$(dirname "${RUNNER_WORKSPACE:-$GITHUB_WORKSPACE}")/"'
+  swap "r14: one site's WORK_ROOT fallback derivation changes" DRIFT 'WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"' 'WORK_ROOT="$GITHUB_WORKSPACE"'
+  # --- round N (PR #97 finding): WORK_ROOT reassigned AFTER the guard that validated it; frozen readonly + a LATE/NORO scan ---
+  RO='          readonly WORK_ROOT'
+  swap "FINDING round N: WORK_ROOT reassigned after the guard (assignment after readonly)" LATE "$RO" "$RO"$'\n          WORK_ROOT=/'
+  swap "late reassignment to a relative path, readonly dropped" LATE,NORO "$RO" '          WORK_ROOT=../x'
+  swap "late reassignment by append (+=)" LATE "$RO" "$RO"$'\n          WORK_ROOT+=/x'
+  swap "late reassignment by read" LATE "$RO" "$RO"$'\n          read -r WORK_ROOT < /dev/null'
+  EV=ev; swap "late reassignment by $EV" LATE "$RO" "$RO"$'\n          '"${EV}al \"WORK_ROOT=/\""
+  swap "late unset of WORK_ROOT" LATE "$RO" "$RO"$'\n          unset WORK_ROOT'
+  swap "late reassignment by printf -v" LATE "$RO" "$RO"$'\n          printf -v WORK_ROOT %s /'
+  swap "readonly freeze removed (guard validates, nothing pins the value)" NORO "$RO" ':'
+  # the shell really refuses a reassignment of a readonly name (executed, not just scanned)
+  late_out="$(bash -c 'WORK_ROOT=/a; readonly WORK_ROOT; WORK_ROOT=/ 2>/dev/null; echo reached' 2>&1)"; late_rc=$?
+  { [ "$late_rc" -ne 0 ] && ! gq "$late_out" -q reached; } || miss "a late assignment to a readonly WORK_ROOT was not refused (rc=$late_rc)"
+  echo "  caught [EXEC] late assignment to the frozen WORK_ROOT is refused by the shell (rc=$late_rc)"
   # --- infra-res ruling 1: uid OR gid ---
   PRED='\( ! -user "${OWNER_UG%%:*}" -o ! -group "${OWNER_UG##*:}" \)'
   swap "find selects by uid only"  GID,BEHAVIOUR "$PRED" '! -user "${OWNER_UG%%:*}"'
@@ -289,7 +557,7 @@ if [ "${1:-}" = "--self-test" ]; then
   comp() { # name tags yaml : a composite action under $tmp/actions/x/action.yml
     rm -rf "${tmp:?}/actions"; mkdir -p "$tmp/actions/x"; cp "$WF"/*.yml "$tmp"/; printf '%b\n' "$3" > "$tmp/actions/x/action.yml"
     out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-    for t in ${2//,/ }; do echo "$out" | grep -q "FAIL\[$t\]" || { miss "composite '$1' not caught as [$t]"; }; done
+    for t in ${2//,/ }; do gq "$out" -q "FAIL\[$t\]" || { miss "composite '$1' not caught as [$t]"; }; done
     echo "  caught [$2] $1"; rm -rf "${tmp:?}/actions"
   }
   CA='name: c\nruns:\n  using: composite\n  steps:\n'
@@ -312,7 +580,7 @@ if [ "${1:-}" = "--self-test" ]; then
   # a variable command that resolves to a non-chown must stay green (the rule fails only the unresolvable)
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          LS=/bin/ls\n          \$LS -R \"\$GITHUB_WORKSPACE\" # owner listing" >> "$tmp/$F"
   out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
+  gq "$out" -q 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
   echo "  kept  [VARCMD] a variable command resolving to a non-chown stays green"
   # --- infra#2349 class rules (infra-res): NORMALISE the command word, then match CLASSES ---------
   # Every mutant below passed the literal-word detector at 366ffcc (infra-PR-cull: 0 of 3 caught).
@@ -338,6 +606,23 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "norm: backtick command word"           VARCMD '`command -v chown` -R a:b "$GITHUB_WORKSPACE"'
   nm "norm: xargs \$X unresolved"            VARCMD 'ls | xargs -n1 $X "$OWNER_UG"'
   nm "norm: \"\$X\" after if !"              VARCMD 'if ! "$X" -R a:b "$GITHUB_WORKSPACE"; then exit 1; fi'
+  # finding 1: ANY command word that holds an expansion is a variable command word, not only a lone $VAR
+  nm "concat: \"\$X\$Y\" (X=ch Y=own)"      VARCMD 'X=ch; Y=own; "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$X\$Y unquoted"               VARCMD 'X=ch; Y=own; $X$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \${X}\${Y} braces"             VARCMD 'X=ch; Y=own; "${X}${Y}" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: ch\$Y prefix literal"          VARCMD 'Y=own; ch$Y -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$Xown suffix literal"         VARCMD 'X=ch; "$X"own -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: sudo -n \"\$X\$Y\""            VARCMD 'X=ch; Y=own; sudo -n "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: env A=1 \"\$X\$Y\""            VARCMD 'X=ch; Y=own; env A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: leading assignment A=1 \"\$X\$Y\"" VARCMD 'X=ch; Y=own; A=1 "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: \$DIR/\$TOOL path command"     VARCMD 'D=/usr/bin; T=ch; U=own; "$D/$T$U" -R "$OWNER_UG" "$WORK_ROOT"'
+  nm "concat: after && in an if"             VARCMD 'X=ch; Y=own; if true && "$X$Y" -R "$OWNER_UG" "$WORK_ROOT"; then :; fi'
+  # round-2 FINDING (3/3 FAIL on 4d5255c): cmdword(tq) lost command words that CONTAIN a substitution. One fixture per form variant.
+  nm "subst: quoted \"\$(find_tool)\""          VARCMD '"$(find_tool)" -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: quoted backtick"                 VARCMD '"`find_tool`" -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: prefixed ch\$(printf own)"       VARCMD 'ch$(printf own) -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: wrapped sudo \$(find_tool)"      VARCMD 'sudo $(find_tool) -R a:b "$GITHUB_WORKSPACE"'
+  nm "subst: wrapped sudo -n \"\$(find_tool)\"" VARCMD 'sudo -n "$(find_tool)" -R a:b "$GITHUB_WORKSPACE"'
   # rule 2: the ownership primitives, each spelling normalised
   nm "prim: install -o 1000 -g 1000"         TARGET 'install -o 1000 -g 1000 -m 755 a b'
   nm "prim: install -o root"                 TARGET 'install -o root a b'
@@ -366,7 +651,6 @@ if [ "${1:-}" = "--self-test" ]; then
   nm "prim: \${SETFACL:-setfacl}"            TARGET '${SETFACL:-setfacl} -b "$GITHUB_WORKSPACE"'
   nm "prim: var resolved to install"         VARCMD 'I=install\n          $I -o 1000 a b'
   nm "prim: var resolved to setfacl"         VARCMD 'S=/usr/bin/setfacl\n          $S -b x'
-  # rule 3: eval / sh -c / source with a non-literal argument, in a step that deals with ownership
   nm "opaque: eval \"\$CMD\""                OPAQUE 'eval "$CMD"'
   nm "opaque: eval \$CMD"                    OPAQUE 'eval $CMD'
   nm "opaque: eval-built command word"       OPAQUE 'X=ls; eval "$X -R a b"'
@@ -387,8 +671,8 @@ if [ "${1:-}" = "--self-test" ]; then
   # rule 5: controls. A resolved non-ownership command of the same shape stays GREEN (no FAIL at all).
   keep() { # name line : append a step that mentions chown, demand a clean run
     cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
-    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-    if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
+    out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)" # the chown scanner alone
+    if gq "$out" -q 'FAIL\['; then miss "control '$1' went red: $(gq "$out" -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
   }
   keep "ctl: \\ls -R"                        '\\ls -R "$GITHUB_WORKSPACE"'
   keep "ctl: \"ls\" quoted"                  '"ls" -R "$GITHUB_WORKSPACE"'
@@ -407,19 +691,253 @@ if [ "${1:-}" = "--self-test" ]; then
   keep "ctl: eval 'ls' literal"              "eval 'ls -l'"
   keep "ctl: source ./file literal"          'source ./env.sh'
   keep "ctl: var resolved to ls"             'LS=/bin/ls\n          $LS -R "$GITHUB_WORKSPACE"'
-  keep "ctl: install -o from OWNER_UG"       'install -o "${OWNER_UG%%:*}" a b'
-  # eval in a step that does not deal with ownership is not an ownership question
+  keep "ctl: assignment with a substitution value" 'X=$(id -un $(whoami))'
+  keep "ctl: quoted assignment with a substitution" 'OWNER="$(id -un):$(id -gn)"'
+  # r4a: an OWNER_UG mention (argument or comment) exempts nothing: only the two ruled chown shapes are approved
+  nm "r4a: install -o \"\${OWNER_UG%%:*}\" is not approved" TARGET 'install -o "${OWNER_UG%%:*}" a b'
+  nm "r4a: tar --owner=root # OWNER_UG"                    TARGET 'tar --owner=root -xf a.tar # OWNER_UG'
+  nm "r4a: cp --chown=root # OWNER_UG"                     TARGET 'cp --chown=root a b # OWNER_UG'
+  nm "r4a: setfacl # OWNER_UG"                             TARGET 'setfacl -m u:root:rwx /w # OWNER_UG'
+  # r4b: a message line whose output is piped is a command, not a message
+  nm "r4b: printf 'chown ..' | sh (SCAN was 0)"            TARGET "printf 'chown -R root:root /w' | sh"
+  nm "r4b: echo \"chown ..\" | bash"                       TARGET 'echo "chown -R root:root /w" | bash'
+  nm "r4b: echo \"\$(chown ..)\" (expansion kept)"         TARGET 'echo "$(chown -R root:root /w)"'
+  # eval in a step that does not deal with ownership is not an ownership question for the chown scanner,
+  # the chown scanner stays quiet on it (OPAQUE is still a gate class; this step has no ownership text).
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
-  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
+  out="$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/$F" 2>&1 || true)"
+  if gq "$out" -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red in the chown scanner"; else echo "  kept  [green] eval in a step with no ownership text (chown scanner)"; fi
+  # --- finding 2: every fail-closed exit in each self-heal site (and the unified-gate sites) ---------
+  # For every `exit 1` that sits in a step with a chown / OWNER_UG, in sovereign-ci.yml and unified-gate.yml,
+  # one mutant per replacement: true, :, nothing, exit 0. The guard (the scan, [EXIT]) must go red on each.
+  # Mutants are checked per site against the scan alone, so the run stays fast.
+  exitmut=0
+  for F in sovereign-ci.yml unified-gate.yml; do
+    lines="$(awk 'function flush(  i){ if(has) for(i=1;i<=ne;i++) print E[i]; ne=0; has=0 }
+      /^[ \t]*- (name|uses|run|id|if):/{ flush() } /^  [A-Za-z0-9_.-]+:[ \t]*$/{ flush() }
+      !/^[ \t]*#/ && (/chown/ || /OWNER_UG/) { has=1 } /exit 1/ { ne++; E[ne]=NR } END{ flush() }' "$WF/$F")"
+    [ -n "$lines" ] || miss "no fail-closed exit found to mutate in $F"
+    for N in $lines; do
+      for R in 'true' ':' '' 'exit 0'; do
+        sed "${N}s/exit 1/$R/" "$WF/$F" > "$tmp/m.yml"
+        cmp -s "$WF/$F" "$tmp/m.yml" && { miss "exit mutant $F:$N '$R' changed nothing"; continue; }
+        exitmut=$((exitmut + 1))
+        gq "$(awk -v F="$F" -f "$SCAN_AWK" "$tmp/m.yml")" -q 'FAIL\[EXIT\]' || miss "exit mutant $F:$N 'exit 1' -> '$R' not caught as [EXIT]: $(sed -n "${N}p" "$WF/$F" | cut -c1-100)"
+      done
+    done
+    gq "$(awk -v F="$F" -f "$SCAN_AWK" "$WF/$F")" -q 'FAIL\[EXIT\]' && miss "[EXIT] fired on the unmutated $F"
+  done
+  [ "$exitmut" -gt 0 ] && echo "  caught [EXIT] $exitmut fail-closed-exit mutants (true / : / nothing / exit 0) over sovereign-ci.yml and unified-gate.yml"
+  F=sovereign-ci.yml
+  # --- r11 (finding on de1f305): the fail-closed branch is EXACT TEXT --------------------------------------
+  # `echo "::error::x"; exit 0; exit 1; }` ended in `; exit 1; }` and so passed the old tail pattern, while the
+  # step carried on. Class: anything between the ::error:: and the exit 1 that can end, skip or neutralise the exit
+  # (exit 0, return, true, :, a trap, ||/&& chaining, a newline plus another command, `exit 1` in a comment or in
+  # a string). Each mutant is applied to the real workflow, the scan must say [EXIT], and where the mutant is
+  # really fail-open the mutated branch is EXECUTED and must be seen to carry on (CONTINUED, or rc 0).
+  r11n=0
+  r11run() { # name expect(open|any) mutated-file : run the branch the mutation touched
+    local a="$WF/$F" b="$3" L s e frag res
+    L="$(cmp "$a" "$b" | sed -n 's/.*line \([0-9]*\).*/\1/p')"
+    if gq "$(sed -n "${L}p" "$b")" -q '|| { echo'; then
+      frag="$(sed -n "${L}p" "$b" | sed 's/^.*|| { echo/{ echo/')"; res="$(bash -c "false || $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+    else
+      s="$(awk -v L="$L" '/^ *if / && NR <= L { s = NR } END { print s }' "$b")"; e="$(awk -v L="$L" 'NR >= L && /^ *fi$/ { print NR; exit }' "$b")"
+      frag="$(sed -n "${s},${e}p" "$b")"; res="$(bash -c "OWNER_UG=; OWNER_CHK=; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+    fi
+    if [ "$rc" -eq 0 ] || gq "$res" -q CONTINUED; then echo "  executed '$1': the mutated branch is FAIL-OPEN (rc=$rc, carried on)"; else miss "r11 '$1' was meant to be fail-open but the executed branch exited rc=$rc"; fi
+  }
+  r11chk() { # name expect mutated-file
+    r11n=$((r11n + 1))
+    gq "$(awk -v F="$F" -f "$SCAN_AWK" "$3")" -q 'FAIL\[EXIT\]' || miss "r11 mutant '$1' not caught as [EXIT]"
+    [ "$2" = open ] && r11run "$1" "$2" "$3"
+  }
+  r11inline() { # name expect old new : first OLD -> NEW
+    OLD="$3" NEW="$4" awk '!d && (i = index($0, ENVIRON["OLD"])) { $0 = substr($0, 1, i-1) ENVIRON["NEW"] substr($0, i+length(ENVIRON["OLD"])); d=1 } {print}' "$WF/$F" > "$tmp/m11.yml"
+    cmp -s "$WF/$F" "$tmp/m11.yml" && { miss "r11 mutant '$1' changed nothing"; return; }
+    r11chk "$1" "$2" "$tmp/m11.yml"
+  }
+  r11next() { # name expect new-text : the line after the runner-owner uid-0 ::error:: becomes NEW (may hold newlines)
+    REP="$3" awk '!d && p { $0 = ENVIRON["REP"]; d = 1 } { p = index($0, "refusing to chown the tree to root") > 0 && !d; print }' "$WF/$F" > "$tmp/m11.yml"
+    cmp -s "$WF/$F" "$tmp/m11.yml" && { miss "r11 mutant '$1' changed nothing"; return; }
+    r11chk "$1" "$2" "$tmp/m11.yml"
+  }
+  MK='"::error::mktemp failed"; exit 1; }'
+  r11inline "THE FINDING: echo ::error::; exit 0; exit 1; }" open "$MK" '"::error::mktemp failed"; exit 0; exit 1; }'
+  r11inline "one-line: true; exit 1"                 any  "$MK" '"::error::mktemp failed"; true; exit 1; }'
+  r11inline "one-line: : ; exit 1"                   any  "$MK" '"::error::mktemp failed"; : ; exit 1; }'
+  r11inline "one-line: return 0; exit 1"             any  "$MK" '"::error::mktemp failed"; return 0; exit 1; }'
+  r11inline "one-line: trap EXIT exit 0"             open "$MK" '"::error::mktemp failed"; trap '"'exit 0'"' EXIT; exit 1; }'
+  r11inline "one-line: (exit 1) subshell"            open "$MK" '"::error::mktemp failed"; (exit 1); }'
+  r11inline "one-line: exit 0 || exit 1"             open "$MK" '"::error::mktemp failed"; exit 0 || exit 1; }'
+  r11inline "one-line: extra command, then exit 1"   any  "$MK" '"::error::mktemp failed"; touch /dev/null; exit 1; }'
+  r11inline "one-line: exit 1 held in a string"      open "$MK" '"::error::mktemp failed"; echo "; exit 1; }"; }'
+  r11inline "one-line: exit 1 inside the message"    open "$MK" '"::error::mktemp failed; exit 1"; }'
+  r11inline "one-line: exit 1; } || true"            any  "$MK" '"::error::mktemp failed"; exit 1; } || true'
+  r11inline "one-line: rm -f variant exit 0; exit 1" any  'rm -f "${CHOWN_FAILED:?}"; exit 1; }' 'rm -f "${CHOWN_FAILED:?}"; exit 0; exit 1; }'
+  r11inline "one-line: rm -f swapped for other rm"   any  'rm -f "${CHOWN_FAILED:?}"; exit 1; }' 'rm -f /; exit 1; }'
+  r11inline "chain: && { echo ::error:: }"           any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" && { echo "::error::mktemp'
+  r11inline "chain: true || { echo ::error:: }"      any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" || true || { echo "::error::mktemp'
+  r11inline "chain: : || { echo ::error:: }"         any  '"$(mktemp)" || { echo "::error::mktemp' '"$(mktemp)" ; : || { echo "::error::mktemp'
+  r11inline "echo not first in the group"            any  '|| { echo "::error::mktemp failed"' '|| { true; echo "::error::mktemp failed"'
+  r11inline "unclosed message quote"                 any  '"::error::mktemp failed"; exit 1; }' '"::error::mktemp failed; exit 1; }'
+  r11inline "backtick in the message"                any  '"::error::mktemp failed"; exit 1; }' '"::error::mktemp `true` failed"; exit 1; }'
+  r11next "multi-line: exit 0"                       open 'exit 0'
+  r11next "multi-line: return 0"                     open 'return 0'
+  r11next "multi-line: (exit 1) subshell"            open '(exit 1)'
+  r11next "multi-line: exit 1 deleted"               open ''
+  r11next "multi-line: exit 1 only in a comment"     open '# exit 1'
+  r11next "multi-line: exit 1 only in a string"      open 'echo "exit 1"'
+  r11next "multi-line: trap then exit 1"             open $'trap '"'exit 0'"' EXIT\n            exit 1'
+  r11next "multi-line: true then exit 1"             any  $'true\n            exit 1'
+  r11next "multi-line: : then exit 1"                any  $':\n            exit 1'
+  r11next "multi-line: other command then exit 1"    any  $'touch /dev/null\n            exit 1'
+  r11next "multi-line: exit 1 || true"               any  'exit 1 || true'
+  r11next "multi-line: exit 1 # trailing"            any  'exit 1 # ok'
+  r11next "multi-line: exit 1; true"                 any  'exit 1; true'
+  r11next "multi-line: exit 1 then a command"        any  $'exit 1\n            true'
+  r11inline "multi-line: echo ...; exit 0 on the echo line" open 'refusing to chown the tree to root"' 'refusing to chown the tree to root"; exit 0'
+  r11inline "multi-line: echo ... && exit 0 on the echo line" open 'refusing to chown the tree to root"' 'refusing to chown the tree to root" && exit 0'
+  # trap set earlier in the step (not between the error and the exit) rewrites every exit after it
+  r11inline "trap EXIT exit 0 earlier in the step"   any  'OWNER_UG="$(stat -c' $'trap '"'exit 0'"' EXIT\n          OWNER_UG="$(stat -c'
+  # controls: the unmutated file is green, and so is a harmless blank line and comment after the exit
+  gq "$(awk -v F="$F" -f "$SCAN_AWK" "$WF/$F")" -q 'FAIL\[EXIT\]' && miss "r11 control: [EXIT] fired on the unmutated $F"
+  # the executed fail-open check must itself be able to fail: the unmutated one-line branch has to be seen CLOSED
+  res="$(bash -c 'false || { echo "::error::mktemp failed"; exit 1; }; echo CONTINUED' 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && ! gq "$res" -q CONTINUED; } || miss "r11 control: the unmutated branch is not fail-closed when executed"
+  rm -f "${tmp:?}/m11.yml"
+  echo "  caught [EXIT] $r11n exact-text mutants of the fail-closed branch (the finding, exit 0 / return / true / : / trap / chaining / newline / comment / string)"
+  # --- r12 (finding at `if ! sudo -n chown ...; then BODY fi`): the body is exact text, checked by errshape() ---
+  # Before r12 the scan accepted ANY body after `then`. Each mutant below rewrites the body of EVERY `if ! sudo -n chown`
+  # in sovereign-ci.yml and unified-gate.yml; the scan must say [tag] at every one of them (6 sites), and where the mutant
+  # really lets a failed sudo fall through, the mutated branch is EXECUTED (sudo and chown stubbed to fail) and must be
+  # seen to carry on (CONTINUED or rc 0).
+  r12n=0
+  r12() { # name tag expect(open|any) mode rep
+    local G cnt want got frag res rc nm="$1" tag="$2" ex="$3" mode="$4" rep="$5"
+    want=0; got=0
+    for G in sovereign-ci.yml unified-gate.yml; do
+      MODE="$mode" REP="$rep" awk '/^ *if ! sudo -n chown/ { getline b; m = ENVIRON["MODE"]; r = ENVIRON["REP"]
+          if (m == "ifrep") { print "          " r; print b } else if (m == "rep") { print; print "            " r } else if (m == "del") print
+          else if (m == "after") { print; print b; print "            " r } else if (m == "before") { print; print "            " r; print b } ; next } { print }' "$WF/$G" > "$tmp/m12.yml"
+      cmp -s "$WF/$G" "$tmp/m12.yml" && { miss "r12 mutant '$nm' changed nothing in $G"; continue; }
+      cnt="$(grep -c '^ *if ! sudo -n chown' "$WF/$G")"; want=$((want + cnt))
+      got=$((got + $(awk -v F="$G" -f "$SCAN_AWK" "$tmp/m12.yml" | grep -c "FAIL\[$tag\]")))
+      if [ "$ex" = open ]; then
+        frag="$(awk '/^ *if ! sudo -n chown/ { on = 1 } on { print } on && /^ *fi$/ { exit }' "$tmp/m12.yml")"
+        res="$(bash -c "sudo() { return 1; }; chown() { return 1; }; OWNER=o; WORK_ROOT=/w; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+        if [ "$rc" -eq 0 ] || gq "$res" -q CONTINUED; then :; else miss "r12 '$nm' was meant to be fail-open but the executed branch exited rc=$rc"; fi
+      fi
+    done
+    r12n=$((r12n + 1))
+    [ "$got" -ge "$want" ] && [ "$want" -gt 0 ] || miss "r12 mutant '$nm': [$tag] seen at $got of $want sites"
+  }
+  r12 "THE FINDING: body is only true"                 EXIT open rep 'true'
+  r12 "body is only :"                                 EXIT open rep ':'
+  r12 "body is exit 0"                                 EXIT open rep 'exit 0'
+  r12 "body is return 0"                               EXIT open rep 'return 0'
+  r12 "body is an empty line (no command)"             EXIT any  rep ''
+  r12 "body deleted: then fi"                          EXIT any  del ''
+  r12 "body is a comment only"                         EXIT any  rep '# chown -R "$OWNER" "$WORK_ROOT"'
+  r12 "body is an echo only"                           EXIT open rep 'echo "sudo chown failed"'
+  r12 "body is an ::error:: echo with no exit"         EXIT open rep 'echo "::error::sudo chown failed"'
+  r12 "body is the plain chown || true"                EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || true'
+  r12 "body is the plain chown with exit 0 branch"     EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown failed"; exit 0; }'
+  r12 "body is the plain chown, error with no exit"    EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown failed"; }'
+  r12 "body is the plain chown alone (failure unchecked)" EXIT open rep 'chown -R "$OWNER" "$WORK_ROOT"'
+  r12 "body is a different chown target"               EXIT any  rep 'chown -R "$OWNER" "$GITHUB_WORKSPACE" || { echo "::error::chown failed"; exit 1; }'
+  r12 "second command after the plain chown"           EXIT any  after 'true'
+  r12 "command before the plain chown"                 EXIT any  before 'true'
+  r12 "exit 0 after the plain chown"                   EXIT any  after 'exit 0'
+  r12 "if line carries || true"                        TARGET any  ifrep 'if ! sudo -n chown -R "$OWNER" "$WORK_ROOT" || true; then'
+  r12 "if line is not negated (sudo success runs the plain chown)" TARGET any ifrep 'if sudo -n chown -R "$OWNER" "$WORK_ROOT"; then'
+  r12 "if line then on the same line as the body"      TARGET any ifrep 'if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then true; fi; if false; then'
+  # control: the unmutated branch is seen closed when executed, and the unmutated scan has no [EXIT] / [TARGET] on it
+  frag="$(awk '/^ *if ! sudo -n chown/ { on = 1 } on { print } on && /^ *fi$/ { exit }' "$WF/sovereign-ci.yml")"
+  res="$(bash -c "sudo() { return 1; }; chown() { return 1; }; OWNER=o; WORK_ROOT=/w; $frag; echo CONTINUED" 2>/dev/null)"; rc=$?
+  { [ "$rc" -ne 0 ] && ! gq "$res" -q CONTINUED; } || miss "r12 control: the unmutated sudo branch is not fail-closed when executed"
+  echo "  caught [EXIT/TARGET] $r12n mutants of the \`if ! sudo -n chown\` body, each at every site (the finding: true / : / exit 0 / empty / second command / unchecked chown)"
+  # --- round M (2645481): the four bare-metal unified-gate.yml steps carry the SAME refusal block as the sovereign-ci.yml sites ---
+  # Before this round those steps had only `-L` / `-d` (so "/", "//", "/./" and "link/" passed and `chown -R` ran) and no marker, so no
+  # drift check saw them. Each mutant is applied to unified-gate.yml, so the sovereign sites stay untouched and only the unified steps can fail.
+  F=unified-gate.yml
+  swap "unified: resolved-path guard removed at one step"        DRIFT,UNGUARDED "$GUARD_IF" 'if false; then'
+  swap "unified: refusal block marker removed at one step"       UNGUARDED '# Normalise WORK_ROOT before the guard:' '# Normalise WORK_ROOT:'
+  swap "unified: old -L/-d guard only (the 2645481 state)"       DRIFT,UNGUARDED "$GUARD_IF" 'if [ -L "$WORK_ROOT" ] || [ ! -d "$WORK_ROOT" ]; then'
+  swap "unified: case refusal dropped at one step"               DRIFT '""|/|[!/]*|*/./*|*/../*|*/.|*/..)' '__never__)'
+  swap "unified: trailing-slash strip dropped at one step"       DRIFT 'while [ "$WORK_ROOT" != "/" ]' 'while false'
+  # executed mutant at ALL unified steps (DRIFT stays quiet between them, so only running the block can catch it)
+  gmut() { # name sed-expr fixture-fragment : sed over every unified-gate step, the executed block must be seen to accept the fixture
+    local n="$1" e="$2" fx="$3" gout
+    cp "$WF"/*.yml "$tmp"/; sed -i "$e" "$tmp/unified-gate.yml"
+    cmp -s "$WF/unified-gate.yml" "$tmp/unified-gate.yml" && { echo "SELF-TEST FAIL: mutation '$n' changed nothing"; exit 1; }
+    gout="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    grep -qE "FAIL\[BEHAVIOUR\] [^ ]*unified-gate.yml: WORK_ROOT '$fx' was not refused" <<< "$gout" || miss "'$n': the executed unified-gate block still refused '$fx'"
+    echo "  caught [BEHAVIOUR] $n: executed unified-gate block accepted '$fx'"
+  }
+  gmut "unified, all steps: resolved-path check removed (symlinked parent passes)" 's/ || \[ "\$(cd "\$WORK_ROOT" && pwd -P)" != "\$WORK_ROOT" \]; then$/; then/' "[^']*/lnk/w"
+  gmut "unified, all steps: old -L/-d guard only (WORK_ROOT=/ and // pass)"      's/^\( *\)""|\/|\[!\/\]\*|.*)$/\1__never__)/' '/'
+  gmut "unified, all steps: guard removed entirely"                                 's/'"$WG"'/if false; then/' "[^']*/link"
+  # --- all 14 guarded steps: the derivation, the guard + readonly freeze and the bare restore are compared and EXECUTED at every one ---
+  # PR #97 finding: the byte-identity check reached only the 8 marked sites, and the bare-metal steps (sovereign-ci.yml 9th and 10th,
+  # unified-gate.yml 2nd) could lose the guard, the readonly freeze or take a different WORK_ROOT fallback without a red.
+  stepmut() { # name file nth old-line new-line tag... : replace the NTH line of $file that equals OLD with NEW; each tag must fire
+    local n="$1" file="$2" nth="$3" old="$4" new="$5" t; shift 5
+    cp "$WF"/*.yml "$tmp"/
+    OLD="$old" NEW="$new" NTH="$nth" awk '$0 == ENVIRON["OLD"] && ++c == ENVIRON["NTH"] { print ENVIRON["NEW"]; next } { print }' "$WF/$file" > "$tmp/$file"
+    cmp -s "$WF/$file" "$tmp/$file" && { miss "step mutation '$n' changed nothing"; return; }
+    out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+    local m0=$MISSES
+    for t in ${*//,/ }; do gq "$out" -qF "FAIL[$t]" || miss "'$n' not caught as [$t]"; done
+    [ "$MISSES" -eq "$m0" ] && echo "  caught [$*] $n"
+  }
+  RO='          readonly WORK_ROOT'; GIF="          $GUARD_IF"; FB='            WORK_ROOT="$(dirname "$GITHUB_WORKSPACE")"'
+  WIDE='            WORK_ROOT="$(dirname "$(dirname "$GITHUB_WORKSPACE")")"'
+  for spec in sovereign-ci.yml:9:sovereign-ci.yml:1916 sovereign-ci.yml:10:sovereign-ci.yml:2258 unified-gate.yml:2:unified-gate.yml:414; do
+    sf="${spec%%:*}"; rest="${spec#*:}"; sn="${rest%%:*}"
+    stepmut "bare step $sf #$sn: readonly freeze removed"            "$sf" "$sn" "$RO"  '          :' NORO,DRIFT
+    stepmut "bare step $sf #$sn: refusal guard neutered"             "$sf" "$sn" "$GIF" '          if false; then' DRIFT,BEHAVIOUR
+    stepmut "bare step $sf #$sn: WORK_ROOT fallback widened"         "$sf" "$sn" "$FB"  "$WIDE" DRIFT
+  done
+  stepmut "site #1: WORK_ROOT fallback widened (a marked site)"      sovereign-ci.yml 1 "$FB" "$WIDE" DRIFT
+  stepmut "unified-gate step #4: refusal guard neutered"             unified-gate.yml 4 "$GIF" '          if false; then' DRIFT,BEHAVIOUR
+  # --- scanner form variants: one fixture per YAML shape, each run through the scan awk itself ---
+  FLINE="          $FIND_A$FIND_TAIL"
+  BARE_BODY='          OWNER="$(id -un):$(id -gn)"
+          if ! sudo -n chown -R "$OWNER" "$WORK_ROOT"; then
+            chown -R "$OWNER" "$WORK_ROOT" || { echo "::error::chown -R $OWNER failed under $WORK_ROOT"; exit 1; }
+          fi'
+  scanfx() { # name want(TAG|!TAG) fixture-text : run the scan awk on the fixture; TAG must fire, !TAG must NOT
+    local n="$1" w="$2" o; mkdir -p "$tmp/fxd"; printf "%s\n" "$3" > "$tmp/fxd/fx.yml"
+    o="$(awk -v F=fx.yml -f "$SCAN_AWK" "$tmp/fxd/fx.yml" 2>&1)"
+    if [ "${w#!}" != "$w" ]; then
+      gq "$o" -qF "FAIL[${w#!}]" && miss "scanner fixture '$n': [${w#!}] fired but must not: $o" || echo "  clean  [${w#!}] absent: $n"
+    else
+      gq "$o" -qF "FAIL[$w]" && echo "  caught [$w] $n" || miss "scanner fixture '$n' not caught as [$w]: $o"
+    fi
+  }
+  JOBH=$'jobs:\n  bare:\n    runs-on: self-hosted'
+  STEPS1=$'    steps:\n      - name: restore\n        run: |\n'"$BARE_BODY"$'\n      - name: later\n        run: echo hi'
+  scanfx "container: AFTER steps (scalar), chown step is not the last step"  TARGET  "$JOBH"$'\n'"$STEPS1"$'\n    container: ubuntu:24.04'
+  scanfx "container: AFTER steps (mapping), chown step is not the last step" TARGET  "$JOBH"$'\n'"$STEPS1"$'\n    container:\n      image: ubuntu:24.04'
+  scanfx "container: BEFORE steps (the form the scanner always saw)"         TARGET  "$JOBH"$'\n    container: ubuntu:24.04\n'"$STEPS1"
+  scanfx "control: no container key at all"                                  '!TARGET' "$JOBH"$'\n'"$STEPS1"
+  scanfx "control: container in ANOTHER job does not leak into this one"     '!TARGET' "$JOBH"$'\n'"$STEPS1"$'\n  other:\n    runs-on: self-hosted\n    container: ubuntu:24.04\n    steps:\n      - run: echo hi'
+  SITE1=$'      - name: heal\n        run: |\n          # uid-agnostic (infra#2349) marker\n'"$FLINE"
+  SITE2=$'        run: |\n'"$FLINE"
+  scanfx "step opening with shell: after a marked site"  UNMARKED "$JOBH"$'\n    container: ubuntu:24.04\n    steps:\n'"$SITE1"$'\n      - shell: bash\n'"$SITE2"
+  scanfx "step opening with env: after a marked site"    UNMARKED "$JOBH"$'\n    container: ubuntu:24.04\n    steps:\n'"$SITE1"$'\n      - env:\n          X: y\n'"$SITE2"
+  scanfx "step opening with working-directory: after a marked site" UNMARKED "$JOBH"$'\n    container: ubuntu:24.04\n    steps:\n'"$SITE1"$'\n      - working-directory: .\n'"$SITE2"
+  scanfx "control: the shell: step carries its own marker"           '!UNMARKED' "$JOBH"$'\n    container: ubuntu:24.04\n    steps:\n'"$SITE1"$'\n      - shell: bash\n        run: |\n          # uid-agnostic (infra#2349) marker\n'"$FLINE"
+  F=sovereign-ci.yml
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[NOSITE\]' || { echo "SELF-TEST FAIL: no-site not caught"; exit 1; }
+  gq "$out" -q 'FAIL\[NOSITE\]' || { echo "SELF-TEST FAIL: no-site not caught"; exit 1; }
   echo "  caught [NOSITE] no site at all"
   mkdir "$tmp/empty"
   out="$(WF_DIR=$tmp/empty SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[NOSCAN\] scanned 0 file' || { echo "SELF-TEST FAIL: empty WF_DIR not caught as NOSCAN with a count"; exit 1; }
+  gq "$out" -q 'FAIL\[NOSCAN\] scanned 0 file' || { echo "SELF-TEST FAIL: empty WF_DIR not caught as NOSCAN with a count"; exit 1; }
   echo "  caught [NOSCAN] empty workflow dir, with its file count"
   [ "$MISSES" -eq 0 ] || { echo "self-test FAILED: $MISSES mutation(s) not caught"; exit 1; }
   echo "self-test ok: every mutation caught (red)"; exit 0
