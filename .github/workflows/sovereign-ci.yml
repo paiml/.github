@@ -248,12 +248,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -503,12 +501,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -606,12 +602,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -855,12 +849,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -964,12 +956,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -1274,12 +1264,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -1363,12 +1351,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").
@@ -1590,12 +1576,10 @@ jobs:
           # runner's files. This step runs INSIDE the job container as uid 0 (the image sets no USER
           # and the job passes no `user:` option), so `id -u` is 0 and cannot name the runner user.
           # The owner is read from objects the runner LISTENER created for THIS step: the file-command
-          # files GITHUB_ENV and GITHUB_OUTPUT. Why that is safe (MEASURED on gx10, https://github.com/paiml/.github/actions/runs/41561075041):
-          # the runner creates both fresh before each step under a per-step uuid name (set_env_<uuid>,
-          # set_output_<uuid>), so a wrong-owned leftover is never the source; inside the job container
-          # they are 1001:1001, the same uid:gid as the bare-metal Runner.Listener/Worker (1001:1001).
-          # The unit tests stub stat (they prove this script logic only); that run is the field
-          # measurement. Two files must agree, else fail closed. NOT /__e: that is the HOST
+          # files GITHUB_ENV and GITHUB_OUTPUT. Why this is safe:
+          # Premise: the runner creates GITHUB_ENV/GITHUB_OUTPUT fresh per step (set_env_<uuid>/set_output_<uuid>)
+          # owned by the listener uid. Field observation: run https://github.com/paiml/.github/actions/runs/41561075041
+          # (gx10, 1001:1001). Unit tests stub stat; the run is the field evidence. Two files must agree, else fail closed. NOT /__e: that is the HOST
           # externals dir and can differ from the listener (reported 1000:1000 vs a listener at 1001,
           # which made the next step fail with "Access to the path
           # .../_temp/_github_workflow/event.json is denied").

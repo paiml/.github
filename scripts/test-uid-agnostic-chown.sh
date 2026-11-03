@@ -128,7 +128,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
 # would: set_env / set_output are the listener-created file-command files (S_ENV / S_OUT = "uid:gid",
 # empty = unreadable), the /__e stand-in is the HOST externals dir (S_E, 1000:1000 as on gx10), any
 # other path (RUNNER_TEMP, WORK_ROOT, workspace) is wrong-owned 9999:9999.
-# mode = ok | gx10 | disagree | uid0 | unsetenv | unreadable | chownfail | gidonly | wrongtemp  | danglingout | foreignout | danglingenv | envdir | outdir
+# mode = ok | gx10 | disagree | uid0 | unsetenv | unreadable | chownfail | gidonly | wrongtemp | unsettemp | danglingout | foreignout | danglingenv | envdir | outdir
 run_site() {
   local mode="$1" d site rc out
   d="$(mktemp -d)"; mkdir -p "$d/w/_temp" "$d/w/ws" "$d/bin" "$d/e" "$d/fc"
@@ -163,7 +163,8 @@ STUB
     unreadable) S_ENV= S_OUT=; export S_ENV S_OUT ;;
     chownfail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/chown"; S_ENV=4242:4242 S_OUT=4242:4242; export S_ENV S_OUT ;;
     gidonly) S_ENV="$(id -u):4242" S_OUT="$(id -u):4242"; export S_ENV S_OUT ;;
-    wrongtemp) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset and every tree path wrong-owned: the owner never depended on them
+    wrongtemp) : ;;   # RUNNER_TEMP stays set INSIDE the tree; the stat stub answers it (and every tree path) 9999:9999
+    unsettemp) unset RUNNER_TEMP ;;   # RUNNER_TEMP unset: the owner never depended on it
     danglingout) rm -f "${d:?}/fc/set_output"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_output" ;;   # symlink to nothing
     foreignout) : > "${d:?}/fc/other"; rm -f "${d:?}/fc/set_output"; ln -s "${d:?}/fc/other" "${d:?}/fc/set_output" ;;   # symlink to a file owned by 7777:7777
     danglingenv) rm -f "${d:?}/fc/set_env"; ln -s "${d:?}/fc/nowhere" "${d:?}/fc/set_env" ;;
@@ -193,7 +194,9 @@ behaviour() {
   o="$(run_site unreadable)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot establish the runner owner' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   unreadable listener files -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
   o="$(run_site wrongtemp)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP unset, tree paths wrong-owned -> still the listener uid"; else echo "FAIL[BEHAVIOUR] a path inside the tree became the owner: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP set inside the tree and wrong-owned -> still the listener uid"; else echo "FAIL[BEHAVIOUR] a wrong-owned RUNNER_TEMP became the owner: $o"; rc=1; fi
+  o="$(run_site unsettemp)"; r=$?
+  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP unset, tree paths wrong-owned -> still the listener uid"; else echo "FAIL[BEHAVIOUR] unset RUNNER_TEMP changed the owner: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
   if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
@@ -253,7 +256,7 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "OWNER_UG from id"          OWNER_SRC,ASSIGN "$S" 'OWNER_UG="$(id -u):$(id -g)"'
   swap "extra OWNER_UG literal"    ASSIGN   '          export OWNER_UG' '          OWNER_UG=1234:1234'
   swap "OLD FORM (r6): stat of /__e (gx10: 1000, listener 1001)" OWNER_SRC "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' /__e)" || OWNER_UG=""'
-  swap "OLD FORM: stat of RUNNER_TEMP (ac1d2c3)" OWNER_SRC,INTREE "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
+  swap "OLD FORM: stat of RUNNER_TEMP (ac1d2c3)" OWNER_SRC,INTREE,BEHAVIOUR "$S" 'OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$RUNNER_TEMP")" || OWNER_UG=""'
   swap "owner stat falls back to WORK_ROOT" OWNER_SRC,INTREE "$S" "$S"$'\n          [ -n "$OWNER_UG" ] || OWNER_UG="$(stat -c '"'"'%u:%g'"'"' "$WORK_ROOT")"'
   swap "stat of WORK_ROOT"         OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$WORK_ROOT")"'
   swap "stat of GITHUB_WORKSPACE"  OWNER_SRC,INTREE '"${GITHUB_ENV:-}")"' '"$GITHUB_WORKSPACE")"'
