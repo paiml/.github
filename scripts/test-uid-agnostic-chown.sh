@@ -18,7 +18,7 @@
 #   [UNMARKED] a self-heal site without the marker comment
 #   [OWNER_SRC] the owner is not read by the stat of GITHUB_ENV plus the confirming stat of GITHUB_OUTPUT (listener-created, this step)
 #   [AGREE]    no ::error:: + exit 1 when the two disagree or are unreadable, before the uid-0 check
-#   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp)
+#   [INTREE]   a stat of any path inside the chowned tree (RUNNER_TEMP, WORK_ROOT, workspace, HOME, _temp) or of any file-command file (GITHUB_ENV, GITHUB_OUTPUT, GITHUB_PATH, GITHUB_STATE) in bare, ${VAR} or quoted form; only the exact owner-source line and its GITHUB_OUTPUT cross-check are allowed
 #   [NOUID0]   no uid-0 check (error + exit 1, before the find) on the owner
 #   [FALLBACK] a fallback branch (fallback wording, a case on OWNER_UG, a 0:0 special case)
 #   [DRIFT]    sites not byte-identical, or an unterminated site
@@ -38,7 +38,7 @@ STAT_LINE2='          OWNER_CHK="$(stat -L -c '"'"'%u:%g'"'"' "${GITHUB_OUTPUT:-
 REG_LINE='          if [ ! -f "${GITHUB_ENV:-}" ] || [ ! -f "${GITHUB_OUTPUT:-}" ]; then'
 AGREE_LINE='          if [ -z "$OWNER_UG" ] || [ "$OWNER_UG" != "$OWNER_CHK" ]; then'
 UID0_LINE='          if [ "${OWNER_UG%%:*}" = "0" ]; then'
-INTREE_RE='RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
+INTREE_RE='GITHUB_ENV|GITHUB_OUTPUT|GITHUB_PATH|GITHUB_STATE|RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|/__w|/github/'
 ACT=${ACT_DIR:-.github/actions}   # composite actions: scanned like workflows (their run steps are shell)
 list_files() { local f; for f in "$WF"/*.yml "$WF"/*.yaml "$ACT"/*/action.yml "$ACT"/*/action.yaml "$ACT"/action.yml; do [ -e "$f" ] && echo "$f"; done; }
 # Constants for the whole-file scan (logical lines are trimmed and continuation-joined).
@@ -100,7 +100,7 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
          || ! sed -n "$((rg + 1))p" "$s" | grep -qF '::error::cannot establish the runner owner' || [ "$(sed -n "$((rg + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
         echo "FAIL[REGFILE] $f: no regular-file check on GITHUB_ENV and GITHUB_OUTPUT (::error:: + exit 1) after the agreement check and before the uid-0 check"; fails=1; fi
       # INTREE: no stat of a path inside the chowned tree, whatever else the site has
-      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
+      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -vxF -e "$STAT_LINE" -e "$STAT_LINE2" | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
       # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
       u0="$(grep -nxF "$UID0_LINE" "$s" | head -n 1 | cut -d: -f1)"; fd="$(grep -nE '^          find "\$WORK_ROOT"' "$s" | head -n 1 | cut -d: -f1)"
       if [ -z "$u0" ] || [ -z "$fd" ] || [ "$u0" -ge "$fd" ] \
@@ -303,6 +303,36 @@ if [ "${1:-}" = "--self-test" ]; then
   swap "uid-0 error is a warning"  NOUID0   '::error::runner user mismatch' '::warning::runner user mismatch'
   app  "stat of RUNNER_TEMP in another step" INTREE "      - name: x\n        run: |\n          stat -c '%u:%g' \"\$RUNNER_TEMP\""
   app  "stat -c %u of GITHUB_WORKSPACE in another step" INTREE "      - name: x\n        run: |\n          U=\$(stat -c %u \"\$GITHUB_WORKSPACE\")"
+  # --- r7 (PR #97): a stat of ANY file-command file is [INTREE], in bare, ${VAR} and quoted forms; ONE exact line is allowed ---
+  STEP="      - name: x\n        run: |\n          "
+  for V in GITHUB_ENV GITHUB_OUTPUT GITHUB_PATH GITHUB_STATE; do
+    app  "stat of bare \$$V in another step"       INTREE "${STEP}stat -c %u \$$V"
+    app  "stat of \${$V} in another step"          INTREE "${STEP}stat -c %u \${$V}"
+    app  "stat of quoted \"\$$V\" in another step" INTREE "${STEP}U=\$(stat -c %u \"\$$V\")"
+    app  "stat of quoted \"\${$V:-}\" in another step" INTREE "${STEP}U=\$(stat -c %u \"\${$V:-}\")"
+  done
+  ALLOW_A="OWNER_UG=\"\$(stat -L -c '%u:%g' \"\${GITHUB_ENV:-}\")\" || OWNER_UG=\"\""
+  ALLOW_B="OWNER_CHK=\"\$(stat -L -c '%u:%g' \"\${GITHUB_OUTPUT:-}\")\" || OWNER_CHK=\"\""
+  # the allowed form passes: the exact owner-source lines, pasted in another step, are not INTREE (so the awk allowance and STAT_LINE/STAT_LINE2 agree)
+  cp "$WF"/*.yml "$tmp"/; printf '%b\n' "${STEP}${ALLOW_A}\n          ${ALLOW_B}" >> "$tmp/$F"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+  if echo "$out" | grep -q 'FAIL\[INTREE\]'; then miss "the allowed owner-source lines were flagged [INTREE]"; else echo "  allowed [INTREE]: the exact owner-source read and its GITHUB_OUTPUT cross-check pass"; fi
+  # near misses fail
+  app  "near miss: the allowed shape on GITHUB_PATH"      INTREE "${STEP}OWNER_UG=\"\$(stat -L -c '%u:%g' \"\${GITHUB_PATH:-}\")\" || OWNER_UG=\"\""
+  app  "near miss: the allowed shape on GITHUB_STATE"     INTREE "${STEP}OWNER_UG=\"\$(stat -L -c '%u:%g' \"\${GITHUB_STATE:-}\")\" || OWNER_UG=\"\""
+  app  "near miss: the allowed line, a different format"  INTREE "${STEP}OWNER_UG=\"\$(stat -L -c '%a' \"\${GITHUB_ENV:-}\")\" || OWNER_UG=\"\""
+  app  "near miss: the allowed line, plus a second command" INTREE "${STEP}${ALLOW_A}; stat -c %u \"\$GITHUB_PATH\""
+  app  "near miss: the allowed line, a different fallback" INTREE "${STEP}OWNER_UG=\"\$(stat -L -c '%u:%g' \"\${GITHUB_ENV:-}\")\" || OWNER_UG=\"\$(id -u):\$(id -g)\""
+  app  "near miss: a chown target of GITHUB_ENV"         TARGET "${STEP}chown -h \"\$OWNER_UG\" \"\$GITHUB_ENV\""
+  # mutant: widen the allowance to "any line mentioning GITHUB_ENV"; the near-miss fixture must stay red on the real scanner and go green on the mutant
+  mut="$tmp.mut.awk"; sed 's/lg != OWN_A \&\& lg != OWN_B \&\&/lg !~ \/GITHUB_ENV|GITHUB_OUTPUT\/ \&\&/' "$SCAN_AWK" > "$mut"
+  cmp -s "$SCAN_AWK" "$mut" && { echo "SELF-TEST FAIL: the widening mutant changed nothing"; exit 1; }
+  cp "$WF"/*.yml "$tmp"/; printf '%b\n' "${STEP}OWNER_UG=\"\$(stat -L -c '%a' \"\${GITHUB_ENV:-}\")\" || OWNER_UG=\"\"" >> "$tmp/$F"
+  out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+  outm="$(SCAN_AWK="$mut" WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
+  if echo "$out" | grep -q 'FAIL\[INTREE\]' && ! echo "$outm" | grep -q 'FAIL\[INTREE\]'; then echo "  caught [INTREE] mutant: allowing any line that mentions GITHUB_ENV or GITHUB_OUTPUT lets the near miss through; the exact-line allowance does not"
+  else miss "the near-miss fixture does not discriminate the widening mutant (real INTREE: $(echo "$out" | grep -c 'FAIL\[INTREE\]'), mutant INTREE: $(echo "$outm" | grep -c 'FAIL\[INTREE\]'))"; fi
+  rm -f "$mut"
   swap "fallback wording"          FALLBACK '          export OWNER_UG' '          echo "falling back"'
   swap "case on OWNER_UG"          FALLBACK '          export OWNER_UG' '          case "$OWNER_UG" in *) : ;; esac'
   swap "0:0 special case"          FALLBACK '          export OWNER_UG' '          [ "$OWNER_UG" = 0:0 ] && :'

@@ -10,6 +10,11 @@ function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function unquote(s) { gsub(/"[^"]*"/, "\"\"", s); gsub(/'[^']*'/, "''", s); return s }
 function fail(tag, ln, msg) { print "FAIL[" tag "] " F ":" ln ": " msg; bad = 1 }
 BEGIN {
+  # The ONE allowed stat of a file-command file (r7): the owner-source read and its GITHUB_OUTPUT cross-check,
+  # matched as the whole logical line, byte for byte. Any other line that stats GITHUB_ENV / GITHUB_OUTPUT /
+  # GITHUB_PATH / GITHUB_STATE is [INTREE]. The test script holds the same two lines (STAT_LINE, STAT_LINE2).
+  OWN_A = "OWNER_UG=\"$(stat -L -c '%u:%g' \"${GITHUB_ENV:-}\")\" || OWNER_UG=\"\""
+  OWN_B = "OWNER_CHK=\"$(stat -L -c '%u:%g' \"${GITHUB_OUTPUT:-}\")\" || OWNER_CHK=\"\""
   FIND_A = ENVIRON["FIND_A"]; FIND_TAIL = ENVIRON["FIND_TAIL"]; MARK = ENVIRON["MARK"]
   OWN = ENVIRON["OWNER_LINE"]; CHOWN_B = ENVIRON["CHOWN_B"]
   sn = 0; total = 0; container = 0
@@ -152,7 +157,7 @@ function flush(   haveown, i, k, n, acc, start, raw, t, lg, ln, sw, u, cmd, nc, 
     # INTREE (r6): the owner is never read from the tree being chowned. Any stat command, in any step of
     # any file, whose operand is a path inside the _work tree (RUNNER_TEMP, WORK_ROOT, the workspaces,
     # HOME, _temp, /__w, /github/*) is a failure; echo / printf text is not a command.
-    if (lg !~ /^(- )?(name|if|uses):/ && u !~ /^(echo|printf)[ \t]/ && lg ~ /(^|[^A-Za-z_-])stat[ \t]/ && (lg ~ /RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|\/__w|\/github\//))
+    if (lg != OWN_A && lg != OWN_B && lg !~ /^(- )?(name|if|uses):/ && u !~ /^(echo|printf)[ \t]/ && lg ~ /(^|[^A-Za-z_-])stat[ \t]/ && (lg ~ /GITHUB_ENV|GITHUB_OUTPUT|GITHUB_PATH|GITHUB_STATE|RUNNER_TEMP|WORK_ROOT|GITHUB_WORKSPACE|RUNNER_WORKSPACE|\$HOME|\${HOME|_temp|_work|\/__w|\/github\//))
       fail("INTREE", ln, "stat of a path inside the chowned tree: " lg)
     if (lg ~ /^(- )?(name|if|uses):/) cmd = 0
     else {
