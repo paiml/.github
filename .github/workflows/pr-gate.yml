@@ -32,7 +32,7 @@ jobs:
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
     timeout-minutes: 22
-    runs-on: [self-hosted, gate-light]
+    runs-on: [self-hosted, authorize-only]
     permissions:
       pull-requests: write
     steps:
