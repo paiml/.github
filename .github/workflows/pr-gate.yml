@@ -88,7 +88,31 @@ jobs:
           # `indeterminate` is a THIRD answer and must never collapse into
           # `notmember` -- conflating "they are not a member" with "I could
           # not ask" is the exact defect that closed two owners' PRs.
-          membership() {
+          #
+          # GraphQL is asked FIRST. REST core is a single account-wide budget
+          # shared with every other job on this login; when it is spent, the
+          # REST answer is `indeterminate` and the gate goes red for a reason
+          # that has nothing to do with the PR (measured 2026-11-08: core=0
+          # for 20 min, member PRs red). GraphQL has its own budget, and a
+          # membership read is one query. REST is the fallback only when
+          # GraphQL itself gives no usable answer; both failing is still
+          # `indeterminate`, so this stays fail-closed.
+          membership_graphql() {
+            local user="$1" resp
+            # shellcheck disable=SC2016 # GraphQL variables, not shell
+            resp=$(gh api graphql \
+              -f query='query($o:String!,$u:String!){user(login:$u){login organization(login:$o){login}}}' \
+              -F o="$ORG" -F u="$user" 2>/dev/null) || true
+            printf '%s' "$resp" | jq -r --arg o "$ORG" '
+              if (.data.user.organization.login? // "") == $o then "member"
+              elif (.data | type) == "object" and (.data.user | type) == "object"
+                   and .data.user.organization == null then "notmember"
+              elif (.data | type) == "object" and .data.user == null
+                   and ([.errors[]? | select(.type == "NOT_FOUND")] | length) > 0 then "notmember"
+              else "indeterminate" end' 2>/dev/null || echo indeterminate
+          }
+
+          membership_rest() {
             local user="$1" resp rc state
             resp=$(gh api "orgs/${ORG}/memberships/${user}" 2>&1) && rc=0 || rc=$?
             if [ "$rc" -eq 0 ]; then
@@ -101,6 +125,14 @@ jobs:
               *"HTTP 404"*) echo notmember ;;
               *)            echo indeterminate ;;
             esac
+          }
+
+          membership() {
+            local user="$1" ans
+            ans=$(membership_graphql "$user")
+            [ -n "$ans" ] || ans=indeterminate
+            if [ "$ans" = indeterminate ]; then ans=$(membership_rest "$user"); fi
+            echo "$ans"
           }
 
           # --------------------------------------------------------------
