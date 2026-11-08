@@ -15,7 +15,7 @@ trap 'rm -rf "${TMP:?}"' EXIT
 
 # --- stub gh ---------------------------------------------------------------
 # STUB_REST: member | pending | notfound | ratelimit
-# STUB_GQL:  member | notmember | nouser | ratelimit | garbage
+# STUB_GQL:  member | notmember | nouser | ratelimit | garbage | partial
 # Every call is logged to $STUB_LOG as "rest" or "graphql".
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'STUB'
@@ -30,6 +30,7 @@ if [ "${1:-}" = api ] && [ "${2:-}" = graphql ]; then
     ratelimit) echo '{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}'
                echo "gh: API rate limit exceeded" >&2; exit 1 ;;
     garbage)   echo 'not json'; exit 1 ;;
+    partial)   echo '{"data":{"user":{"login":"u","organization":null}},"errors":[{"type":"RATE_LIMITED","path":["user","organization"],"message":"secondary rate limit"}]}' ;;
   esac
   exit 0
 fi
@@ -82,6 +83,8 @@ GraphQL rate-limited falls back to REST 404 -> notmember|notfound|ratelimit|notm
 GraphQL garbage falls back to REST member|member|garbage|member|1
 BOTH rate-limited -> indeterminate (fail closed, never notmember)|ratelimit|ratelimit|indeterminate|1
 GraphQL garbage + REST rate-limited -> indeterminate|ratelimit|garbage|indeterminate|1
+GraphQL partial error (org null + errors) falls back to REST member|member|partial|member|1
+GraphQL partial error + REST rate-limited -> indeterminate, never notmember|ratelimit|partial|indeterminate|1
 ROWS
   echo "$((n - bad)) passed, $bad failed (of $n)"
   [ "$n" -gt 0 ] && [ "$bad" -eq 0 ]

@@ -105,7 +105,7 @@ jobs:
               -F o="$ORG" -F u="$user" 2>/dev/null) || true
             printf '%s' "$resp" | jq -r --arg o "$ORG" '
               if (.data.user.organization.login? // "") == $o then "member"
-              elif (.data | type) == "object" and (.data.user | type) == "object"
+              elif (.data | type) == "object" and (.data.user | type) == "object" and ((.errors // []) | length) == 0
                    and .data.user.organization == null then "notmember"
               elif (.data | type) == "object" and .data.user == null
                    and ([.errors[]? | select(.type == "NOT_FOUND")] | length) > 0 then "notmember"
