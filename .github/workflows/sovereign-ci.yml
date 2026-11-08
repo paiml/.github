@@ -1604,9 +1604,13 @@ jobs:
             echo "roadmap-fragment-parity: NOT-RUN — no $entries/ in this repo (not migrated)"
             exit 0
           fi
-          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
-            git fetch -q --no-tags origin "$BASE_SHA" 2>/dev/null || true
+          # shallow-fix begin: actions/checkout is shallow and holds the merge ref, so
+          # neither BASE_SHA nor HEAD_SHA is guaranteed to be present (paiml-implement#697:
+          # "fatal: bad object"). Deepen first; fall back to fetching both by sha.
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            git fetch -q --no-tags --unshallow origin 2>/dev/null || git fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
           fi
+          # shallow-fix end
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
             echo "::error::roadmap-fragment-parity: base $BASE_SHA is unreachable — a check that cannot read its input does not pass"
             exit 1
