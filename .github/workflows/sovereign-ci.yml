@@ -1611,6 +1611,14 @@ jobs:
             echo "::error::roadmap-fragment-parity: base $BASE_SHA is unreachable — a check that cannot read its input does not pass"
             exit 1
           fi
+          # depth-1 checkout of refs/pull/N/merge holds the merge commit only, not its head parent (rmedia#2374)
+          if ! git cat-file -e "$HEAD_SHA" 2>/dev/null; then
+            git fetch -q --no-tags origin "$HEAD_SHA" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "$HEAD_SHA" 2>/dev/null; then
+            echo "::error::roadmap-fragment-parity: head $HEAD_SHA is unreachable — a check that cannot read its input does not pass"
+            exit 1
+          fi
           # ACTIVE ONLY ONCE THE AGGREGATE IS UNTRACKED (paiml/aprender#3709). A repo
           # that has entries/ but still COMMITS roadmap.yaml has not migrated: its own
           # roadmap-aggregate-check requires the committed file in sync, so arming here
