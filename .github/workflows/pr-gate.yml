@@ -7,7 +7,9 @@
 # contributors may open pull requests. Unauthorized PRs are closed
 # immediately with a polite comment.
 #
-# Caller workflow should trigger on pull_request_target (opened, reopened).
+# Caller workflow triggers on pull_request (opened, reopened), NEVER pull_request_target:
+# that trigger hands a write token and secrets to fork PRs. A caller also guards its job with
+# head.repo.full_name == github.repository; the job below repeats the guard as defense in depth.
 
 name: PR Authorization Gate
 
@@ -31,6 +33,8 @@ jobs:
     # anywhere in this workflow. No PR-authored code is ever fetched or run here —
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
+    # Fork PRs never run this privileged job (pull_request_target removed; callers use pull_request).
+    if: github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 22
     runs-on: [self-hosted, gate-light]
     permissions:
