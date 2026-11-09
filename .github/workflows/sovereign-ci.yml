@@ -1614,6 +1614,7 @@ jobs:
             # rmedia#2459 T3 five-whys, jobs 129152425028 and 129156850838). Give the fetch the job token,
             # and let git say why it failed instead of swallowing stderr.
             auth=$(printf 'x-access-token:%s' "${GITHUB_TOKEN:-}" | base64 -w0)
+            echo "::add-mask::$auth"
             git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags --unshallow origin \
               || git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
           fi
