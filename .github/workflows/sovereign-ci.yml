@@ -756,11 +756,36 @@ jobs:
           GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
+          # advisory-pin begin (rmedia#2459 T3 / fix-advisory-pin-1515Z): a repo that commits
+          # .advisory-db-rev (40-hex RustSec/advisory-db commit) is judged against THAT database,
+          # not the live one, so a PR's verdict depends on its commit and a new advisory cannot
+          # red the whole queue at once. Malformed pin = red (never falls back to live).
+          ADV_PIN=""
+          if [ -f "$GITHUB_WORKSPACE/.advisory-db-rev" ]; then
+            ADV_REV=$(tr -d ' \t\r\n' < "$GITHUB_WORKSPACE/.advisory-db-rev")
+            case "$ADV_REV" in
+              *[!0-9a-f]*|"") echo "::error::.advisory-db-rev is not a 40-hex commit: '$ADV_REV'"; exit 1 ;;
+            esac
+            if [ "${#ADV_REV}" -ne 40 ]; then echo "::error::.advisory-db-rev is not a 40-hex commit: '$ADV_REV'"; exit 1; fi
+            ADV_ROOT=$(mktemp -d)
+            ADV_PIN="$ADV_ROOT/advisory-db-3157b0e258782691"
+            mkdir -p "$ADV_PIN"
+            git -C "$ADV_PIN" init -q
+            git -C "$ADV_PIN" fetch -q --depth 1 https://github.com/RustSec/advisory-db "$ADV_REV"
+            git -C "$ADV_PIN" checkout -q FETCH_HEAD
+            if [ "$(git -C "$ADV_PIN" rev-parse HEAD)" != "$ADV_REV" ]; then echo "::error::advisory-db is not at the pinned $ADV_REV"; exit 1; fi
+            echo "advisory-db pinned at $ADV_REV"
+          fi
+          # advisory-pin end
           if [ -f deny.toml ]; then
             # advisories_diff_only: true: the caller judges advisories as a diff against its
             # base (aprender PMAT-5792), so a main-resident advisory must not stop its PRs.
             if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = true ]; then
               cargo deny check licenses sources
+            elif [ -n "$ADV_PIN" ]; then
+              sed "s#^\[advisories\]#[advisories]\ndb-path = \"$ADV_ROOT\"#" deny.toml > "$ADV_ROOT/deny.toml"
+              if [ "$(grep -c '^db-path' "$ADV_ROOT/deny.toml")" -ne 1 ]; then echo "::error::deny.toml must not set db-path when .advisory-db-rev is pinned"; exit 1; fi
+              cargo deny check --disable-fetch --config "$ADV_ROOT/deny.toml" advisories licenses sources
             else
               cargo deny check advisories licenses sources
             fi
@@ -1806,8 +1831,31 @@ jobs:
             fi
           fi
 
+          # advisory-pin begin (rmedia#2459 T3 / fix-advisory-pin-1515Z): a repo that commits
+          # .advisory-db-rev (40-hex RustSec/advisory-db commit) is judged against THAT database,
+          # not the live one, so a PR's verdict depends on its commit and a new advisory cannot
+          # red the whole queue at once. Malformed pin = red (never falls back to live).
+          ADV_PIN=""
+          if [ -f "$GITHUB_WORKSPACE/.advisory-db-rev" ]; then
+            ADV_REV=$(tr -d ' \t\r\n' < "$GITHUB_WORKSPACE/.advisory-db-rev")
+            case "$ADV_REV" in
+              *[!0-9a-f]*|"") echo "::error::.advisory-db-rev is not a 40-hex commit: '$ADV_REV'"; exit 1 ;;
+            esac
+            if [ "${#ADV_REV}" -ne 40 ]; then echo "::error::.advisory-db-rev is not a 40-hex commit: '$ADV_REV'"; exit 1; fi
+            ADV_ROOT=$(mktemp -d)
+            ADV_PIN="$ADV_ROOT/advisory-db-3157b0e258782691"
+            mkdir -p "$ADV_PIN"
+            git -C "$ADV_PIN" init -q
+            git -C "$ADV_PIN" fetch -q --depth 1 https://github.com/RustSec/advisory-db "$ADV_REV"
+            git -C "$ADV_PIN" checkout -q FETCH_HEAD
+            if [ "$(git -C "$ADV_PIN" rev-parse HEAD)" != "$ADV_REV" ]; then echo "::error::advisory-db is not at the pinned $ADV_REV"; exit 1; fi
+            echo "advisory-db pinned at $ADV_REV"
+          fi
+          # advisory-pin end
           if [ "${SOV_ADVISORIES_DIFF_ONLY:-}" = true ]; then
             echo "cargo audit skipped: the caller's diff gate is the scanner of record (advisories_diff_only: true)"
+          elif [ -n "$ADV_PIN" ]; then
+            cargo audit --db "$ADV_PIN" --no-fetch $IGNORE_FLAGS
           else
             cargo audit $IGNORE_FLAGS
           fi
