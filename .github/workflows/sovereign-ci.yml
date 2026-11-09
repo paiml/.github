@@ -1611,12 +1611,19 @@ jobs:
           if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
             # actions/checkout runs with persist-credentials:false, so a bare `git fetch` has no
             # credentials on a private repo ("fatal: could not read Username", then "bad object" = exit 128;
-            # rmedia#2459 T3 five-whys, jobs 129152425028 and 129156850838). Give the fetch the job token,
+            # rmedia#2459 T3 five-whys, job 129152425028). Give the fetch the job token,
             # and let git say why it failed instead of swallowing stderr.
-            auth=$(printf 'x-access-token:%s' "${GITHUB_TOKEN:-}" | base64 -w0)
-            echo "::add-mask::$auth"
-            git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags --unshallow origin \
-              || git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              # env, not argv: `git -c http.extraheader=...` would put the token in /proc/<pid>/cmdline on a
+              # bare-metal runner. Same GIT_CONFIG_* pattern as the container steps above, scoped to github.com.
+              GIT_CONFIG_COUNT=1
+              GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+              export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+              echo "::add-mask::${GIT_CONFIG_VALUE_0#AUTHORIZATION: basic }"
+            fi
+            git fetch -q --no-tags --unshallow origin \
+              || git fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
           fi
           # shallow-fix end
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then

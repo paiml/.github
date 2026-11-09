@@ -54,14 +54,30 @@ if run_case "$T/step-nofix.sh"; then echo "FAIL: without fix is green (falsifier
 # carries no http.extraheader; the step must pass its token, and the original unauthenticated line must go red.
 mkdir -p "$T/shim"
 REAL=$(command -v git)
+# The shim accepts a fetch only when the token arrives as git's env config (key scoped to github.com, value =
+# the exact basic header for $GITHUB_TOKEN) and is NOT on argv (/proc/<pid>/cmdline is world-readable).
 cat > "$T/shim/git" <<SHIM
 #!/usr/bin/env bash
-case " \$* " in *" fetch "*) case " \$* " in *http.extraheader=Authorization*) ;; *) echo "fatal: could not read Username for 'https://github.com': No such device or address" >&2; exit 128 ;; esac ;; esac
+case " \$* " in *" fetch "*)
+  case "\$*" in *extraheader*|*tok*) echo "fatal: token or header on argv" >&2; exit 97 ;; esac
+  want="AUTHORIZATION: basic \$(printf 'x-access-token:%s' "\${GITHUB_TOKEN:-}" | base64 -w0)"
+  if [ "\${GITHUB_TOKEN:-}" = "" ] || [ "\${GIT_CONFIG_KEY_0:-}" != "http.https://github.com/.extraheader" ] || [ "\${GIT_CONFIG_VALUE_0:-}" != "\$want" ]; then
+    echo "fatal: could not read Username for 'https://github.com': No such device or address" >&2; exit 128
+  fi ;;
+esac
 exec "$REAL" "\$@"
 SHIM
 chmod +x "$T/shim/git"
-awk '{ if ($0 ~ /git -c "http.extraheader/) { sub(/git -c "http.extraheader=Authorization: basic \$auth"/, "git") } print }' "$T/step.sh" > "$T/step-noauth.sh"
-run_priv() { fresh_clone; ( cd "$T/c" && PATH="$T/shim:$PATH" GITHUB_TOKEN=tok BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$1" ) >"$T/out" 2>&1; }
-if run_priv "$T/step.sh"; then echo "ok: private origin, with auth header -> green"; else echo "FAIL: private origin, with fix is red"; tail -n 5 "$T/out"; rc=1; fi
-if run_priv "$T/step-noauth.sh"; then echo "FAIL: private origin without auth is green (cannot discriminate)"; rc=1; else echo "ok: private origin without auth -> red"; tail -n 2 "$T/out"; fi
+# GITHUB_TOKEN reaches the step only if the step's own env block declares it (as Actions would).
+declares() { awk '/- name: roadmap-fragment-parity/{s=1;next} s&&/^      - name:/{exit} s' "$1" | grep -q '^ *GITHUB_TOKEN: \${{ github.token }}'; }
+WF_NOENV="$T/wf-noenv.yml"; grep -v '^ *GITHUB_TOKEN: \${{ github.token }}' "$WF" > "$WF_NOENV"
+sed '/export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0/d' "$T/step.sh" | awk '/shallow-fix/||1' > "$T/step-noauth.sh"
+run_priv() { # $1 script, $2 workflow file whose env block decides if the token is passed
+  fresh_clone
+  if declares "$2"; then tok=tok; else tok=; fi
+  ( cd "$T/c" && PATH="$T/shim:$PATH" GITHUB_TOKEN=$tok BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$1" ) >"$T/out" 2>&1
+}
+if run_priv "$T/step.sh" "$WF"; then echo "ok: private origin, token via env -> green"; else echo "FAIL: private origin, with fix is red"; tail -n 5 "$T/out"; rc=1; fi
+if run_priv "$T/step-noauth.sh" "$WF"; then echo "FAIL: private origin without auth is green (cannot discriminate)"; rc=1; else echo "ok: private origin without auth -> red"; fi
+if run_priv "$T/step.sh" "$WF_NOENV"; then echo "FAIL: step green with the GITHUB_TOKEN env line deleted"; rc=1; else echo "ok: GITHUB_TOKEN env line deleted -> red"; fi
 exit $rc
