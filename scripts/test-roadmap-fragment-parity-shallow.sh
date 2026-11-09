@@ -48,4 +48,20 @@ if git -C "$T/c" cat-file -e "$HEAD^{commit}" 2>/dev/null; then echo "FAIL: fixt
 rc=0
 if run_case "$T/step.sh"; then echo "ok: with fix -> green"; else echo "FAIL: with fix is red"; tail -n 5 "$T/out"; rc=1; fi
 if run_case "$T/step-nofix.sh"; then echo "FAIL: without fix is green (falsifier cannot discriminate)"; rc=1; else echo "ok: without fix -> red"; tail -n 2 "$T/out"; fi
+
+# Private repo: checkout is persist-credentials:false, so a fetch with no auth header dies "could not read
+# Username" (exit 128 in rmedia#2459, jobs 129152425028/129156850838). A git shim refuses any fetch that
+# carries no http.extraheader; the step must pass its token, and the original unauthenticated line must go red.
+mkdir -p "$T/shim"
+REAL=$(command -v git)
+cat > "$T/shim/git" <<SHIM
+#!/usr/bin/env bash
+case " \$* " in *" fetch "*) case " \$* " in *http.extraheader=Authorization*) ;; *) echo "fatal: could not read Username for 'https://github.com': No such device or address" >&2; exit 128 ;; esac ;; esac
+exec "$REAL" "\$@"
+SHIM
+chmod +x "$T/shim/git"
+awk '{ if ($0 ~ /git -c "http.extraheader/) { sub(/git -c "http.extraheader=Authorization: basic \$auth"/, "git") } print }' "$T/step.sh" > "$T/step-noauth.sh"
+run_priv() { fresh_clone; ( cd "$T/c" && PATH="$T/shim:$PATH" GITHUB_TOKEN=tok BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$1" ) >"$T/out" 2>&1; }
+if run_priv "$T/step.sh"; then echo "ok: private origin, with auth header -> green"; else echo "FAIL: private origin, with fix is red"; tail -n 5 "$T/out"; rc=1; fi
+if run_priv "$T/step-noauth.sh"; then echo "FAIL: private origin without auth is green (cannot discriminate)"; rc=1; else echo "ok: private origin without auth -> red"; tail -n 2 "$T/out"; fi
 exit $rc

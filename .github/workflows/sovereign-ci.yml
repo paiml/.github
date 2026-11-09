@@ -1596,6 +1596,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           entries=docs/roadmaps/entries
@@ -1608,7 +1609,13 @@ jobs:
           # neither BASE_SHA nor HEAD_SHA is guaranteed to be present (paiml-implement#697:
           # "fatal: bad object"). Deepen first; fall back to fetching both by sha.
           if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
-            git fetch -q --no-tags --unshallow origin 2>/dev/null || git fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
+            # actions/checkout runs with persist-credentials:false, so a bare `git fetch` has no
+            # credentials on a private repo ("fatal: could not read Username", then "bad object" = exit 128;
+            # rmedia#2459 T3 five-whys, jobs 129152425028 and 129156850838). Give the fetch the job token,
+            # and let git say why it failed instead of swallowing stderr.
+            auth=$(printf 'x-access-token:%s' "${GITHUB_TOKEN:-}" | base64 -w0)
+            git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags --unshallow origin \
+              || git -c "http.extraheader=Authorization: basic $auth" fetch -q --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
           fi
           # shallow-fix end
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
