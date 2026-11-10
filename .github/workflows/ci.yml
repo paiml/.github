@@ -24,8 +24,12 @@ jobs:
         run: bash scripts/test-roadmap-fragment-parity-shallow.sh
       - name: GATE-ROLLUP-LIGHT (gate roll-ups never ask for a heavy runner)
         run: bash scripts/test-gate-rollup-light.sh
+      - name: ADV-001 advisory gate - diff-only, pinned DB, positive control, mutants (RED->GREEN)
+        run: bash scripts/test-advisory-gate.sh
       - name: pr-gate membership is GraphQL-first, fail-closed (RED->GREEN)
         run: bash scripts/test-pr-gate-membership.sh --self-test
+      - name: heavy_on=train skips test/coverage only on an ordinary PR; owed elsewhere (anti-vacuity)
+        run: bash scripts/test-heavy-on-train.sh
       - name: Sigstore signer guards (RED->GREEN)
         run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: Lint workflow YAML
