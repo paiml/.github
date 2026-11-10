@@ -2103,6 +2103,31 @@ jobs:
           subject-path: 'Cargo.toml'
         continue-on-error: true
 
+  runner-smells:
+    # RUNNER-SMELLS (paiml/infra#3828, pmat#1673): every caller's workflow configuration is scanned
+    # for the runner and gate defects measured on 2026-11-10 (RS-01..RS-11). Ratchet against the
+    # caller's .github/runner-smells.baseline; report-only until a baseline is committed. Not in
+    # gate's needs yet: it becomes required once every caller carries a baseline.
+    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) }}
+    name: runner-smells
+    runs-on: [self-hosted, gate-light]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: paiml/.github
+          ref: main
+          path: .runner-smells
+          persist-credentials: false
+      - name: Runner smells within baseline (RS-01..RS-11)
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash .runner-smells/scripts/runner-smells.sh --ratchet .github/runner-smells.baseline .
+
   gate:
     name: gate
     # NO-FORK-1: a fork-head PR runs this gate on a hosted runner (never self-hosted).
