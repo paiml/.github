@@ -55,19 +55,22 @@ jobs_tsv() {
     }
     END { flush() }' "$1"
 }
+# has ARGS...: grep that reads ALL of stdin. Never `grep -q` after a pipe here: under pipefail it exits at the
+# first match, the writer dies of SIGPIPE (141), and the pipeline reads as 'no match' on files past the pipe buffer.
+has() { grep "$@" >/dev/null; }
 emit() { printf '%s\t%s:%s\t%s\n' "$1" "$2" "$3" "$4"; }
 
-rs01() { is_pr "$1" || return 0; nocomment "$1" | grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*[^f[:space:]]' || emit RS-01 "$1" 1 "pull_request workflow has no concurrency cancel-in-progress: a new push leaves the old run holding runners"; }
+rs01() { is_pr "$1" || return 0; nocomment "$1" | has -E '^[[:space:]]*cancel-in-progress:[[:space:]]*[^f[:space:]]' || emit RS-01 "$1" 1 "pull_request workflow has no concurrency cancel-in-progress: a new push leaves the old run holding runners"; }
 rs02() { jobs_tsv "$1" | while IFS=$'\t' read -r l j to ru ro; do [ "$to" = 1 ] || [ "$ru" = 1 ] || emit RS-02 "$1" "$l" "job '$j' has no timeout-minutes: a hung job holds its runner for 6 h"; done; }
-rs03() { is_pr "$1" || return 0; jobs_tsv "$1" | while IFS=$'\t' read -r l j to ru ro; do printf '%s' "$ro" | grep -qE '(ubuntu|macos|windows)-(latest|[0-9])' && emit RS-03 "$1" "$l" "job '$j' runs on a GitHub-hosted runner on every PR push (paid minutes, no fleet cache)"; done; }
-rs04() { is_pr "$1" || return 0; { basename "$1"; jobs_tsv "$1" | cut -f2; } | grep -qiE 'mutation|mutant|coverage|msrv|bench|fuzz|convergence|behavior' || return 0
-         nocomment "$1" | grep -qE "train/|heavy_on|merge_group" || emit RS-04 "$1" 1 "heavy suite runs on every pull_request push; run it on train/* and the default branch only"; }
+rs03() { is_pr "$1" || return 0; jobs_tsv "$1" | while IFS=$'\t' read -r l j to ru ro; do printf '%s' "$ro" | has -E '(ubuntu|macos|windows)-(latest|[0-9])' && emit RS-03 "$1" "$l" "job '$j' runs on a GitHub-hosted runner on every PR push (paid minutes, no fleet cache)"; done; }
+rs04() { is_pr "$1" || return 0; { basename "$1"; jobs_tsv "$1" | cut -f2; } | has -iE 'mutation|mutant|coverage|msrv|bench|fuzz|convergence|behavior' || return 0
+         nocomment "$1" | has -E "train/|heavy_on|merge_group" || emit RS-04 "$1" 1 "heavy suite runs on every pull_request push; run it on train/* and the default branch only"; }
 rs05() { nocomment "$1" | grep -nE '(^|[^a-z_])pull_request_target([^a-z_]|$)' | head -1 | while IFS=: read -r l _; do emit RS-05 "$1" "$l" "pull_request_target runs fork code with repository secrets"; done; }
 rs06() { is_pr "$1" || return 0; nocomment "$1" | grep -nE '(^|[^[:alnum:]_-])cargo([[:space:]]+[+][^[:space:]]+)?[[:space:]]+(build|test|nextest|clippy|llvm-cov|check)([[:space:]]|$)' | head -1 | while IFS=: read -r l _; do
            grep -qE 'CARGO_PROFILE_(DEV|TEST)_DEBUG' "$1" && grep -qE 'CARGO_INCREMENTAL' "$1" || emit RS-06 "$1" "$l" "cargo runs without CARGO_PROFILE_DEV_DEBUG=0 / CARGO_PROFILE_TEST_DEBUG=0 / CARGO_INCREMENTAL=0 (measured: 66G build tree vs 5.5G)"; done; }
-rs07() { jobs_tsv "$1" | while IFS=$'\t' read -r l j to ru ro; do [ "$j" = gate ] && [ "$ru" = 0 ] && ! printf '%s' "$ro" | grep -qE 'gate-light|inputs\.|matrix\.|vars\.' && emit RS-07 "$1" "$l" "roll-up job 'gate' asks for a heavy runner; it only reads other jobs' results"; done; }
+rs07() { jobs_tsv "$1" | while IFS=$'\t' read -r l j to ru ro; do [ "$j" = gate ] && [ "$ru" = 0 ] && ! printf '%s' "$ro" | has -E 'gate-light|inputs\.|matrix\.|vars\.' && emit RS-07 "$1" "$l" "roll-up job 'gate' asks for a heavy runner; it only reads other jobs' results"; done; }
 rs08() { nocomment "$1" | grep -nE '^[[:space:]]*(- )?uses:[[:space:]]*[^.[:space:]][^[:space:]]*' | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' | grep -vE 'uses:[[:space:]]*docker://' | while IFS=: read -r l t; do emit RS-08 "$1" "$l" "not pinned to a commit sha: $(printf '%s' "$t" | sed -E 's/^[[:space:]]*(- )?uses:[[:space:]]*//')"; done; }
-rs09() { is_pr "$1" || return 0; nocomment "$1" | grep -qE 'draft|ready_for_review' || emit RS-09 "$1" 1 "draft pull requests start this workflow (no draft == false condition, no ready_for_review type)"; }
+rs09() { is_pr "$1" || return 0; nocomment "$1" | has -E 'draft|ready_for_review' || emit RS-09 "$1" 1 "draft pull requests start this workflow (no draft == false condition, no ready_for_review type)"; }
 rs11() { is_pr "$1" || return 0; nocomment "$1" | grep -nE 'cargo[^#]*[[:space:]](--all-targets|--examples)([[:space:]]|$)' | grep -vE 'cargo[[:space:]]+(clippy|check)' | head -1 | while IFS=: read -r l _; do emit RS-11 "$1" "$l" "examples/all targets are built on the PR path (measured: 13-24G per runner)"; done; }
 
 scan() { # DIR -> findings on stdout; returns 2 when nothing scanned
@@ -86,9 +89,11 @@ self_test() {
   local fx; fx="$(cd "$(dirname "$SELF")" && pwd)/fixtures/runner-smells"; local rc=0 id out t m
   out=$(scan "$fx/good") || { echo "SELF-TEST: good fixture not scanned"; return 2; }
   [ -z "$out" ] || { echo "SELF-TEST FAIL: good fixture has findings:"; echo "$out"; rc=1; }
+  out=$(scan "$fx/good-large") || { echo "SELF-TEST: good-large fixture not scanned"; return 2; }   # > 64 KiB: the pipefail/SIGPIPE regression
+  [ -z "$out" ] && echo "ok   good-large (past the pipe buffer) is clean" || { echo "SELF-TEST FAIL: good-large has findings (grep -q under pipefail?):"; echo "$out"; rc=1; }
   for id in 01 02 03 04 05 06 07 08 09 10 11; do
     out=$(scan "$fx/bad-rs$id") || { echo "SELF-TEST: bad-rs$id not scanned"; return 2; }
-    printf '%s\n' "$out" | cut -f1 | grep -qx "RS-$id" && echo "ok   bad-rs$id -> RS-$id" || { echo "SELF-TEST FAIL: bad-rs$id did not raise RS-$id"; rc=1; }
+    printf '%s\n' "$out" | cut -f1 | has -x "RS-$id" && echo "ok   bad-rs$id -> RS-$id" || { echo "SELF-TEST FAIL: bad-rs$id did not raise RS-$id"; rc=1; }
   done
   [ "${RUNNER_SMELLS_NO_MUTANTS:-0}" = 1 ] && return $rc
   t=$(mktemp -d); mkdir -p "$t/scripts"; cp -r "$fx/.." "$t/scripts/fixtures"
