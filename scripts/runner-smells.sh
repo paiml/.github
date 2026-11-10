@@ -28,6 +28,8 @@ RULES=(
   rs09 # RULE:RS-09 draft pull requests start CI
   rs11 # RULE:RS-11 examples or all targets built on the pull_request path
   rs12 # RULE:RS-12 mutation testing outside a scheduled nightly (HARD: no baseline can allow it)
+  rs13 # RULE:RS-13 more than 3 jobs in one pull_request workflow each compile the crate
+  rs14 # RULE:RS-14 a test job and a coverage job both run the suite in one pull_request workflow
 )
 MAX_PR_WORKFLOWS=3 # RS-10: pull_request-triggered workflow files per repo
 
@@ -87,6 +89,25 @@ non_nightly() {
 rs12() { non_nightly "$1" || return 0; nocomment "$1" | grep -nE '(^|[^[:alnum:]_])cargo[ -]mutants([^[:alnum:]_]|$)' | head -1 | while IFS=: read -r l _; do emit RS-12 "$1" "$l" "mutation testing runs outside a scheduled nightly (operator ruling 2026-11-10: nightly only, forever)"; done; }
 HARD_RULES="RS-12" # never ratcheted: any finding fails --ratchet and --strict, baseline or not
 
+# FILE -> "LINE<TAB>JOB<TAB>KIND" for each job whose own text runs cargo: KIND is cov (llvm-cov/tarpaulin), test (test/nextest)
+# or build (build/check/clippy). One line per job; cov wins over test, test over build.
+job_cargo() {
+  awk '
+    function flush() { if (job != "" && kind != "") printf "%d\t%s\t%s\n", jl, job, kind }
+    { s=$0; sub(/(^|[ \t])#.*$/,"",s) }
+    /^jobs:[ \t]*$/ { inj=1; next }
+    inj && /^[^ \t#]/ { flush(); job=""; inj=0 }
+    inj && s ~ /^  [A-Za-z0-9_-]+:[ \t]*$/ { flush(); job=s; gsub(/[ :\t]/,"",job); jl=NR; kind=""; next }
+    inj && job != "" && s ~ /(^|[^[:alnum:]_-])cargo([ \t]+[+][^ \t]+)?[ \t]+(llvm-cov|tarpaulin)([ \t]|$)/ { kind="cov"; next }
+    inj && job != "" && s ~ /(^|[^[:alnum:]_-])cargo([ \t]+[+][^ \t]+)?[ \t]+(test|nextest)([ \t]|$)/ { if (kind != "cov") kind="test"; next }
+    inj && job != "" && s ~ /(^|[^[:alnum:]_-])cargo([ \t]+[+][^ \t]+)?[ \t]+(build|check|clippy)([ \t]|$)/ { if (kind == "") kind="build" }
+    END { flush() }' "$1"
+}
+MAX_COMPILE_JOBS=3
+rs13() { is_pr "$1" || return 0; local n; n=$(job_cargo "$1" | wc -l); [ "$n" -le "$MAX_COMPILE_JOBS" ] || emit RS-13 "$1" 1 "$n jobs each run cargo on the crate (limit $MAX_COMPILE_JOBS): the same code is compiled $n times per push; build once and reuse"; }
+rs14() { is_pr "$1" || return 0; local t c; t=$(job_cargo "$1" | awk -F'\t' '$3=="test"{print $2; exit}'); c=$(job_cargo "$1" | awk -F'\t' '$3=="cov"{print $2; exit}')
+         [ -n "$t" ] && [ -n "$c" ] && emit RS-14 "$1" 1 "job '$t' runs the tests and job '$c' runs them again under coverage: one suite, two full runs"; return 0; }
+
 scan() { # DIR -> findings on stdout; returns 2 when nothing scanned
   local d="$1/.github/workflows" f n=0 pr=0 r
   [ -d "$d" ] || return 2
@@ -107,13 +128,13 @@ self_test() {
   printf '%s\n' "$out" | cut -f1 | has -x "RS-12" && { echo "SELF-TEST FAIL: nightly-only mutation raised RS-12"; rc=1; } || echo "ok   good-nightly: scheduled mutation is not RS-12"
   out=$(scan "$fx/good-large") || { echo "SELF-TEST: good-large fixture not scanned"; return 2; }   # > 64 KiB: the pipefail/SIGPIPE regression
   [ -z "$out" ] && echo "ok   good-large (past the pipe buffer) is clean" || { echo "SELF-TEST FAIL: good-large has findings (grep -q under pipefail?):"; echo "$out"; rc=1; }
-  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12 13 14; do
     out=$(scan "$fx/bad-rs$id") || { echo "SELF-TEST: bad-rs$id not scanned"; return 2; }
     printf '%s\n' "$out" | cut -f1 | has -x "RS-$id" && echo "ok   bad-rs$id -> RS-$id" || { echo "SELF-TEST FAIL: bad-rs$id did not raise RS-$id"; rc=1; }
   done
   [ "${RUNNER_SMELLS_NO_MUTANTS:-0}" = 1 ] && return $rc
   t=$(mktemp -d); mkdir -p "$t/scripts"; cp -r "$fx/.." "$t/scripts/fixtures"
-  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12 13 14; do
     m="$t/scripts/runner-smells.sh"; grep -v "# RULE:RS-$id" "$SELF" > "$m"
     if RUNNER_SMELLS_NO_MUTANTS=1 bash "$m" --self-test >/dev/null 2>&1; then echo "SELF-TEST FAIL: mutant without RS-$id stayed green"; rc=1; else echo "ok   mutant M_RS$id detected"; fi
   done
