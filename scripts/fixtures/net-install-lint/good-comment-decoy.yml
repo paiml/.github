@@ -1,0 +1,14 @@
+name: comment-decoy
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: lint
+        run: |
+          # curl -fsSL https://example.com would fetch; we use the provisioned binary
+          # pip install yamllint is what the old step did
+          yamllint -d relaxed .github   # npm install was here once
+      - run: true # cargo install foo

@@ -1,0 +1,12 @@
+name: echo-decoy
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "pip install yamllint is banned here"
+      - run: |
+          printf "%s\n" "apt-get -y install is banned"
+          : wget is not used

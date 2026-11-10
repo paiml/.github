@@ -1,0 +1,8 @@
+# expect: curl
+name: inline-on
+on: [push, pull_request]
+jobs:
+  t:
+    runs-on: x
+    steps:
+      - run: curl https://example.com

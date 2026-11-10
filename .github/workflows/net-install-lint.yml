@@ -1,0 +1,56 @@
+name: net-install-lint
+# Reusable check (paiml/infra#3828): fails when any pull_request-triggered workflow in the
+# CALLER repo installs or fetches from the network in a step's run: text (curl, wget,
+# apt/apt-get install, cargo install/binstall, pip install, npm i/install/ci/add).
+# Provision the tool on the runner instead (/opt/fleet-bin via forjar).
+#
+# Caller usage:
+#   jobs:
+#     net-install-lint:
+#       uses: paiml/.github/.github/workflows/net-install-lint.yml@main
+#
+# The scanner is shell (scripts/net-install-lint.sh), checked out from paiml/.github at
+# inputs.scanner_ref (default main). A caller that pins uses: ...@<sha> passes the same
+# sha as scanner_ref. Its fixtures and per-pattern mutants run in this repo's CI.
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: JSON array of runner labels.
+        type: string
+        default: '["self-hosted","clean-room"]'
+      paths:
+        description: Space-separated workflow files or directories to scan.
+        type: string
+        default: .github/workflows
+      scanner_ref:
+        description: paiml/.github ref the scanner is read from; pass the same ref as the uses @ pin.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  net-install-lint:
+    name: net-install-lint
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: paiml/.github
+          ref: ${{ inputs.scanner_ref }}
+          path: .net-install-lint
+          persist-credentials: false
+      - name: No network installs in pull_request workflows
+        shell: bash
+        env:
+          SCAN_PATHS: ${{ inputs.paths }}
+        run: |
+          set -uo pipefail
+          read -r -a scan_paths <<<"$SCAN_PATHS"
+          bash .net-install-lint/scripts/net-install-lint.sh "${scan_paths[@]}"
