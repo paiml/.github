@@ -66,6 +66,19 @@ on:
         required: false
         default: 'always'
         type: string
+      heavy_on:
+        description: >-
+          When the HEAVY jobs (test, coverage) run. 'always' (default, unchanged): every event.
+          'train': on a pull_request they run only for a merge-train or batch head (train/*, batch/*)
+          or a PR labelled full-ci; on any other PR they are SKIPPED and `gate` prints NOT MEASURED
+          (never a pass). Every non-PR event (push, merge_group, schedule, dispatch, tags) still runs
+          them, and there a skipped heavy job is RED. Why: each PR push ran the heavy suite and the
+          merge train then ran it again on the batch; on 2026-11-10 229 runs were queued org-wide.
+          OPT-IN REQUIRES the caller's repo to merge through the train only: a PR merged directly
+          under heavy_on=train has had lint and security but NOT its tests.
+        required: false
+        default: 'always'
+        type: string
       advisories_diff_only:
         description: >-
           Default true (ADV-001, paiml/infra#3648): advisories are judged as a DIFF. The
@@ -179,7 +192,8 @@ jobs:
 
   test:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
-    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) }}
+    # heavy_on == 'train': on a PR, runs only for train/*, batch/* or label full-ci (see the input).
+    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && (inputs.heavy_on != 'train' || !startsWith(github.event_name, 'pull_request') || startsWith(github.head_ref, 'train/') || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
@@ -842,7 +856,7 @@ jobs:
     # not measured, and `gate` below accepts that skip only under this input and never
     # on a tag push or a dispatch.
     if: >-
-      ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && !inputs.skip_coverage && (inputs.coverage_on != 'tag'
+      ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && !inputs.skip_coverage && (inputs.heavy_on != 'train' || !startsWith(github.event_name, 'pull_request') || startsWith(github.head_ref, 'train/') || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (inputs.coverage_on != 'tag'
         || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
@@ -2126,6 +2140,9 @@ jobs:
           COVERAGE_ON: ${{ inputs.coverage_on }}
           EVENT_NAME: ${{ github.event_name }}
           GIT_REF: ${{ github.ref }}
+          HEAVY_ON: ${{ inputs.heavy_on }}
+          HEAD_REF: ${{ github.head_ref }}
+          FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           rc=0
           # coverage_on: 'always' keeps the rule above verbatim (coverage must succeed).
@@ -2145,6 +2162,24 @@ jobs:
               *) coverage_owed=0 ;;
             esac
           fi
+          # heavy_on: 'always' keeps the rule verbatim (test and coverage must succeed).
+          # 'train': on a pull_request whose head is not train/* or batch/* and that carries no
+          # full-ci label, test and coverage are skipped by their own `if:`; that skip, and only
+          # that skip, is accepted and printed as NOT MEASURED. On a train or batch head, a
+          # full-ci PR and every non-PR event they are OWED: skipped there is RED (anti-vacuity).
+          case "$HEAVY_ON" in
+            always|train) ;;
+            *) echo "::error::heavy_on must be 'always' or 'train', got '${HEAVY_ON}'"; exit 1 ;;
+          esac
+          heavy_owed=1
+          if [ "$HEAVY_ON" = train ]; then
+            case "$EVENT_NAME" in
+              pull_request*)
+                case "$HEAD_REF" in train/*|batch/*) heavy_owed=1 ;; *) heavy_owed=0 ;; esac
+                [ "$FULL_CI" = true ] && heavy_owed=1 ;;
+              *) heavy_owed=1 ;;
+            esac
+          fi
           for pair in \
             "test:${{ needs.test.result }}" \
             "lint:${{ needs.lint.result }}" \
@@ -2154,6 +2189,10 @@ jobs:
             res="${pair#*:}"
             if [ "$job" = coverage ] && [ "$coverage_owed" = 0 ] && [ "$res" = skipped ]; then
               echo "coverage: NOT MEASURED on ${EVENT_NAME} (coverage_on=tag; owed on v* tags and dispatch)"
+              continue
+            fi
+            if { [ "$job" = test ] || [ "$job" = coverage ]; } && [ "$heavy_owed" = 0 ] && [ "$res" = skipped ]; then
+              echo "${job}: NOT MEASURED on this PR (heavy_on=train; owed on train/*, batch/*, full-ci and every non-PR event)"
               continue
             fi
             if [ "$res" != "success" ]; then
