@@ -2108,7 +2108,10 @@ jobs:
     # NO-FORK-1: a fork-head PR runs this gate on a hosted runner (never self-hosted).
     # This fork branch and fork-guard are the only permitted hosted runs-on in a gate
     # (NO-FORK-1 07:15Z b): fork-head PRs only, no checkout, no secrets, only the refuse step runs.
-    runs-on: ${{ (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["ubuntu-latest"]') || fromJSON(inputs.runs_on) }}
+    # GATE-ROLLUP-LIGHT (2026-11-10): this job only sums `needs` results (bash, no checkout, no toolchain), so it runs on the
+    # gate-light pool, never on the heavy pool in inputs.runs_on. On 2026-11-10 the same roll-up in ci.yml waited 36 min for an
+    # intel clean-room seat while all its inputs were green, holding the fix for a gate that was red on 17 rmedia PRs.
+    runs-on: ${{ (startsWith(github.event_name, 'pull_request') && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","gate-light"]') }}
     timeout-minutes: 5
     if: always()
     needs: [test, lint, coverage, security, provenance]
