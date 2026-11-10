@@ -34,6 +34,8 @@ jobs:
         run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: NET-INSTALL-LINT fixtures + per-pattern mutants (infra#3828, RED->GREEN)
         run: bash scripts/net-install-lint.sh --self-test
+      - name: RUNNER-SMELLS fixtures + one mutant per rule (infra#3828, pmat#1673, RED->GREEN)
+        run: bash scripts/runner-smells.sh --self-test
       - name: Lint workflow YAML
         shell: bash
         run: |
