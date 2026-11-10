@@ -22,6 +22,8 @@ jobs:
         run: bash scripts/test-uid-agnostic-chown.sh --self-test && bash scripts/test-uid-agnostic-chown.sh
       - name: roadmap-fragment-parity shallow-checkout falsifier (RED->GREEN)
         run: bash scripts/test-roadmap-fragment-parity-shallow.sh
+      - name: GATE-ROLLUP-LIGHT (gate roll-ups never ask for a heavy runner)
+        run: bash scripts/test-gate-rollup-light.sh
       - name: pr-gate membership is GraphQL-first, fail-closed (RED->GREEN)
         run: bash scripts/test-pr-gate-membership.sh --self-test
       - name: no pull-request-target guard (P0 security, RED->GREEN)
@@ -123,7 +125,8 @@ jobs:
     # against a gate that silently stops running on billing state, self-hosted
     # is the safer failure mode.
     timeout-minutes: 15
-    runs-on: [self-hosted, Linux, X64, clean-room, intel]
+    # GATE-ROLLUP-LIGHT (2026-11-10): a roll-up needs bash and jq only; it must not queue behind heavy jobs for an intel seat.
+    runs-on: [self-hosted, gate-light]
     if: always()
     needs: [validate]
     steps:
