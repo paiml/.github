@@ -26,6 +26,9 @@
 # owner read, unreadable owner exits 1 with ::error::, a failing chown exits 1 with a count, and a
 # file with the right uid and the wrong gid gets chowned.
 set -uo pipefail
+# qgrep: grep that reads ALL of stdin. `grep -q` exits at the first match, the upstream `echo "$big"` then gets SIGPIPE and
+# `set -o pipefail` turns a MATCH into a failed pipeline (false "not caught"/"FAIL[...]"): paiml/.github 104,105,107.
+qgrep() { grep "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 2
 WF=${WF_DIR:-.github/workflows}
 MARK='uid-agnostic (infra#2349)'
@@ -85,14 +88,14 @@ check_files() { # prints FAIL[tag] lines; returns 1 if any
       grep -qxF "$STAT_LINE" "$s" || { echo "FAIL[OWNER_SRC] $f: the owner is not read by the stat of /__e"; fails=1; }
       [ "$(grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -cE '(^|[^A-Za-z_-])stat[[:space:]]')" -eq 1 ] || { echo "FAIL[OWNER_SRC] $f: the site must have exactly one stat (of /__e)"; fails=1; }
       # INTREE: no stat of a path inside the chowned tree, whatever else the site has
-      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | grep -qE "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
+      grep -vE '^[[:space:]]*#' "$s" | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' | grep -E '(^|[^A-Za-z_-])stat[[:space:]]' | qgrep -E "$INTREE_RE|for P in" && { echo "FAIL[INTREE] $f: owner stat of a path inside the chowned tree"; fails=1; }
       # NOUID0: the uid-0 check exists, reports ::error:: and exits 1, and runs before the find
       u0="$(grep -nxF "$UID0_LINE" "$s" | head -n 1 | cut -d: -f1)"; fd="$(grep -nE '^          find "\$WORK_ROOT"' "$s" | head -n 1 | cut -d: -f1)"
       if [ -z "$u0" ] || [ -z "$fd" ] || [ "$u0" -ge "$fd" ] \
-         || ! sed -n "$((u0 + 1))p" "$s" | grep -qF '::error::runner user mismatch' || [ "$(sed -n "$((u0 + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
+         || ! sed -n "$((u0 + 1))p" "$s" | qgrep -F '::error::runner user mismatch' || [ "$(sed -n "$((u0 + 2))p" "$s" | tr -d ' ')" != "exit1" ]; then
         echo "FAIL[NOUID0] $f: no uid-0 check (::error::runner user mismatch + exit 1) before the find"; fails=1; fi
       # FALLBACK
-      if grep -vE '^[[:space:]]*#' "$s" | grep -qiE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
+      if grep -vE '^[[:space:]]*#' "$s" | qgrep -iE 'fall(ing)?[ -]?back|case "\$OWNER_UG"|(^|[^0-9])0:0'; then
         echo "FAIL[FALLBACK] $f: fallback branch in a site"; fails=1; fi
     done
     rm -rf "${tmp:?}/d"
@@ -149,19 +152,19 @@ run_site() { # behavioural run of the first site: mode = ok | unreadable | chown
 behaviour() {
   [ -s "${SITE_FILE:-}" ] || { echo "FAIL[NOSITE] no site to execute"; return 1; }
   local rc=0 o
-  o="$(run_site ok)" && echo "$o" | grep -qE 'runner owner \(stat of .*\): 4242:4343' && echo "ok   site runs, owner read from /__e" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
+  o="$(run_site ok)" && echo "$o" | qgrep -E 'runner owner \(stat of .*\): 4242:4343' && echo "ok   site runs, owner read from /__e" || { echo "FAIL[BEHAVIOUR] ok-case: $o"; rc=1; }
   o="$(run_site unreadable)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::cannot read the runner owner'; then echo "ok   unreadable owner -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
+  if [ "$r" -ne 0 ] && echo "$o" | qgrep '::error::cannot read the runner owner'; then echo "ok   unreadable owner -> ::error:: + nonzero"; else echo "FAIL[BEHAVIOUR] unreadable owner did not fail visibly: $o"; rc=1; fi
   o="$(run_site unsetrt)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 "; then echo "ok   RUNNER_TEMP unset -> still repaired to the /__e owner"; else echo "FAIL[BEHAVIOUR] the owner depended on RUNNER_TEMP: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && echo "$o" | qgrep "CHOWN-CALLED -h 4242:4343 "; then echo "ok   RUNNER_TEMP unset -> still repaired to the /__e owner"; else echo "FAIL[BEHAVIOUR] the owner depended on RUNNER_TEMP: $o"; rc=1; fi
   o="$(run_site wrongtemp)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -q "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | grep -q 9999; then echo "ok   RUNNER_TEMP + WORK_ROOT wrong-owned -> still repaired to the runner uid (the /__e owner)"; else echo "FAIL[BEHAVIOUR] a wrong-owned path inside the tree became the owner: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && echo "$o" | qgrep "CHOWN-CALLED -h 4242:4343 " && ! echo "$o" | qgrep 9999; then echo "ok   RUNNER_TEMP + WORK_ROOT wrong-owned -> still repaired to the runner uid (the /__e owner)"; else echo "FAIL[BEHAVIOUR] a wrong-owned path inside the tree became the owner: $o"; rc=1; fi
   o="$(run_site uid0)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::runner user mismatch' && ! echo "$o" | grep -q 'CHOWN-CALLED'; then echo "ok   owner uid 0 -> ::error:: runner user mismatch + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] uid 0 did not fail closed: $o"; rc=1; fi
+  if [ "$r" -ne 0 ] && echo "$o" | qgrep '::error::runner user mismatch' && ! echo "$o" | qgrep 'CHOWN-CALLED'; then echo "ok   owner uid 0 -> ::error:: runner user mismatch + nonzero, chown never called"; else echo "FAIL[BEHAVIOUR] uid 0 did not fail closed: $o"; rc=1; fi
   o="$(run_site chownfail)"; r=$?
-  if [ "$r" -ne 0 ] && echo "$o" | grep -q '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
+  if [ "$r" -ne 0 ] && echo "$o" | qgrep '::error::chown to .* failed on [1-9]'; then echo "ok   failing chown -> ::error:: with count + nonzero"; else echo "FAIL[BEHAVIOUR] chown failure swallowed: $o"; rc=1; fi
   o="$(run_site gidonly)"; r=$?
-  if [ "$r" -eq 0 ] && echo "$o" | grep -qE "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
+  if [ "$r" -eq 0 ] && echo "$o" | qgrep -E "CHOWN-CALLED -h [0-9]+:4242 "; then echo "ok   right uid + wrong gid -> chowned"; else echo "FAIL[BEHAVIOUR] a file with the right uid and the wrong gid was not repaired: $o"; rc=1; fi
   return "$rc"
 }
 
@@ -184,7 +187,7 @@ if [ "${1:-}" = "--self-test" ]; then
     out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
     local m0=$MISSES
     for t in ${2//,/ }; do
-      echo "$out" | grep -q "FAIL\[$t\]" || miss "'$1' not caught as [$t]"
+      echo "$out" | qgrep "FAIL\[$t\]" || miss "'$1' not caught as [$t]"
     done
     [ "$MISSES" -eq "$m0" ] && echo "  caught [$2] $1"
   }
@@ -289,7 +292,7 @@ if [ "${1:-}" = "--self-test" ]; then
   comp() { # name tags yaml : a composite action under $tmp/actions/x/action.yml
     rm -rf "${tmp:?}/actions"; mkdir -p "$tmp/actions/x"; cp "$WF"/*.yml "$tmp"/; printf '%b\n' "$3" > "$tmp/actions/x/action.yml"
     out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-    for t in ${2//,/ }; do echo "$out" | grep -q "FAIL\[$t\]" || { miss "composite '$1' not caught as [$t]"; }; done
+    for t in ${2//,/ }; do echo "$out" | qgrep "FAIL\[$t\]" || { miss "composite '$1' not caught as [$t]"; }; done
     echo "  caught [$2] $1"; rm -rf "${tmp:?}/actions"
   }
   CA='name: c\nruns:\n  using: composite\n  steps:\n'
@@ -312,7 +315,7 @@ if [ "${1:-}" = "--self-test" ]; then
   # a variable command that resolves to a non-chown must stay green (the rule fails only the unresolvable)
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          LS=/bin/ls\n          \$LS -R \"\$GITHUB_WORKSPACE\" # owner listing" >> "$tmp/$F"
   out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
+  echo "$out" | qgrep 'FAIL\[VARCMD\]' && miss "a variable command resolving to /bin/ls was flagged"
   echo "  kept  [VARCMD] a variable command resolving to a non-chown stays green"
   # --- infra#2349 class rules (infra-res): NORMALISE the command word, then match CLASSES ---------
   # Every mutant below passed the literal-word detector at 366ffcc (infra-PR-cull: 0 of 3 caught).
@@ -388,7 +391,7 @@ if [ "${1:-}" = "--self-test" ]; then
   keep() { # name line : append a step that mentions chown, demand a clean run
     cp "$WF"/*.yml "$tmp"/; printf '%b\n' "      - name: x\n        run: |\n          # chown audit (comment only)\n          $2" >> "$tmp/$F"
     out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-    if echo "$out" | grep -q 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
+    if echo "$out" | qgrep 'FAIL\['; then miss "control '$1' went red: $(echo "$out" | grep -m1 'FAIL\[')"; else echo "  kept  [green] $1"; fi
   }
   keep "ctl: \\ls -R"                        '\\ls -R "$GITHUB_WORKSPACE"'
   keep "ctl: \"ls\" quoted"                  '"ls" -R "$GITHUB_WORKSPACE"'
@@ -411,15 +414,15 @@ if [ "${1:-}" = "--self-test" ]; then
   # eval in a step that does not deal with ownership is not an ownership question
   cp "$WF"/*.yml "$tmp"/; printf '%b\n' '      - name: agent\n        run: |\n          eval "$(ssh-agent -s)"\n          sh -c "$BUILD"' >> "$tmp/$F"
   out="$(WF_DIR=$tmp ACT_DIR=$tmp/actions SITE_COPY= bash "$0" 2>&1 || true)"
-  if echo "$out" | grep -q 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
+  if echo "$out" | qgrep 'FAIL\['; then miss "control 'eval in a step with no ownership text' went red"; else echo "  kept  [green] eval in a step with no ownership text"; fi
   # --- no site / nothing scanned ---
   cp "$WF"/*.yml "$tmp"/; sed -i 's/uid-agnostic (infra#2349)/uid-x/' "$tmp/$F"
   out="$(WF_DIR=$tmp SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[NOSITE\]' || { echo "SELF-TEST FAIL: no-site not caught"; exit 1; }
+  echo "$out" | qgrep 'FAIL\[NOSITE\]' || { echo "SELF-TEST FAIL: no-site not caught"; exit 1; }
   echo "  caught [NOSITE] no site at all"
   mkdir "$tmp/empty"
   out="$(WF_DIR=$tmp/empty SITE_COPY= bash "$0" 2>&1 || true)"
-  echo "$out" | grep -q 'FAIL\[NOSCAN\] scanned 0 file' || { echo "SELF-TEST FAIL: empty WF_DIR not caught as NOSCAN with a count"; exit 1; }
+  echo "$out" | qgrep 'FAIL\[NOSCAN\] scanned 0 file' || { echo "SELF-TEST FAIL: empty WF_DIR not caught as NOSCAN with a count"; exit 1; }
   echo "  caught [NOSCAN] empty workflow dir, with its file count"
   [ "$MISSES" -eq 0 ] || { echo "self-test FAILED: $MISSES mutation(s) not caught"; exit 1; }
   echo "self-test ok: every mutation caught (red)"; exit 0
