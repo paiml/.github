@@ -1,0 +1,10 @@
+# expect: curl
+name: curl
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsSL https://example.com/x.sh -o x.sh

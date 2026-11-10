@@ -1,0 +1,11 @@
+# expect: wget
+name: folded-block
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: >-
+          wget https://example.com/a

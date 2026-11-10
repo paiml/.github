@@ -1,0 +1,10 @@
+name: no-pr
+on:
+  push:
+    branches: [main]
+jobs:
+  t:
+    runs-on: x
+    steps:
+      - run: curl -fsSL https://example.com
+      - run: cargo install foo

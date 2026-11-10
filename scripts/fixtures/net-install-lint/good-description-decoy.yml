@@ -1,0 +1,14 @@
+name: desc-decoy
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: >-
+          on pull_request the job is skipped
+        type: string
+  push:
+jobs:
+  t:
+    runs-on: x
+    steps:
+      - run: curl https://example.com
