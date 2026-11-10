@@ -1,0 +1,10 @@
+# expect: pip-install
+name: quoted-single-line
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'python -m pip install yamllint'

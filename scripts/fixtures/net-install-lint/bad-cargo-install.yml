@@ -1,0 +1,10 @@
+# expect: cargo-install
+name: cargo-install
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo +stable install --locked cargo-nextest

@@ -1,0 +1,10 @@
+# expect: npm-install
+name: list-form
+on:
+  - push
+  - pull_request
+jobs:
+  t:
+    runs-on: x
+    steps:
+      - run: npm i

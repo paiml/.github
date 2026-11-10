@@ -1,0 +1,10 @@
+# expect: wget
+name: wget
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: wget -q https://example.com/x.tgz

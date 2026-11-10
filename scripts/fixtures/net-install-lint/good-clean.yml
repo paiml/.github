@@ -1,0 +1,16 @@
+name: clean
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          curl: not-a-run-key
+      - run: /opt/fleet-bin/bin/curlie --version
+      - run: ./scripts/npm-index.sh && cargo build --locked
+      - run: |
+          cargo test --locked
+          make install

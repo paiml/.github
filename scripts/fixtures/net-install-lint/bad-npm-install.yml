@@ -1,0 +1,10 @@
+# expect: npm-install
+name: npm-install
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm install

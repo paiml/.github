@@ -1,0 +1,10 @@
+# expect: pip-install
+name: pip-install
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip3 install --user yamllint

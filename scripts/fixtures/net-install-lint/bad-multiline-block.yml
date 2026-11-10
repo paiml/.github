@@ -1,0 +1,16 @@
+# expect: apt-get-install
+name: multiline-block
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: setup
+        run: |
+          set -e
+          echo "preparing"
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - run: echo done
