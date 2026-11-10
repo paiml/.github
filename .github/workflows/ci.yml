@@ -24,6 +24,8 @@ jobs:
         run: bash scripts/test-roadmap-fragment-parity-shallow.sh
       - name: pr-gate membership is GraphQL-first, fail-closed (RED->GREEN)
         run: bash scripts/test-pr-gate-membership.sh --self-test
+      - name: no pull-request-target guard (P0 security, RED->GREEN)
+        run: sh scripts/test-no-pull-request-target-guard.sh && sh scripts/no-pull-request-target-guard.sh
       - name: Sigstore signer guards (RED->GREEN)
         run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: Lint workflow YAML
