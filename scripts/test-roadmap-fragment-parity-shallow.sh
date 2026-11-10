@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Falsifier for the roadmap-fragment-parity shallow-checkout fix (paiml-implement#697).
+# Falsifier for roadmap-fragment-parity (GATE-JUNK-001, infra#3711): the step makes 0 network
+# fetches, still goes RED when the base is truly missing, and is green on a full-history checkout.
 # Usage: test-roadmap-fragment-parity-shallow.sh
-# Extracts the step's run block from sovereign-ci.yml, runs it in a depth-1 clone of a
-# merge commit (base and head shas absent), and requires: green with the fix, RED
-# when the fix region (between "shallow-fix begin/end") is removed.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 WF=.github/workflows/sovereign-ci.yml
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "${T:?}"' EXIT
 
-# step body, 10-space indent stripped, from "run: |" to the next step
 awk '/- name: roadmap-fragment-parity/{s=1;next} s&&/^      - name:/{exit} s&&/^        run: \|/{r=1;next} r{sub(/^          /,"");print}' "$WF" > "$T/step.sh"
 [ -s "$T/step.sh" ] || { echo "FAIL: could not extract the step"; exit 2; }
-grep -q 'shallow-fix begin' "$T/step.sh" || { echo "FAIL: fix markers missing"; exit 1; }
-awk '/shallow-fix begin/{skip=1} !skip{print} /shallow-fix end/{skip=0}' "$T/step.sh" > "$T/step-nofix.sh"
+rc=0
+if grep -v '^[[:space:]]*#' "$T/step.sh" | grep -q 'git fetch'; then echo "FAIL: step makes a network fetch"; rc=1; else echo "ok: step has no git fetch"; fi
+# the security job's checkout must carry fetch-depth: 0
+sec=$(awk '/^  security:/{s=1;next} s&&/^  [a-z-]+:$/{exit} s' "$WF")
+if printf '%s\n' "$sec" | grep -A4 'actions/checkout' | grep -q 'fetch-depth: 0'; then echo "ok: security checkout is fetch-depth: 0"; else echo "FAIL: security checkout lacks fetch-depth: 0"; rc=1; fi
 
 g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 O="$T/origin"
@@ -32,20 +32,15 @@ HEAD=$(git -C "$O" rev-parse HEAD)
 g -C "$O" checkout -q main
 echo c > "$O/other.txt"; g -C "$O" add -A; g -C "$O" commit -q -m advance
 g -C "$O" merge -q --no-ff -m merge pr
-git -C "$O" config uploadpack.allowAnySHA1InWant true
 
-fresh_clone() {
+# clone, then break the remote: any fetch would fail exactly like the credential-stripped runner
+run_case() { # $1 = clone depth args
   rm -rf "${T:?}/c"
-  git clone -q --depth 1 "file://$O" "$T/c" 2>/dev/null
+  # shellcheck disable=SC2086
+  git clone -q $1 "file://$O" "$T/c" 2>/dev/null
+  git -C "$T/c" remote set-url origin "file://$T/does-not-exist"
+  ( cd "$T/c" && BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$T/step.sh" ) >"$T/out" 2>&1
 }
-run_case() { # $1 = script
-  fresh_clone
-  ( cd "$T/c" && BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$1" ) >"$T/out" 2>&1
-}
-fresh_clone
-if git -C "$T/c" cat-file -e "$HEAD^{commit}" 2>/dev/null; then echo "FAIL: fixture not shallow"; exit 2; fi
-
-rc=0
-if run_case "$T/step.sh"; then echo "ok: with fix -> green"; else echo "FAIL: with fix is red"; tail -n 5 "$T/out"; rc=1; fi
-if run_case "$T/step-nofix.sh"; then echo "FAIL: without fix is green (falsifier cannot discriminate)"; rc=1; else echo "ok: without fix -> red"; tail -n 2 "$T/out"; fi
+if run_case ""; then echo "ok: full-history checkout -> green"; else echo "FAIL: full history is red"; tail -n 5 "$T/out"; rc=1; fi
+if run_case "--depth 1"; then echo "FAIL: base missing is green (cannot go red)"; rc=1; else echo "ok: base missing -> red"; tail -n 2 "$T/out"; fi
 exit $rc
