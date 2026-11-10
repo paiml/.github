@@ -84,8 +84,9 @@ on:
           Default true (ADV-001, paiml/infra#3648): advisories are judged as a DIFF. The
           `security` job's built-in advisory gate fails a PR / merge_group only on advisories
           its own Cargo.lock change introduces, against ONE pinned advisory-db (no live fetch
-          at gate time); an advisory already on the base, or on a pushed commit, is a warning
-          and an andon (advisory-andon.yml), never a red build. The live-DB `cargo deny check
+          at gate time); an advisory already on the base, or on a branch-push / scheduled
+          commit, is a warning and an andon (advisory-andon.yml), never a red build. On a
+          tag push, workflow_dispatch or release, any advisory at the pin is red. The live-DB `cargo deny check
           advisories` in `lint` and `cargo audit` in `security` are skipped; licenses and
           sources still run. false restores the old live-DB full scan, which turns every PR
           red the day an advisory is published.
@@ -1801,7 +1802,9 @@ jobs:
       #   * pull_request / merge_group: fail ONLY on advisories the PR's own Cargo.lock change
       #     introduces (key = advisory id | crate@version, base lock vs PR lock). An advisory
       #     already on the base is printed as an andon line, never a block.
-      #   * push / schedule / dispatch: a full scan of the commit; findings are ::warning::
+      #   * tag push / workflow_dispatch / release (release paths): a full scan of the commit;
+      #     any finding at the pin is RED (GATE/LAB rule 6: no report-only row on a release path).
+      #   * branch push / schedule: a full scan of the commit; findings are ::warning::
       #     (the scheduled advisory-andon.yml opens the ticket), never a red build.
       #   * ONE pinned advisory-db for both sides, no live fetch: the caller's
       #     .advisory-db-rev (40-hex) when it commits one, else input advisory_db_rev. It is
@@ -1823,6 +1826,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SOV_ADV_EVENT: ${{ github.event_name }}
+          SOV_ADV_REF: ${{ github.ref }}
           SOV_ADV_PR_BASE: ${{ github.event.pull_request.base.sha }}
           SOV_ADV_MG_BASE: ${{ github.event.merge_group.base_sha }}
           SOV_ADV_DB_REV_INPUT: ${{ inputs.advisory_db_rev }}
@@ -1975,13 +1979,24 @@ jobs:
               exit "$rc"
               ;;
             *)
-              # push / schedule / dispatch: report, never block (the andon workflow owns the ticket)
+              # Release paths (tag push, workflow_dispatch, release) are a GATE: any finding at
+              # the pin is red. Branch push / schedule are not release paths: warn, and
+              # advisory-andon.yml (LAB) owns the ticket. No report-only row on a release path.
+              RELEASE=0
+              case "$SOV_ADV_EVENT:${SOV_ADV_REF:-}" in
+                push:refs/tags/* | workflow_dispatch:* | release:*) RELEASE=1 ;;
+              esac
               adv_lock_at HEAD "$T/head.lock" || exit "$CANT"
               IGN=$( (cat .cargo/audit.toml 2>/dev/null || true) | adv_ignore_flags)
               # shellcheck disable=SC2086
               HRC=$(adv_scan "$DB" "$T/head.lock" "$T/head.json" $IGN)
               K=$(adv_side "$T/head.json" "$HRC") || { echo "::error::advisory scan: COULD-NOT-CHECK (fails closed)"; exit "$CANT"; }
-              if [ -n "$K" ]; then
+              if [ -n "$K" ] && [ "$RELEASE" = 1 ]; then
+                while IFS= read -r k; do
+                  printf '::error::advisory on a release path (%s %s): %s\n' "$SOV_ADV_EVENT" "${SOV_ADV_REF:-}" "$k"
+                done <<<"$K"
+                exit 1
+              elif [ -n "$K" ]; then
                 printf '%s\n' "$K" | sed 's/^/::warning::ADVISORY ANDON (on this commit, not a build failure; advisory-andon.yml tickets it): /'
               else
                 echo "advisory scan: no advisory at pin $REV"

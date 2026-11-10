@@ -17,7 +17,7 @@
 # shellcheck disable=SC2034 # variables set in subshells are read by the sourced step
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
-WF=.github/workflows/sovereign-ci.yml
+WF=${ADV_GATE_WF:-.github/workflows/sovereign-ci.yml}
 T=$(mktemp -d) || exit 2
 trap 'rm -rf "${T:?}"' EXIT
 fails=0 oks=0
@@ -162,10 +162,10 @@ mkrepo() { # NAME BASE_LOCK HEAD_LOCK -> prints "dir base"
   printf '%s' "$3" >"$d/Cargo.lock"; echo "// change" >>"$d/Cargo.toml"; g -C "$d" add -A; g -C "$d" commit -q -m pr
   echo "$d $b"
 }
-e2e() { # EVENT DIR BASE -> rc of the step
+e2e() { # EVENT DIR BASE [REF] -> rc of the step
   local rc=0
   ( cd "$2" && PATH="$SCANPATH" GITHUB_WORKSPACE="$2" GITHUB_TOKEN=x RUNNER_TOOL_CACHE="$T/rtc" SOV_ADV_CACHE="$T/cache" \
-      SOV_ADV_MIRROR="$T/no-mirror" SOV_ADV_DB_URL="file://$DBO" SOV_ADV_EVENT="$1" SOV_ADV_PR_BASE="$3" SOV_ADV_MG_BASE="$3" \
+      SOV_ADV_MIRROR="$T/no-mirror" SOV_ADV_DB_URL="file://$DBO" SOV_ADV_EVENT="$1" SOV_ADV_REF="${4:-refs/heads/main}" SOV_ADV_PR_BASE="$3" SOV_ADV_MG_BASE="$3" \
       SOV_ADV_DB_REV_INPUT="$REV" bash "$T/step.sh" ) >"$T/e2e.out" 2>&1 || rc=$?
   echo "$rc"
 }
@@ -178,6 +178,12 @@ read -r d b < <(mkrepo adds "$LOCK_HDR" "$LOCK_HDR$V")
 r=$(e2e pull_request "$d" "$b"); [ "$r" = 1 ] && ok "e2e PR adds a vulnerable crate -> RED" || { bad "e2e adds-vulnerable rc=$r"; tail -5 "$T/e2e.out"; }
 grep -q 'RUSTSEC-2026-0459|libsqlite3-sys@0.30.1' "$T/e2e.out" && ok "e2e RED names RUSTSEC-2026-0459|libsqlite3-sys@0.30.1" || bad "e2e RED does not name the finding"
 r=$(e2e push "$d" "$b"); [ "$r" = 0 ] && grep -q '::warning::ADVISORY ANDON (on this commit' "$T/e2e.out" && ok "e2e push with an advisory -> warning, not red" || bad "e2e push rc=$r"
+r=$(e2e schedule "$d" "$b"); [ "$r" = 0 ] && grep -q '::warning::ADVISORY ANDON (on this commit' "$T/e2e.out" && ok "e2e schedule with an advisory -> warning, not red" || bad "e2e schedule rc=$r"
+# release paths are a GATE (GATE/LAB rule 6): a finding at the pin is RED, never a warning
+r=$(e2e push "$d" "$b" refs/tags/v1.2.3); [ "$r" = 1 ] && grep -q '::error::advisory on a release path' "$T/e2e.out" && ok "e2e tag push (refs/tags/v1.2.3) with an advisory -> RED" || { bad "e2e tag push with an advisory rc=$r (release path must be RED)"; tail -3 "$T/e2e.out"; }
+r=$(e2e workflow_dispatch "$d" "$b"); [ "$r" = 1 ] && grep -q '::error::advisory on a release path' "$T/e2e.out" && ok "e2e workflow_dispatch with an advisory -> RED" || { bad "e2e workflow_dispatch with an advisory rc=$r (release path must be RED)"; tail -3 "$T/e2e.out"; }
+read -r d2 b2 < <(mkrepo clean "$LOCK_HDR" "$LOCK_HDR")
+r=$(e2e push "$d2" "$b2" refs/tags/v1.2.3); [ "$r" = 0 ] && ok "e2e tag push with no advisory -> GREEN" || bad "e2e clean tag push rc=$r"
 r=$(e2e pull_request "$d" "deadbeef"); [ "$r" = 75 ] && ok "e2e malformed base sha -> 75" || bad "e2e malformed base rc=$r"
 r=$(e2e pull_request "$d" "$(printf 'a%.0s' {1..40})"); [ "$r" = 75 ] && ok "e2e base not in checkout -> 75" || bad "e2e absent base rc=$r"
 # a PR may not waive what it introduces: ignore added only on the PR side
