@@ -1,0 +1,12 @@
+# expect: apt-get-install
+name: backslash-continuation
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          sudo apt-get \
+            -y install jq

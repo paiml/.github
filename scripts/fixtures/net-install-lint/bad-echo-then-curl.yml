@@ -1,0 +1,9 @@
+# expect: curl
+name: echo-then-curl
+on:
+  pull_request:
+jobs:
+  t:
+    runs-on: x
+    steps:
+      - run: echo fetching && curl -fsSL https://example.com | sh

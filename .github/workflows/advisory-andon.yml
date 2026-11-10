@@ -1,0 +1,86 @@
+name: Advisory andon
+
+# ADV-001 (paiml/infra#3648), ported from aprender's advisory-andon.yml (PMAT-5792).
+# The other half of the diff-only advisory gate in sovereign-ci.yml: PRs fail only on the
+# advisories they introduce, so an advisory published against a crate ALREADY on main is
+# caught HERE, on a schedule, as one ticket per finding -- never as a red PR, a red main or
+# a merge freeze. This is the one place that reads the LATEST advisory-db: it is a detector,
+# not a gate, so a live fetch cannot stop anyone's build.
+#
+# Caller (one file per repo; schedule + dispatch only, never pull_request / merge_group):
+#   on: { schedule: [{ cron: '17 */2 * * *' }], workflow_dispatch: {} }
+#   permissions: { contents: read, issues: write }
+#   jobs:
+#     andon:
+#       uses: paiml/.github/.github/workflows/advisory-andon.yml@<sha>
+#
+# Each finding "RUSTSEC-id|crate@version" gets ONE open issue titled
+# "ADVISORY ANDON: <key>", labelled advisory-andon; an existing open issue is left alone.
+# Fails closed: a scan that cannot be read is red on this scheduled lane only.
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: JSON array of runner labels (same default as sovereign-ci.yml).
+        required: false
+        default: '["self-hosted","clean-room"]'
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  andon:
+    if: ${{ !startsWith(github.event_name, 'pull_request') && github.event_name != 'merge_group' }}
+    name: advisory-andon
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan the default branch against the latest advisory-db and ticket each finding
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CANT=75
+          # KEYS_FILE -> one open "ADVISORY ANDON: <key>" issue per key, created only when absent
+          andon_emit() {
+            local k open
+            "${GH:-gh}" label create advisory-andon --color B60205 >/dev/null 2>&1 || true
+            open=$("${GH:-gh}" issue list --label advisory-andon --state open --limit 500 --json title --jq '.[].title') || { echo "COULD-NOT-CHECK: issue list failed" >&2; return "$CANT"; }
+            while IFS= read -r k; do
+              [ -n "$k" ] || continue
+              if grep -qxF -- "ADVISORY ANDON: $k" <<<"$open"; then echo "andon already open: $k"; continue; fi
+              "${GH:-gh}" issue create --label advisory-andon --title "ADVISORY ANDON: $k" \
+                --body "Advisory \`$k\` is on the default branch (latest rustsec/advisory-db). It blocks no PR (ADV-001, paiml/infra#3648): fix by bumping the dependency in a normal PR." \
+                || { echo "COULD-NOT-CHECK: issue create failed for $k" >&2; return "$CANT"; }
+              echo "andon opened: $k"
+            done <"$1"
+          }
+          if [ "${SOV_ADV_LIB:-}" = 1 ]; then return 0; fi
+
+          export PATH="$RUNNER_TOOL_CACHE/cargo-home-security/bin:$HOME/.cargo/bin:$PATH"
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked --root "$RUNNER_TOOL_CACHE/cargo-home-security"
+          GIT_CONFIG_COUNT=1
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_TERMINAL_PROMPT=0
+          DB="$RUNNER_TEMP/advisory-db-latest"
+          rm -rf -- "${DB:?}"
+          git clone -q --depth 1 https://github.com/rustsec/advisory-db.git "$DB"
+          echo "advisory-db latest: $(git -C "$DB" rev-parse HEAD) $(git -C "$DB" log -1 --format=%cI)"
+          IGN=$( (cat .cargo/audit.toml 2>/dev/null || true) | sed -n 's/.*\(RUSTSEC-[0-9]*-[0-9]*\).*/\1/p' | sort -u | sed 's/^/--ignore /' | tr '\n' ' ')
+          rc=0
+          # shellcheck disable=SC2086
+          cargo audit --db "$DB" --no-fetch --json $IGN >"$RUNNER_TEMP/andon.json" || rc=$?
+          case "$rc" in 0 | 1) ;; *) echo "::error::COULD-NOT-CHECK: cargo audit rc=$rc"; exit "$CANT" ;; esac
+          jq -e '.vulnerabilities.found | type == "boolean"' "$RUNNER_TEMP/andon.json" >/dev/null || { echo "::error::COULD-NOT-CHECK: not a cargo-audit report"; exit "$CANT"; }
+          jq -r '.vulnerabilities.list[]? | "\(.advisory.id)|\(.package.name)@\(.package.version)"' "$RUNNER_TEMP/andon.json" | LC_ALL=C sort -u >"$RUNNER_TEMP/andon.keys"
+          echo "findings on the default branch: $(wc -l <"$RUNNER_TEMP/andon.keys")"
+          andon_emit "$RUNNER_TEMP/andon.keys"
