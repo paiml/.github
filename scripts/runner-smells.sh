@@ -79,7 +79,7 @@ non_nightly() {
   awk '
     /^("on"|on|true)[ \t]*:/ { inon=1; v=$0; sub(/^[^:]*:[ \t]*/,"",v); gsub(/[\[\],"\047]/," ",v); n=split(v,a," "); for(i=1;i<=n;i++) if (a[i] !~ /^(schedule|workflow_dispatch)$/ && a[i] !~ /^#/) bad=1; next }
     inon && /^[^ \t#]/ { inon=0 }
-    inon && /^  ["\047]?[a-z_]+["\047]?[ \t]*:/ { k=$0; gsub(/[ \t"\047:]/,"",k); sub(/#.*/,"",k); if (k !~ /^(schedule|workflow_dispatch)$/) bad=1 }
+    inon && /^  ["\047]?[a-z_]+["\047]?[ \t]*:/ { k=$0; sub(/:.*/,"",k); gsub(/[ \t"\047]/,"",k); if (k !~ /^(schedule|workflow_dispatch)$/) bad=1 }
     inon && /^  - / { k=$0; gsub(/[ \t"\047-]/,"",k); if (k !~ /^(schedule|workflow_dispatch)$/) bad=1 }
     END { exit bad ? 0 : 1 }' "$1"
 }
