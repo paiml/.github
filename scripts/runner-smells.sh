@@ -27,6 +27,7 @@ RULES=(
   rs08 # RULE:RS-08 action or reusable workflow not pinned to a commit sha
   rs09 # RULE:RS-09 draft pull requests start CI
   rs11 # RULE:RS-11 examples or all targets built on the pull_request path
+  rs12 # RULE:RS-12 mutation testing outside a scheduled nightly (HARD: no baseline can allow it)
 )
 MAX_PR_WORKFLOWS=3 # RS-10: pull_request-triggered workflow files per repo
 
@@ -73,6 +74,19 @@ rs08() { nocomment "$1" | grep -nE '^[[:space:]]*(- )?uses:[[:space:]]*[^.[:spac
 rs09() { is_pr "$1" || return 0; nocomment "$1" | has -E 'draft|ready_for_review' || emit RS-09 "$1" 1 "draft pull requests start this workflow (no draft == false condition, no ready_for_review type)"; }
 rs11() { is_pr "$1" || return 0; nocomment "$1" | grep -nE 'cargo[^#]*[[:space:]](--all-targets|--examples)([[:space:]]|$)' | grep -vE 'cargo[[:space:]]+(clippy|check)' | head -1 | while IFS=: read -r l _; do emit RS-11 "$1" "$l" "examples/all targets are built on the PR path (measured: 13-24G per runner)"; done; }
 
+# FILE -> 0 when on: names any trigger other than schedule / workflow_dispatch
+non_nightly() {
+  awk '
+    /^("on"|on|true)[ \t]*:/ { inon=1; v=$0; sub(/^[^:]*:[ \t]*/,"",v); gsub(/[\[\],"\047]/," ",v); n=split(v,a," "); for(i=1;i<=n;i++) if (a[i] !~ /^(schedule|workflow_dispatch)$/ && a[i] !~ /^#/) bad=1; next }
+    inon && /^[^ \t#]/ { inon=0 }
+    inon && /^  ["\047]?[a-z_]+["\047]?[ \t]*:/ { k=$0; sub(/:.*/,"",k); gsub(/[ \t"\047]/,"",k); if (k !~ /^(schedule|workflow_dispatch)$/) bad=1 }
+    inon && /^  - / { k=$0; gsub(/[ \t"\047-]/,"",k); if (k !~ /^(schedule|workflow_dispatch)$/) bad=1 }
+    END { exit bad ? 0 : 1 }' "$1"
+}
+# Noah Gift, 2026-11-10 16:50Z, verbatim: "NO build can do mutation outside of nightly; the end. FOREVER".
+rs12() { non_nightly "$1" || return 0; nocomment "$1" | grep -nE '(^|[^[:alnum:]_])cargo[ -]mutants([^[:alnum:]_]|$)' | head -1 | while IFS=: read -r l _; do emit RS-12 "$1" "$l" "mutation testing runs outside a scheduled nightly (operator ruling 2026-11-10: nightly only, forever)"; done; }
+HARD_RULES="RS-12" # never ratcheted: any finding fails --ratchet and --strict, baseline or not
+
 scan() { # DIR -> findings on stdout; returns 2 when nothing scanned
   local d="$1/.github/workflows" f n=0 pr=0 r
   [ -d "$d" ] || return 2
@@ -89,15 +103,17 @@ self_test() {
   local fx; fx="$(cd "$(dirname "$SELF")" && pwd)/fixtures/runner-smells"; local rc=0 id out t m
   out=$(scan "$fx/good") || { echo "SELF-TEST: good fixture not scanned"; return 2; }
   [ -z "$out" ] || { echo "SELF-TEST FAIL: good fixture has findings:"; echo "$out"; rc=1; }
+  out=$(scan "$fx/good-nightly") || { echo "SELF-TEST: good-nightly not scanned"; return 2; }   # mutation on schedule only is allowed
+  printf '%s\n' "$out" | cut -f1 | has -x "RS-12" && { echo "SELF-TEST FAIL: nightly-only mutation raised RS-12"; rc=1; } || echo "ok   good-nightly: scheduled mutation is not RS-12"
   out=$(scan "$fx/good-large") || { echo "SELF-TEST: good-large fixture not scanned"; return 2; }   # > 64 KiB: the pipefail/SIGPIPE regression
   [ -z "$out" ] && echo "ok   good-large (past the pipe buffer) is clean" || { echo "SELF-TEST FAIL: good-large has findings (grep -q under pipefail?):"; echo "$out"; rc=1; }
-  for id in 01 02 03 04 05 06 07 08 09 10 11; do
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
     out=$(scan "$fx/bad-rs$id") || { echo "SELF-TEST: bad-rs$id not scanned"; return 2; }
     printf '%s\n' "$out" | cut -f1 | has -x "RS-$id" && echo "ok   bad-rs$id -> RS-$id" || { echo "SELF-TEST FAIL: bad-rs$id did not raise RS-$id"; rc=1; }
   done
   [ "${RUNNER_SMELLS_NO_MUTANTS:-0}" = 1 ] && return $rc
   t=$(mktemp -d); mkdir -p "$t/scripts"; cp -r "$fx/.." "$t/scripts/fixtures"
-  for id in 01 02 03 04 05 06 07 08 09 10 11; do
+  for id in 01 02 03 04 05 06 07 08 09 10 11 12; do
     m="$t/scripts/runner-smells.sh"; grep -v "# RULE:RS-$id" "$SELF" > "$m"
     if RUNNER_SMELLS_NO_MUTANTS=1 bash "$m" --self-test >/dev/null 2>&1; then echo "SELF-TEST FAIL: mutant without RS-$id stayed green"; rc=1; else echo "ok   mutant M_RS$id detected"; fi
   done
@@ -119,6 +135,8 @@ case $mode in
   report) [ -n "$found" ] && printf '%s\n' "$found"; echo "runner-smells: $(printf '%s\n' "$found" | grep -c .) finding(s) (report only)" >&2; exit 0 ;;
   strict) [ -z "$found" ] && { echo "runner-smells: clean" >&2; exit 0; }; printf '%s\n' "$found"; exit 1 ;;
   ratchet)
+    hard=$(printf '%s\n' "$found" | awk -F'\t' -v h="$HARD_RULES" 'BEGIN{n=split(h,a," ");for(i=1;i<=n;i++)H[a[i]]=1} H[$1]')
+    [ -z "$hard" ] || { echo "::error::hard rule violated (no baseline can allow it):"; printf '%s\n' "$hard"; exit 1; }
     [ -f "$base" ] || { [ -n "$found" ] && printf '%s\n' "$found"; echo "::warning::runner-smells: no baseline at $base; report only. Commit one with: runner-smells.sh --write-baseline > $base" >&2; exit 0; }
     over=0
     while IFS=$'\t' read -r rule n; do [ -n "$rule" ] || continue
