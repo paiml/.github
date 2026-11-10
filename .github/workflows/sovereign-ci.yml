@@ -2233,4 +2233,23 @@ jobs:
             echo "Note: cancelled and skipped both count as not-passed."
             exit 1
           fi
+          # GATE-SAYS-NOT-RUN (Noah 2026-11-10, post-merge lane finding on forjar#970): with heavy_on=train an
+          # ordinary PR's gate is green on lint + security only. Say so where a reader cannot miss it: a warning
+          # annotation on the check and a headline in the job summary. A green gate must never read as "tests passed"
+          # when no test ran; a direct (non-train) merge of such a PR lands code no test has seen.
+          if [ "$heavy_owed" = 0 ] && [ "${{ needs.test.result }}" = skipped ]; then
+            echo "::warning title=TESTS NOT RUN ON THIS PR::gate is green on lint + security only; test and coverage run once on the merge train (heavy_on=train). A direct merge of this PR lands code that no test has run."
+            {
+              echo "## gate: TESTS NOT RUN on this PR"
+              echo ""
+              echo "| job | result |"
+              echo "|---|---|"
+              echo "| lint | ${{ needs.lint.result }} |"
+              echo "| security | ${{ needs.security.result }} |"
+              echo "| test | NOT RUN (owed on train/*, batch/*, full-ci label, and every non-PR event) |"
+              echo "| coverage | NOT RUN (same) |"
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "Gate passed WITHOUT tests: lint + security only (test + coverage are owed on the train)"
+            exit 0
+          fi
           echo "All critical jobs passed (test + lint + coverage + security)"
