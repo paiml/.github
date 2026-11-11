@@ -14,7 +14,9 @@ rc=0
 if grep -v '^[[:space:]]*#' "$T/step.sh" | grep -q 'git fetch'; then echo "FAIL: step makes a network fetch"; rc=1; else echo "ok: step has no git fetch"; fi
 # the security job's checkout must carry fetch-depth: 0
 sec=$(awk '/^  security:/{s=1;next} s&&/^  [a-z-]+:$/{exit} s' "$WF")
-if printf '%s\n' "$sec" | grep -A4 'actions/checkout' | grep -q 'fetch-depth: 0'; then echo "ok: security checkout is fetch-depth: 0"; else echo "FAIL: security checkout lacks fetch-depth: 0"; rc=1; fi
+# read the checkout step's whole block (to the next step), not a fixed line window: comments inside `with:` must not hide the key
+ck=$(printf '%s\n' "$sec" | awk '/^      - uses: actions\/checkout/{s=1;print;next} s&&/^      - /{exit} s')
+if printf '%s\n' "$ck" | grep -v '^[[:space:]]*#' | grep -q '^[[:space:]]*fetch-depth: 0\s*$'; then echo "ok: security checkout is fetch-depth: 0"; else echo "FAIL: security checkout lacks fetch-depth: 0"; rc=1; fi
 
 g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 O="$T/origin"
