@@ -51,6 +51,16 @@ on:
         required: false
         default: false
         type: boolean
+      test_via_coverage:
+        description: >-
+          Default false (unchanged). When true and coverage is owed on this run, the `test` job is SKIPPED
+          because `coverage` re-runs the whole suite (paiml/infra#3828: bashrs test 12.9 min + coverage 12.0 min).
+          `gate` then takes coverage=success as the test verdict and prints "test verdict = coverage"; a coverage
+          that did not succeed is RED. When coverage is not owed (skip_coverage, or coverage_on=tag off a tag/dispatch)
+          `test` still runs.
+        required: false
+        default: false
+        type: boolean
       coverage_on:
         description: >-
           When the coverage job runs. 'always' (default, unchanged behaviour): every event.
@@ -193,7 +203,8 @@ jobs:
   test:
     # NO-FORK-1: inert for a fork-head PR (see fork-guard); other events unchanged.
     # heavy_on == 'train': on a PR, runs only for train/*, batch/* or label full-ci (see the input).
-    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && (inputs.heavy_on != 'train' || !startsWith(github.event_name, 'pull_request') || startsWith(github.head_ref, 'train/') || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+    # test_via_coverage: skipped when coverage is owed on this run (coverage re-runs the suite; gate reads coverage as the test verdict).
+    if: ${{ (!startsWith(github.event_name, 'pull_request') || github.event.pull_request.head.repo.full_name == github.repository) && (inputs.heavy_on != 'train' || !startsWith(github.event_name, 'pull_request') || startsWith(github.head_ref, 'train/') || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && !(inputs.test_via_coverage && !inputs.skip_coverage && (inputs.coverage_on != 'tag' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch')) }}
     name: test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
@@ -2171,6 +2182,8 @@ jobs:
           HEAVY_ON: ${{ inputs.heavy_on }}
           HEAD_REF: ${{ github.head_ref }}
           FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          TEST_VIA_COVERAGE: ${{ inputs.test_via_coverage }}
+          SKIP_COVERAGE: ${{ inputs.skip_coverage }}
         run: |
           rc=0
           # coverage_on: 'always' keeps the rule above verbatim (coverage must succeed).
@@ -2221,6 +2234,18 @@ jobs:
             fi
             if { [ "$job" = test ] || [ "$job" = coverage ]; } && [ "$heavy_owed" = 0 ] && [ "$res" = skipped ]; then
               echo "${job}: NOT MEASURED on this PR (heavy_on=train; owed on train/*, batch/*, full-ci and every non-PR event)"
+              continue
+            fi
+            # test_via_coverage: with coverage owed, `test` is skipped by its own `if:` and the coverage
+            # job (which re-runs the suite) is the test verdict. Accepted ONLY when coverage succeeded;
+            # a coverage that failed, was cancelled or skipped leaves test with no verdict: RED.
+            if [ "$job" = test ] && [ "$res" = skipped ] && [ "${TEST_VIA_COVERAGE:-false}" = true ] && [ "${SKIP_COVERAGE:-false}" != true ] && [ "$coverage_owed" = 1 ]; then
+              if [ "${{ needs.coverage.result }}" = success ]; then
+                echo "test verdict = coverage (test_via_coverage=true; coverage re-ran the suite and succeeded)"
+                continue
+              fi
+              echo "::error::test verdict = coverage, but coverage did not succeed (result: ${{ needs.coverage.result }}); test was skipped, so nothing passed"
+              rc=1
               continue
             fi
             if [ "$res" != "success" ]; then
