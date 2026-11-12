@@ -1,0 +1,22 @@
+metadata:
+  version: "1.0.0"
+  created: "2026-11-12"
+  author: PAIML Engineering
+  kind: pattern
+  references:
+  - "GitHub Docs - Reuse workflows (secrets must be declared under on.workflow_call.secrets unless secrets: inherit; the calling job cannot use environment). https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows"
+  description: >
+    unified-gate.yml syncs the private paiml/infra repo on the runner. Ephemeral seats
+    have no ssh key, so the ssh clone fails. When a caller passes the optional secret
+    infra_token the sync goes over https with a per-command extraheader; callers that
+    pass nothing run the original commands unchanged.
+equations:
+  token_path:
+    formula: "INFRA_TOKEN non-empty => fetch/clone of https://github.com/paiml/infra.git with -c http.https://github.com/.extraheader; no git@, no credentials in a URL, none in .git/config, none echoed (::add-mask:: on the base64)"
+  empty_path:
+    formula: "INFRA_TOKEN empty => argv byte-identical to the pre-change commands (git clone --depth 1 git@github.com:paiml/infra.git / fetch origin main / reset --hard origin/main)"
+  one_block:
+    formula: "every paiml/infra fetch in unified-gate.yml sits inside an infra-fetch-v1 BEGIN/END block and all blocks are byte-identical"
+falsification_tests:
+  - id: INFRA-FETCH-001
+    rule: "scripts/test-infra-fetch.sh: scanner tags OUTSIDE SSHURL REWRITE URLTOKEN ECHO DRIFT NOBLOCK NOMASK, 9 fixtures (green, comment decoy, one per variant), behaviour test with a stub git"

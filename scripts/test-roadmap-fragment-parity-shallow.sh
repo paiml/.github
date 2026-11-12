@@ -14,7 +14,10 @@ rc=0
 if grep -v '^[[:space:]]*#' "$T/step.sh" | grep -q 'git fetch'; then echo "FAIL: step makes a network fetch"; rc=1; else echo "ok: step has no git fetch"; fi
 # the security job's checkout must carry fetch-depth: 0
 sec=$(awk '/^  security:/{s=1;next} s&&/^  [a-z-]+:$/{exit} s' "$WF")
-if printf '%s\n' "$sec" | grep -A4 'actions/checkout' | grep -q 'fetch-depth: 0'; then echo "ok: security checkout is fetch-depth: 0"; else echo "FAIL: security checkout lacks fetch-depth: 0"; rc=1; fi
+# read the checkout step's whole `with:` block (up to the next step), not a fixed window: a comment
+# block between `uses:` and `fetch-depth:` (ADV-001, #106) pushed it past a 4-line grep -A and
+# turned this green check red on main.
+if printf '%s\n' "$sec" | awk '/uses: actions\/checkout/{s=1;next} s&&/^      - /{exit} s&&/^          fetch-depth: 0[[:space:]]*$/{f=1} END{exit !f}'; then echo "ok: security checkout is fetch-depth: 0"; else echo "FAIL: security checkout lacks fetch-depth: 0"; rc=1; fi
 
 g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 O="$T/origin"
@@ -34,13 +37,12 @@ echo c > "$O/other.txt"; g -C "$O" add -A; g -C "$O" commit -q -m advance
 g -C "$O" merge -q --no-ff -m merge pr
 
 # clone, then break the remote: any fetch would fail exactly like the credential-stripped runner
-run_case() { # $1 = clone depth args
+run_case() { # "$@" = extra clone args
   rm -rf "${T:?}/c"
-  # shellcheck disable=SC2086
-  git clone -q $1 "file://$O" "$T/c" 2>/dev/null
+  git clone -q "$@" "file://$O" "$T/c" 2>/dev/null
   git -C "$T/c" remote set-url origin "file://$T/does-not-exist"
   ( cd "$T/c" && BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$T/step.sh" ) >"$T/out" 2>&1
 }
-if run_case ""; then echo "ok: full-history checkout -> green"; else echo "FAIL: full history is red"; tail -n 5 "$T/out"; rc=1; fi
-if run_case "--depth 1"; then echo "FAIL: base missing is green (cannot go red)"; rc=1; else echo "ok: base missing -> red"; tail -n 2 "$T/out"; fi
+if run_case; then echo "ok: full-history checkout -> green"; else echo "FAIL: full history is red"; tail -n 5 "$T/out"; rc=1; fi
+if run_case --depth 1; then echo "FAIL: base missing is green (cannot go red)"; rc=1; else echo "ok: base missing -> red"; tail -n 2 "$T/out" | sed 's/^::error::/expected red: /'; fi
 exit $rc
