@@ -158,6 +158,7 @@ case $mode in
   ratchet)
     hard=$(printf '%s\n' "$found" | awk -F'\t' -v h="$HARD_RULES" 'BEGIN{n=split(h,a," ");for(i=1;i<=n;i++)H[a[i]]=1} H[$1]')
     [ -z "$hard" ] || { echo "::error::hard rule violated (no baseline can allow it):"; printf '%s\n' "$hard"; exit 1; }
+    [ ! -f "$base" ] || ! grep -qE '^RS-12([[:space:]]|$)' "$base" || { echo "::error::baseline $base carries an RS-12 row; RS-12 is never baselined (operator, 2026-11-10)" >&2; exit 2; }
     [ -f "$base" ] || { [ -n "$found" ] && printf '%s\n' "$found"; echo "::warning::runner-smells: no baseline at $base; report only. Commit one with: runner-smells.sh --write-baseline > $base" >&2; exit 0; }
     over=0
     while IFS=$'\t' read -r rule n; do [ -n "$rule" ] || continue
