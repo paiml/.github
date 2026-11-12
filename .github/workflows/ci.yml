@@ -28,6 +28,8 @@ jobs:
         run: bash scripts/test-advisory-gate.sh
       - name: pr-gate membership is GraphQL-first, fail-closed (RED->GREEN)
         run: bash scripts/test-pr-gate-membership.sh --self-test
+      - name: no pull-request-target guard (P0 security, RED->GREEN)
+        run: sh scripts/test-no-pull-request-target-guard.sh && sh scripts/no-pull-request-target-guard.sh
       - name: heavy_on=train skips test/coverage only on an ordinary PR; owed elsewhere (anti-vacuity)
         run: bash scripts/test-heavy-on-train.sh
       - name: Sigstore signer guards (RED->GREEN)
