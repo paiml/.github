@@ -29,3 +29,4 @@ self-hosted-runner:
     - perf-solo
     - merge-queue
     - gate-light
+    - gate-light-org
