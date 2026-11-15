@@ -1,8 +1,8 @@
 name: runner-smells
 # Reusable check (paiml/infra#3828, pmat#1673): static scan of the CALLER repo's GitHub Actions
 # configuration for the runner and gate defects measured in the 2026-11-10 build outage
-# (rules RS-01..RS-11, scripts/runner-smells.sh). Ratchet: a rule's count may not exceed the
-# caller's .github/runner-smells.baseline; with no baseline the job reports and passes.
+# (rules RS-01..RS-12, scripts/runner-smells.sh). Ratchet: a rule's count may not exceed the
+# caller's .github/runner-smells.baseline; with no baseline the job reports and passes.  RS-12 (mutation outside nightly) is never baselined and fails the job regardless.
 #
 # Caller usage (repos that do not call sovereign-ci.yml, which already runs this job):
 #   jobs:
@@ -43,7 +43,7 @@ jobs:
           ref: ${{ inputs.scanner_ref }}
           path: .runner-smells
           persist-credentials: false
-      - name: Runner smells within baseline (RS-01..RS-11)
+      - name: Runner smells within baseline (RS-01..RS-12)
         shell: bash
         env:
           BASELINE: ${{ inputs.baseline }}
