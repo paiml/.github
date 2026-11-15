@@ -1,0 +1,52 @@
+name: runner-smells
+# Reusable check (paiml/infra#3828, pmat#1673): static scan of the CALLER repo's GitHub Actions
+# configuration for the runner and gate defects measured in the 2026-11-10 build outage
+# (rules RS-01..RS-11, scripts/runner-smells.sh). Ratchet: a rule's count may not exceed the
+# caller's .github/runner-smells.baseline; with no baseline the job reports and passes.
+#
+# Caller usage (repos that do not call sovereign-ci.yml, which already runs this job):
+#   jobs:
+#     runner-smells:
+#       uses: paiml/.github/.github/workflows/runner-smells.yml@<sha>
+#       with: { scanner_ref: <same sha> }
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: JSON array of runner labels.
+        type: string
+        default: '["self-hosted","gate-light"]'
+      baseline:
+        description: Baseline file in the caller repo (RULE<TAB>COUNT per line).
+        type: string
+        default: .github/runner-smells.baseline
+      scanner_ref:
+        description: paiml/.github ref the scanner is read from; pass the same ref as the uses @ pin.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  runner-smells:
+    name: runner-smells
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: paiml/.github
+          ref: ${{ inputs.scanner_ref }}
+          path: .runner-smells
+          persist-credentials: false
+      - name: Runner smells within baseline (RS-01..RS-11)
+        shell: bash
+        env:
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          set -uo pipefail
+          bash .runner-smells/scripts/runner-smells.sh --ratchet "$BASELINE" .
