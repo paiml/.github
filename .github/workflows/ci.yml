@@ -36,6 +36,8 @@ jobs:
         run: bash scripts/net-install-lint.sh --self-test
       - name: RUNNER-SMELLS fixtures + one mutant per rule (infra#3828, pmat#1673, RED->GREEN)
         run: bash scripts/runner-smells.sh --self-test
+      - name: infra-fetch-v1 (unified-gate infra sync, https when a token is passed, RED->GREEN)
+        run: bash scripts/test-infra-fetch.sh --self-test && bash scripts/test-infra-fetch.sh
       - name: Lint workflow YAML
         shell: bash
         run: |
