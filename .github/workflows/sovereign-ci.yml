@@ -1968,7 +1968,7 @@ jobs:
           adv_positive_control "$DB"
           T=$(mktemp -d)
           case "$SOV_ADV_EVENT" in
-            pull_request | pull_request_target | merge_group)
+            pull_request | merge_group)
               BASE="$SOV_ADV_PR_BASE"; [ "$SOV_ADV_EVENT" != merge_group ] || BASE="$SOV_ADV_MG_BASE"
               [[ "$BASE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::COULD-NOT-CHECK: $SOV_ADV_EVENT has no base sha ('$BASE')"; exit "$CANT"; }
               git cat-file -e "$BASE^{commit}" 2>/dev/null || { echo "::error::COULD-NOT-CHECK: base $BASE is not in the checkout (fetch-depth: 0 missing?)"; exit "$CANT"; }
