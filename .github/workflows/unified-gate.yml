@@ -6,7 +6,9 @@
 # Self-hosted runners provide the sovereign AI stack (sccache, pmat,
 # bashrs, cargo-deny, Docker clean-room). The private paiml/infra repo
 # holds Makefiles and gate scripts; the runner clones it at job time
-# via SSH (no PAT needed — the runner already has deploy-key access).
+# via SSH (no PAT needed — the runner already has deploy-key access). Ephemeral
+# seats have no ssh key: a caller may pass the optional secret `infra_token`, and
+# the sync then goes over https (scripts/test-infra-fetch.sh guards both paths).
 #
 # IMPORTANT: All actions pinned to commit SHAs (CVE-2025-30066 mitigation).
 
@@ -28,6 +30,10 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      infra_token:
+        description: 'Optional read token for paiml/infra. When set, the runner syncs infra over https; when absent, over ssh as before.'
+        required: false
 
 env:
   CI_SRC_ROOT: ${{ github.workspace }}/src
@@ -409,12 +415,29 @@ jobs:
           echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Sync infra repo on runner
+        env:
+          INFRA_TOKEN: ${{ secrets.infra_token }}
         run: |
           INFRA_DIR="$HOME/src/infra"
           # Serialize concurrent syncs from multiple runners on the same host
           exec 9>/tmp/infra-sync.lock
           flock -w 30 9 || { echo "::warning::Could not acquire infra sync lock"; }
-          if [ -d "$INFRA_DIR/.git" ]; then
+          # infra-fetch-v1 BEGIN (identical at both sync sites; scripts/test-infra-fetch.sh)
+          if [ -n "${INFRA_TOKEN:-}" ]; then
+            INFRA_B64="$(printf 'x-access-token:%s' "$INFRA_TOKEN" | base64 -w0)"
+            echo "::add-mask::$INFRA_B64"
+            INFRA_HDR="http.https://github.com/.extraheader=AUTHORIZATION: basic $INFRA_B64"
+            if [ -d "$INFRA_DIR/.git" ]; then
+              git -c "$INFRA_HDR" -C "$INFRA_DIR" fetch https://github.com/paiml/infra.git main 2>&1 || {
+                echo "::warning::git fetch failed, retrying..."
+                sleep 2
+                git -c "$INFRA_HDR" -C "$INFRA_DIR" fetch https://github.com/paiml/infra.git main 2>&1
+              }
+              git -C "$INFRA_DIR" reset --hard FETCH_HEAD 2>&1
+            else
+              git -c "$INFRA_HDR" clone --depth 1 https://github.com/paiml/infra.git "$INFRA_DIR"
+            fi
+          elif [ -d "$INFRA_DIR/.git" ]; then
             git -C "$INFRA_DIR" fetch origin main 2>&1 || {
               echo "::warning::git fetch failed, retrying..."
               sleep 2
@@ -424,6 +447,7 @@ jobs:
           else
             git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
           fi
+          # infra-fetch-v1 END
           exec 9>&-
           echo "infra synced to: $(git -C "$INFRA_DIR" log --oneline -1)"
           # Symlink into workspace for make -f compatibility
@@ -551,11 +575,28 @@ jobs:
           echo "pre-checkout ownership restored under $WORK_ROOT"
 
       - name: Sync infra repo on runner
+        env:
+          INFRA_TOKEN: ${{ secrets.infra_token }}
         run: |
           INFRA_DIR="$HOME/src/infra"
           exec 9>/tmp/infra-sync.lock
           flock -w 30 9 || { echo "::warning::Could not acquire infra sync lock"; }
-          if [ -d "$INFRA_DIR/.git" ]; then
+          # infra-fetch-v1 BEGIN (identical at both sync sites; scripts/test-infra-fetch.sh)
+          if [ -n "${INFRA_TOKEN:-}" ]; then
+            INFRA_B64="$(printf 'x-access-token:%s' "$INFRA_TOKEN" | base64 -w0)"
+            echo "::add-mask::$INFRA_B64"
+            INFRA_HDR="http.https://github.com/.extraheader=AUTHORIZATION: basic $INFRA_B64"
+            if [ -d "$INFRA_DIR/.git" ]; then
+              git -c "$INFRA_HDR" -C "$INFRA_DIR" fetch https://github.com/paiml/infra.git main 2>&1 || {
+                echo "::warning::git fetch failed, retrying..."
+                sleep 2
+                git -c "$INFRA_HDR" -C "$INFRA_DIR" fetch https://github.com/paiml/infra.git main 2>&1
+              }
+              git -C "$INFRA_DIR" reset --hard FETCH_HEAD 2>&1
+            else
+              git -c "$INFRA_HDR" clone --depth 1 https://github.com/paiml/infra.git "$INFRA_DIR"
+            fi
+          elif [ -d "$INFRA_DIR/.git" ]; then
             git -C "$INFRA_DIR" fetch origin main 2>&1 || {
               echo "::warning::git fetch failed, retrying..."
               sleep 2
@@ -565,6 +606,7 @@ jobs:
           else
             git clone --depth 1 git@github.com:paiml/infra.git "$INFRA_DIR"
           fi
+          # infra-fetch-v1 END
           exec 9>&-
           echo "infra synced to: $(git -C "$INFRA_DIR" log --oneline -1)"
           ln -sfn "$INFRA_DIR" "${{ github.workspace }}/infra"
