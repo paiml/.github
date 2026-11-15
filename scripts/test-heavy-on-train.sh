@@ -16,6 +16,11 @@ row green "always: all success"                          always pull_request fea
 row red   "always: test skipped is RED (unchanged)"      always pull_request feat/x false skipped success success success
 row green "train: ordinary PR, test+coverage skipped"    train  pull_request feat/x false skipped success skipped success
 grep -q 'test: NOT MEASURED' "$t/out" && grep -q 'coverage: NOT MEASURED' "$t/out" && ok "skip is printed NOT MEASURED, not as a pass" || bad "NOT MEASURED lines missing"
+# GATE-SAYS-NOT-RUN: that green must announce itself as untested (warning annotation + summary headline), and only that green.
+grep -q '::warning title=TESTS NOT RUN ON THIS PR::' "$t/out" && grep -q 'Gate passed WITHOUT tests' "$t/out" && ok "green without tests says TESTS NOT RUN" || bad "green without tests is silent about it"
+GITHUB_STEP_SUMMARY=$t/sum g train pull_request feat/x false skipped success skipped success; grep -q '^## gate: TESTS NOT RUN on this PR' "$t/sum" && ok "job summary carries the TESTS NOT RUN headline" || bad "summary headline missing"
+g train pull_request train/infra-1 false success success success success; grep -q 'TESTS NOT RUN' "$t/out" && bad "a train head with tests run claims TESTS NOT RUN" || ok "a train head with tests run does not claim TESTS NOT RUN"
+g always pull_request feat/x false success success success success; grep -q 'TESTS NOT RUN' "$t/out" && bad "heavy_on=always claims TESTS NOT RUN" || ok "heavy_on=always does not claim TESTS NOT RUN"
 row red   "train: ordinary PR, lint failed"              train  pull_request feat/x false skipped failure skipped success
 row red   "train: ordinary PR, security skipped"         train  pull_request feat/x false skipped success skipped skipped
 row red   "train: ordinary PR, test FAILED (ran, e.g. label added)" train pull_request feat/x false failure success skipped success
@@ -37,4 +42,7 @@ mut(){ local name=$1 expr=$2; shift 2; sed "$expr" "$t/gate.sh" > "$t/m.sh"; cmp
 mut M_TRAIN_NOT_OWED 's#train/\*|batch/\*) heavy_owed=1#nope/*) heavy_owed=1#' train pull_request train/infra-1 false skipped success success success
 mut M_LABEL_IGNORED  's/\[ "\$FULL_CI" = true \] && heavy_owed=1/:/'           train pull_request feat/x true skipped success success success
 mut M_PUSH_NOT_OWED  's/^    \*) heavy_owed=1 ;;/    *) heavy_owed=0 ;;/'      train push "" false skipped success success success
+# mutant: the announcement removed -> the assertion above must be the thing that notices
+sed '/TESTS NOT RUN ON THIS PR/d' "$t/gate.sh" > "$t/m.sh"; cmp -s "$t/m.sh" "$t/gate.sh" && bad "mutant M_SILENT_GREEN did not apply"
+GATE=$t/m.sh g train pull_request feat/x false skipped success skipped success; grep -q '::warning title=TESTS NOT RUN ON THIS PR::' "$t/out" && bad "mutant M_SILENT_GREEN survived" || ok "mutant M_SILENT_GREEN detected"
 exit $fail
