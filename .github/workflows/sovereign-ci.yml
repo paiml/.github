@@ -1102,24 +1102,25 @@ jobs:
           # (paiml/bashrs#604): a retry happens only when cargo reports "no library targets
           # found" (exit 75 here), so no test ran. A test failure exits 1 and is never retried.
           cov_scope() {
-            local _log _rc
+            local _log _plain _rc
             _log="$(mktemp)" || { echo "::error::mktemp failed"; return 1; }
             _rc=0
             cargo llvm-cov test "$@" > "$_log" 2>&1 || _rc=$?
             cat "$_log"
             if [ "$_rc" -ne 0 ]; then
-              # Sentinel = cargo's SELECTION error at the start of an error line (ANSI colour
-              # tolerated), i.e. no test target was chosen. It must not coincide with any run or
-              # compile output: a test binary that ran, a test result, or a failed compile means
-              # a real failure, which is never retried.
-              _esc="$(printf '\033')"
-              _ansi="(${_esc}\[[0-9;]*m)*"
-              _sel="^${_ansi}error${_ansi}: (no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage)"
-              if grep -qE "$_sel" "$_log" && ! grep -qE 'Running |test result:|could not compile' "$_log"; then
+              # Match on the log with every ANSI CSI sequence removed (CARGO_TERM_COLOR=always
+              # splits words with colour codes anywhere). Sentinel = cargo's SELECTION error at
+              # the start of a line: no test target was chosen. It is refused whenever a test
+              # binary ran, a test result was printed, or a compile failed: a real failure.
+              _plain="$(mktemp)" || { echo "::error::mktemp failed"; rm -f "${_log:?}"; return 1; }
+              sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_log" > "$_plain"
+              if grep -qE '^error: (no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage)' "$_plain" \
+                 && ! grep -qE 'Running |test result:|could not compile' "$_plain"; then
                 _rc=75
               elif [ "$_rc" -eq 75 ]; then
                 _rc=1  # a bare exit 75 is not our sentinel; never let it trigger a retry
               fi
+              rm -f "${_plain:?}"
             fi
             rm -f "${_log:?}"
             return "$_rc"
