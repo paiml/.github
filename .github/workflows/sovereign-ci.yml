@@ -1102,31 +1102,39 @@ jobs:
           # (paiml/bashrs#604): a retry happens only when cargo reports "no library targets
           # found" (exit 75 here), so no test ran. A test failure exits 1 and is never retried.
           cov_scope() {
-            local _log _plain _rc
+            # $1 = which retry sentinels this call may trigger: lib | pkg | none.
+            # Fail-closed by construction: a retry needs EVERY error: line in the log to be a
+            # selection error (no test, build, compile or signal error can hide among them),
+            # and no test run may appear. Only a retry call may accept a package-spec error.
+            local _allow _log _plain _rc _re _total _sel
+            _allow="$1"; shift
             _log="$(mktemp)" || { echo "::error::mktemp failed"; return 1; }
             _rc=0
             cargo llvm-cov test "$@" > "$_log" 2>&1 || _rc=$?
             cat "$_log"
             if [ "$_rc" -ne 0 ]; then
-              # Match on the log with every ANSI CSI sequence removed (CARGO_TERM_COLOR=always
-              # splits words with colour codes anywhere). Sentinel = cargo's SELECTION error at
-              # the start of a line: no test target was chosen. It is refused whenever a test
-              # binary ran, a test result was printed, or a compile failed: a real failure.
               _plain="$(mktemp)" || { echo "::error::mktemp failed"; rm -f "${_log:?}"; return 1; }
               sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_log" > "$_plain"
-              if grep -qE '^error: (no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage)' "$_plain" \
-                 && ! grep -qE 'Running (unittests|tests/|benches/|examples/|doc)|Doc-tests|running [0-9]+ tests?|test result:|error: test failed|could not compile' "$_plain"; then
+              case "$_allow" in
+                lib) _re='no library targets found in packages?' ;;
+                pkg) _re='no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage' ;;
+                *)   _re='__no_sentinel_allowed__' ;;
+              esac
+              _total="$(grep -c '^error' "$_plain" || true)"
+              _sel="$(grep -cE "^error: ($_re)" "$_plain" || true)"
+              if [ "$_total" -gt 0 ] && [ "$_total" -eq "$_sel" ] \
+                 && ! grep -qE 'Running (unittests|tests/|benches/|examples/|doc)|Doc-tests|running [0-9]+ tests?|test result:' "$_plain"; then
                 _rc=75
               elif [ "$_rc" -eq 75 ]; then
-                _rc=1  # a bare exit 75 is not our sentinel; never let it trigger a retry
+                _rc=1  # a bare exit 75 is never a retry signal by itself
               fi
               rm -f "${_plain:?}"
             fi
             rm -f "${_log:?}"
             return "$_rc"
           }
-          rc=0; cov_scope $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS || rc=$?
-          if [ "$rc" -eq 75 ]; then rc=0; cov_scope --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info || rc=$?; fi
+          rc=0; cov_scope lib $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS || rc=$?
+          if [ "$rc" -eq 75 ]; then rc=0; cov_scope pkg --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info || rc=$?; fi
           # BIN-ONLY FALLBACK (2026-07-30). Every branch above passes `--lib`, and
           # `cargo test --lib` does not merely fail on a crate without a [lib] — it
           # ERRORS: "no library targets found in package <name>" (exit 101). So a
@@ -1137,7 +1145,7 @@ jobs:
           # Purely additive: a crate that HAS a lib target never reaches this line,
           # so behaviour is unchanged for every repo that works today. Reached only on
           # "no library targets found" (exit 75), never on a test failure.
-          if [ "$rc" -eq 75 ]; then rc=0; cov_scope --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info || rc=$?; fi
+          if [ "$rc" -eq 75 ]; then rc=0; cov_scope none --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info || rc=$?; fi
           if [ "$rc" -ne 0 ]; then
             echo "::error::Coverage failed (exit $rc) — a test failure is never retried on a narrower scope; check workspace path dependencies"
             exit 1
