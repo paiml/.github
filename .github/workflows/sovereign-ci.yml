@@ -1096,8 +1096,22 @@ jobs:
           # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
           # coverage reflects all workspace members. Default stays `--lib` (root only) — see
           # test job comment for back-compat rationale.
-          cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
-          cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
+          # FAIL-CLOSED (paiml/bashrs#651): the chain used to run a narrower retry after ANY
+          # failure, so a failing lib test in a workspace member was retried on the root
+          # package (or bin-only) and went green. Mirrors run_scope in the test job
+          # (paiml/bashrs#604): a retry happens only when cargo reports "no library targets
+          # found" (exit 75 here), so no test ran. A test failure exits 1 and is never retried.
+          cov_scope() {
+            _log="$(mktemp)" || { echo "::error::mktemp failed"; return 1; }
+            _rc=0
+            cargo llvm-cov test "$@" > "$_log" 2>&1 || _rc=$?
+            cat "$_log"
+            if [ "$_rc" -ne 0 ] && grep -q 'no library targets found' "$_log"; then _rc=75; fi
+            rm -f "$_log"
+            return "$_rc"
+          }
+          rc=0; cov_scope $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS || rc=$?
+          if [ "$rc" -eq 75 ]; then rc=0; cov_scope --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info || rc=$?; fi
           # BIN-ONLY FALLBACK (2026-07-30). Every branch above passes `--lib`, and
           # `cargo test --lib` does not merely fail on a crate without a [lib] — it
           # ERRORS: "no library targets found in package <name>" (exit 101). So a
@@ -1105,11 +1119,14 @@ jobs:
           # this and nothing else. Dropping `--lib` covers bins, integration tests
           # and doctests, and works with or without a [lib].
           #
-          # Purely additive: a crate that HAS a lib target satisfies one of the
-          # branches above and never reaches this line, so behaviour is unchanged
-          # for every repo that works today.
-          cargo llvm-cov test --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info 2>&1 || \
-          { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+          # Purely additive: a crate that HAS a lib target never reaches this line,
+          # so behaviour is unchanged for every repo that works today. Reached only on
+          # "no library targets found" (exit 75), never on a test failure.
+          if [ "$rc" -eq 75 ]; then rc=0; cov_scope --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info || rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Coverage failed (exit $rc) — a test failure is never retried on a narrower scope; check workspace path dependencies"
+            exit 1
+          fi
       - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
         # ZERO BEHAVIOR CHANGE GUARANTEE:
         #   When inputs.coverage_min is empty (the default for EVERY repo that
