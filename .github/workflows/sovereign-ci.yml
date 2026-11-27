@@ -467,20 +467,32 @@ jobs:
           # Purely additive: a crate that HAS a lib target satisfies an earlier
           # branch and never reaches these lines, so nothing changes for the repos
           # that work today.
-          if [ "$USE_NEXTEST" = "true" ]; then
-            cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1 || \
-            cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-            cargo nextest run $TEST_ARGS 2>&1 || \
-            { echo "::warning::nextest failed — falling back to cargo test"; \
-              cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
-              cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-              cargo test $TEST_ARGS 2>&1 || \
-              { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
+          # FAIL-CLOSED (paiml/bashrs#604): a narrower retry used to run after ANY failure, so a
+          # failing lib test in a workspace member was retried on the root package only and went
+          # green. Now a retry happens only when the run could not select a target: cargo reports
+          # "no library targets found" (exit 75 here), so no test ran. A test failure exits 1.
+          # The tool itself falls back to cargo test only when cargo-nextest is missing.
+          run_scope() {
+            _log="$(mktemp)" || { echo "::error::mktemp failed"; return 1; }
+            _rc=0
+            cargo "$@" > "$_log" 2>&1 || _rc=$?
+            cat "$_log"
+            if [ "$_rc" -ne 0 ] && grep -q 'no library targets found' "$_log"; then _rc=75; fi
+            rm -f "$_log"
+            return "$_rc"
+          }
+          if [ "$USE_NEXTEST" = "true" ] && cargo nextest --version >/dev/null 2>&1; then
+            RUN="nextest run"
           else
-            cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
-            cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-            cargo test $TEST_ARGS 2>&1 || \
-            { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
+            if [ "$USE_NEXTEST" = "true" ]; then echo "::warning::cargo-nextest is not installed — running cargo test"; fi
+            RUN="test"
+          fi
+          rc=0; run_scope $RUN $TEST_SCOPE $TEST_ARGS || rc=$?
+          if [ "$rc" -eq 75 ]; then rc=0; run_scope $RUN --lib -p "$REPO_NAME" $TEST_ARGS || rc=$?; fi
+          if [ "$rc" -eq 75 ]; then rc=0; run_scope $RUN $TEST_ARGS || rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Tests failed (exit $rc) — a test failure is never retried on a narrower scope"
+            exit 1
           fi
       - name: Record sccache stats
         if: ${{ always() && inputs.enable_sccache }}
@@ -764,9 +776,10 @@ jobs:
           # mixed cap is strictly worse than a uniform small one. paiml/infra#229.
           SCCACHE_CACHE_SIZE: ${{ inputs.enable_sccache && '50G' || '' }}
         run: |
+          # FAIL-CLOSED (paiml/bashrs#604): no narrower `-p "$REPO_NAME"` retry. A clippy error in
+          # any selected crate fails this step; there is no fallback because clippy always runs here.
           cargo clippy $CLIPPY_ARGS -- -D warnings -A unused-variables 2>&1 || \
-          cargo clippy -p "$REPO_NAME" -- -D warnings -A unused-variables 2>&1 || \
-          { echo "::error::Clippy failed — check workspace path dependencies"; exit 1; }
+          { echo "::error::Clippy failed — a clippy error is never retried on a narrower scope"; exit 1; }
       - name: Record sccache stats
         if: ${{ always() && inputs.enable_sccache }}
         run: |
