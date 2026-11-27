@@ -1108,10 +1108,14 @@ jobs:
             cargo llvm-cov test "$@" > "$_log" 2>&1 || _rc=$?
             cat "$_log"
             if [ "$_rc" -ne 0 ]; then
-              # Sentinel = cargo says no test target matched (no lib, or -p names no package).
-              # Never a sentinel when a test result line exists: a failing test ran.
-              if grep -qE 'no library targets found in package|did not match any packages|no crates to be measured for coverage' "$_log" \
-                 && ! grep -q 'test result:' "$_log"; then
+              # Sentinel = cargo's SELECTION error at the start of an error line (ANSI colour
+              # tolerated), i.e. no test target was chosen. It must not coincide with any run or
+              # compile output: a test binary that ran, a test result, or a failed compile means
+              # a real failure, which is never retried.
+              _esc="$(printf '\033')"
+              _ansi="(${_esc}\[[0-9;]*m)*"
+              _sel="^${_ansi}error${_ansi}: (no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage)"
+              if grep -qE "$_sel" "$_log" && ! grep -qE 'Running |test result:|could not compile' "$_log"; then
                 _rc=75
               elif [ "$_rc" -eq 75 ]; then
                 _rc=1  # a bare exit 75 is not our sentinel; never let it trigger a retry
