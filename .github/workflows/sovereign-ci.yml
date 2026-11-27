@@ -1110,7 +1110,7 @@ jobs:
             if [ "$_rc" -ne 0 ]; then
               # Sentinel = cargo says no test target matched (no lib, or -p names no package).
               # Never a sentinel when a test result line exists: a failing test ran.
-              if grep -qE 'no library targets found in package|did not match any packages' "$_log" \
+              if grep -qE 'no library targets found in package|did not match any packages|no crates to be measured for coverage' "$_log" \
                  && ! grep -q 'test result:' "$_log"; then
                 _rc=75
               elif [ "$_rc" -eq 75 ]; then
