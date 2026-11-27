@@ -1115,7 +1115,7 @@ jobs:
               _plain="$(mktemp)" || { echo "::error::mktemp failed"; rm -f "${_log:?}"; return 1; }
               sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_log" > "$_plain"
               if grep -qE '^error: (no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage)' "$_plain" \
-                 && ! grep -qE 'Running |test result:|could not compile' "$_plain"; then
+                 && ! grep -qE 'Running (unittests|tests/|benches/|examples/|doc)|Doc-tests|running [0-9]+ tests?|test result:|error: test failed|could not compile' "$_plain"; then
                 _rc=75
               elif [ "$_rc" -eq 75 ]; then
                 _rc=1  # a bare exit 75 is not our sentinel; never let it trigger a retry
