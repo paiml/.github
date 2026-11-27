@@ -467,20 +467,36 @@ jobs:
           # Purely additive: a crate that HAS a lib target satisfies an earlier
           # branch and never reaches these lines, so nothing changes for the repos
           # that work today.
+          # FALLBACK RULE (paiml/bashrs#604): a fallback runs only when the previous
+          # attempt did NOT run tests to a failure (build, resolve or no-[lib] error).
+          # A test failure ends the chain red; before this, a failing lib test in the
+          # workspace run was masked by the `-p "$REPO_NAME"` link, which passed.
+          run_test_chain() {
+            local cmd log
+            for cmd in "$@"; do
+              log=$(mktemp)
+              if eval "$cmd" >"$log" 2>&1; then cat "$log"; rm -f "${log:?}"; return 0; fi
+              cat "$log"
+              if grep -qE 'test result: FAILED|FAIL \[|test run failed|^failures:|Summary \[' "$log"; then
+                rm -f "${log:?}"; echo "::error::Tests ran and failed; no fallback"; return 1
+              fi
+              rm -f "${log:?}"
+            done
+            echo "::error::Tests failed — check workspace path dependencies"; return 1
+          }
           if [ "$USE_NEXTEST" = "true" ]; then
-            cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1 || \
-            cargo nextest run --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-            cargo nextest run $TEST_ARGS 2>&1 || \
-            { echo "::warning::nextest failed — falling back to cargo test"; \
-              cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
-              cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-              cargo test $TEST_ARGS 2>&1 || \
-              { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }; }
+            run_test_chain \
+              "cargo nextest run $TEST_SCOPE $TEST_ARGS 2>&1" \
+              "cargo nextest run --lib -p \"$REPO_NAME\" $TEST_ARGS 2>&1" \
+              "cargo nextest run $TEST_ARGS 2>&1" \
+              "cargo test $TEST_SCOPE $TEST_ARGS 2>&1" \
+              "cargo test --lib -p \"$REPO_NAME\" $TEST_ARGS 2>&1" \
+              "cargo test $TEST_ARGS 2>&1"
           else
-            cargo test $TEST_SCOPE $TEST_ARGS 2>&1 || \
-            cargo test --lib -p "$REPO_NAME" $TEST_ARGS 2>&1 || \
-            cargo test $TEST_ARGS 2>&1 || \
-            { echo "::error::Tests failed — check workspace path dependencies"; exit 1; }
+            run_test_chain \
+              "cargo test $TEST_SCOPE $TEST_ARGS 2>&1" \
+              "cargo test --lib -p \"$REPO_NAME\" $TEST_ARGS 2>&1" \
+              "cargo test $TEST_ARGS 2>&1"
           fi
       - name: Record sccache stats
         if: ${{ always() && inputs.enable_sccache }}
