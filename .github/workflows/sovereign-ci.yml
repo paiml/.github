@@ -1102,12 +1102,22 @@ jobs:
           # (paiml/bashrs#604): a retry happens only when cargo reports "no library targets
           # found" (exit 75 here), so no test ran. A test failure exits 1 and is never retried.
           cov_scope() {
+            local _log _rc
             _log="$(mktemp)" || { echo "::error::mktemp failed"; return 1; }
             _rc=0
             cargo llvm-cov test "$@" > "$_log" 2>&1 || _rc=$?
             cat "$_log"
-            if [ "$_rc" -ne 0 ] && grep -q 'no library targets found' "$_log"; then _rc=75; fi
-            rm -f "$_log"
+            if [ "$_rc" -ne 0 ]; then
+              # Sentinel = cargo says no test target matched (no lib, or -p names no package).
+              # Never a sentinel when a test result line exists: a failing test ran.
+              if grep -qE 'no library targets found in package|did not match any packages' "$_log" \
+                 && ! grep -q 'test result:' "$_log"; then
+                _rc=75
+              elif [ "$_rc" -eq 75 ]; then
+                _rc=1  # a bare exit 75 is not our sentinel; never let it trigger a retry
+              fi
+            fi
+            rm -f "${_log:?}"
             return "$_rc"
           }
           rc=0; cov_scope $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS || rc=$?
