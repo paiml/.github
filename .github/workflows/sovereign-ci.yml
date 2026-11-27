@@ -1083,20 +1083,28 @@ jobs:
           # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
           # coverage reflects all workspace members. Default stays `--lib` (root only) — see
           # test job comment for back-compat rationale.
-          cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
-          cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
-          # BIN-ONLY FALLBACK (2026-07-30). Every branch above passes `--lib`, and
-          # `cargo test --lib` does not merely fail on a crate without a [lib] — it
-          # ERRORS: "no library targets found in package <name>" (exit 101). So a
-          # bin-only repo could never produce coverage; cohete's job went red for
-          # this and nothing else. Dropping `--lib` covers bins, integration tests
-          # and doctests, and works with or without a [lib].
-          #
-          # Purely additive: a crate that HAS a lib target satisfies one of the
-          # branches above and never reaches this line, so behaviour is unchanged
-          # for every repo that works today.
-          cargo llvm-cov test --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info 2>&1 || \
-          { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+          # FALLBACK RULE (paiml/bashrs#651): a fallback runs only when the previous
+          # attempt did NOT run tests to a failure. With test_via_coverage the coverage
+          # job is the test verdict, so a failing lib test must end it red.
+          # BIN-ONLY FALLBACK (2026-07-30). The last candidate drops `--lib`, which covers
+          # bins, integration tests and doctests, with or without a [lib].
+          run_coverage_chain() {
+            local cmd log
+            for cmd in "$@"; do
+              log=$(mktemp)
+              if eval "$cmd" >"$log" 2>&1; then cat "$log"; rm -f "${log:?}"; return 0; fi
+              cat "$log"
+              if grep -qE 'test result: FAILED|FAIL \[|test run failed|^failures:|Summary \[' "$log"; then
+                rm -f "${log:?}"; echo "::error::Coverage ran tests and failed; no fallback"; return 1
+              fi
+              rm -f "${log:?}"
+            done
+            echo "::error::Coverage failed — check workspace path dependencies"; return 1
+          }
+          run_coverage_chain \
+            "cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS" \
+            "cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p \"$REPO_NAME\" --lcov --output-path lcov.info" \
+            "cargo llvm-cov test --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info"
       - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
         # ZERO BEHAVIOR CHANGE GUARANTEE:
         #   When inputs.coverage_min is empty (the default for EVERY repo that
