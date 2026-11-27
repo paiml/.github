@@ -36,13 +36,12 @@ echo c > "$O/other.txt"; g -C "$O" add -A; g -C "$O" commit -q -m advance
 g -C "$O" merge -q --no-ff -m merge pr
 
 # clone, then break the remote: any fetch would fail exactly like the credential-stripped runner
-run_case() { # $1 = clone depth args
+run_case() { # "$@" = extra clone args
   rm -rf "${T:?}/c"
-  # shellcheck disable=SC2086
-  git clone -q $1 "file://$O" "$T/c" 2>/dev/null
+  git clone -q "$@" "file://$O" "$T/c" 2>/dev/null
   git -C "$T/c" remote set-url origin "file://$T/does-not-exist"
   ( cd "$T/c" && BASE_SHA=$BASE HEAD_SHA=$HEAD bash "$T/step.sh" ) >"$T/out" 2>&1
 }
-if run_case ""; then echo "ok: full-history checkout -> green"; else echo "FAIL: full history is red"; tail -n 5 "$T/out"; rc=1; fi
-if run_case "--depth 1"; then echo "FAIL: base missing is green (cannot go red)"; rc=1; else echo "ok: base missing -> red"; tail -n 2 "$T/out"; fi
+if run_case; then echo "ok: full-history checkout -> green"; else echo "FAIL: full history is red"; tail -n 5 "$T/out"; rc=1; fi
+if run_case --depth 1; then echo "FAIL: base missing is green (cannot go red)"; rc=1; else echo "ok: base missing -> red"; tail -n 2 "$T/out" | sed 's/^::error::/expected red: /'; fi
 exit $rc

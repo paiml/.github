@@ -7,7 +7,9 @@
 # contributors may open pull requests. Unauthorized PRs are closed
 # immediately with a polite comment.
 #
-# Caller workflow should trigger on pull_request_target (opened, reopened).
+# Caller workflow triggers on pull_request (opened, reopened), NEVER pull_request_target:
+# that trigger hands a write token and secrets to fork PRs. A caller also guards its job with
+# head.repo.full_name == github.repository; the job below repeats the guard as defense in depth.
 
 name: PR Authorization Gate
 
@@ -16,7 +18,7 @@ on:
 
 jobs:
   authorize:
-    # Runs on self-hosted intel. GitHub-hosted runners are BANNED fleet-wide:
+    # Runs on a self-hosted seat (see runs-on below). GitHub-hosted runners are BANNED fleet-wide:
     # they bill on private repos, and when the Actions spending limit is reached
     # the job does not start AT ALL — it reports `failure` with ZERO steps, which
     # is indistinguishable from this gate rejecting an author. That is exactly
@@ -27,12 +29,16 @@ jobs:
     #
     # The original rationale for ubuntu-latest was that untrusted PR code must not
     # execute on self-hosted infra. That concern does not apply to THIS job: it has
-    # exactly one step, `actions/github-script`, and there is NO `actions/checkout`
+    # exactly two steps (a bash step, which holds the org credential, and a close step), and there is NO `actions/checkout`
     # anywhere in this workflow. No PR-authored code is ever fetched or run here —
     # the job only reads `context.payload` and calls the API. If a checkout step is
     # ever added, this decision must be revisited.
+    # Fork PRs never run this privileged job (pull_request_target removed; callers use pull_request).
+    if: github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 22
-    runs-on: [self-hosted, gate-light]
+    # gate-light-org: the bash step below uses the runner's ambient org auth, so only a seat
+    # carrying gate-light-org may run authorize; plain gate-light seats must never run it.
+    runs-on: [self-hosted, gate-light, gate-light-org]
     permissions:
       pull-requests: write
     steps:

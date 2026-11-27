@@ -28,14 +28,22 @@ jobs:
         run: bash scripts/test-advisory-gate.sh
       - name: pr-gate membership is GraphQL-first, fail-closed (RED->GREEN)
         run: bash scripts/test-pr-gate-membership.sh --self-test
+      - name: TARGET-DIET workflow env + mutants (RED->GREEN)
+        run: bash scripts/test-target-diet-env.sh
+      - name: no pull-request-target guard (P0 security, RED->GREEN)
+        run: sh scripts/test-no-pull-request-target-guard.sh && sh scripts/no-pull-request-target-guard.sh
       - name: heavy_on=train skips test/coverage only on an ordinary PR; owed elsewhere (anti-vacuity)
         run: bash scripts/test-heavy-on-train.sh
+      - name: test_via_coverage - coverage is the test verdict only when owed and green (infra#3828, RED->GREEN)
+        run: bash scripts/test-test-via-coverage.sh
       - name: Sigstore signer guards (RED->GREEN)
         run: bash scripts/check-sigstore-sign.sh --self-test && bash scripts/check-sigstore-sign.sh && bash scripts/sigstore-verify.sh --self-test
       - name: NET-INSTALL-LINT fixtures + per-pattern mutants (infra#3828, RED->GREEN)
         run: bash scripts/net-install-lint.sh --self-test
       - name: RUNNER-SMELLS fixtures + one mutant per rule (infra#3828, pmat#1673, RED->GREEN)
         run: bash scripts/runner-smells.sh --self-test
+      - name: infra-fetch-v1 (unified-gate infra sync, https when a token is passed, RED->GREEN)
+        run: bash scripts/test-infra-fetch.sh --self-test && bash scripts/test-infra-fetch.sh
       - name: Lint workflow YAML
         shell: bash
         run: |
