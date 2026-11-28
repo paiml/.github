@@ -1100,10 +1100,12 @@ jobs:
           # before any test runs, and decides the scope from the package targets:
           #   - TEST_SCOPE contains --workspace: `--workspace --lib` when every workspace member has
           #     a lib-like target (lib, rlib or proc-macro); otherwise `--workspace` (all targets).
-          #   - a root package (Cargo.toml at $PWD): `--lib` when it has a lib-like target. A root with
-          #     no lib-like target falls back to `-p REPO_NAME --lib` when a member named REPO_NAME has
-          #     one (base ran that lib), else no lib flag, so every target of the root package is
-          #     measured (bin, tests, doctests).
+          #   - a root package (Cargo.toml at $PWD): `--lib` when it has a lib-like target (lib, rlib,
+          #     dylib, cdylib, staticlib or proc-macro). A root with no lib-like target in a
+          #     multi-member workspace uses `--workspace`, a superset of base (base's default-members
+          #     scope is not reproducible here). A single package with no lib-like target falls back
+          #     to `-p REPO_NAME --lib` when a member named REPO_NAME has one (base ran that lib), else
+          #     no lib flag, so every target of the root package is measured (bin, tests, doctests).
           #   - virtual workspace (no root package): `--workspace --lib` when every member has a
           #     lib-like target, otherwise `--workspace`. Base ran `--lib` over every default member,
           #     so this is always a superset of base.
@@ -1122,7 +1124,7 @@ jobs:
               if not members:
                   raise ValueError("no workspace members in cargo metadata")
               def has_lib(p):
-                  return any(set(t["kind"]) & {"lib", "rlib", "proc-macro"} for t in p["targets"])
+                  return any(set(t["kind"]) & {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"} for t in p["targets"])
               manifest = os.path.realpath(os.environ["PWD_MANIFEST"])
               if "--workspace" in os.environ["TEST_SCOPE"].split():
                   out = "--workspace --lib" if all(has_lib(p) for p in members) else "--workspace"
@@ -1133,6 +1135,8 @@ jobs:
                   if roots:
                       if has_lib(roots[0]):
                           out = "--lib"
+                      elif len(members) > 1:
+                          out = "--workspace"
                       elif named and has_lib(named[0]):
                           out = "-p " + repo + " --lib"
                       else:
