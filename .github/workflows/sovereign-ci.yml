@@ -1096,20 +1096,67 @@ jobs:
           # PMAT-159 (2026-04-20): `test_workspace: true` opts into `--workspace --lib` so
           # coverage reflects all workspace members. Default stays `--lib` (root only) — see
           # test job comment for back-compat rationale.
-          cargo llvm-cov test $TEST_SCOPE --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS 2>&1 || \
-          cargo llvm-cov test --lib --no-cfg-coverage --no-cfg-coverage-nightly -p "$REPO_NAME" --lcov --output-path lcov.info 2>&1 || \
-          # BIN-ONLY FALLBACK (2026-07-30). Every branch above passes `--lib`, and
-          # `cargo test --lib` does not merely fail on a crate without a [lib] — it
-          # ERRORS: "no library targets found in package <name>" (exit 101). So a
-          # bin-only repo could never produce coverage; cohete's job went red for
-          # this and nothing else. Dropping `--lib` covers bins, integration tests
-          # and doctests, and works with or without a [lib].
-          #
-          # Purely additive: a crate that HAS a lib target satisfies one of the
-          # branches above and never reaches this line, so behaviour is unchanged
-          # for every repo that works today.
-          cargo llvm-cov test --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info 2>&1 || \
-          { echo "::error::Coverage failed — check workspace path dependencies"; exit 1; }
+          # SCOPE IS CHOSEN UP FRONT (paiml/bashrs#651, Option B). `cargo metadata` is read once,
+          # before any test runs, and decides the scope from the package targets:
+          #   - TEST_SCOPE contains --workspace: `--workspace --lib` when every workspace member has
+          #     a lib-like target (lib, rlib or proc-macro); otherwise `--workspace` (all targets).
+          #   - a root package (Cargo.toml at $PWD): `--lib` when it has a lib-like target (lib, rlib,
+          #     dylib, cdylib, staticlib or proc-macro). A root with no lib-like target in a
+          #     multi-member workspace uses `--workspace`, a superset of base (base's default-members
+          #     scope is not reproducible here). A single package with no lib-like target falls back
+          #     to `-p REPO_NAME --lib` when a member named REPO_NAME has one (base ran that lib), else
+          #     no lib flag, so every target of the root package is measured (bin, tests, doctests).
+          #   - virtual workspace (no root package): `--workspace --lib` when every member has a
+          #     lib-like target, otherwise `--workspace`. Base ran `--lib` over every default member,
+          #     so this is always a superset of base.
+          # Metadata that cannot be read or parsed stops the step: no scope is ever defaulted.
+          # The chosen scope runs ONCE. A failing test exits 1 and is never retried on another scope.
+          meta="$(cargo metadata --no-deps --format-version 1)" || { echo "::error::cargo metadata failed"; exit 1; }
+          scope_py='
+          import json, os, sys
+          try:
+              d = json.load(sys.stdin)
+              pkgs = d["packages"]
+              ids = set(d["workspace_members"])
+              known = {p["id"] for p in pkgs}
+              if not ids <= known: raise ValueError("workspace_members id missing from packages")
+              members = [p for p in pkgs if p["id"] in ids]
+              if not members:
+                  raise ValueError("no workspace members in cargo metadata")
+              def has_lib(p):
+                  return any(set(t["kind"]) & {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"} for t in p["targets"])
+              manifest = os.path.realpath(os.environ["PWD_MANIFEST"])
+              if "--workspace" in os.environ["TEST_SCOPE"].split():
+                  out = "--workspace --lib" if all(has_lib(p) for p in members) else "--workspace"
+              else:
+                  repo = os.environ["REPO_NAME"]
+                  roots = [p for p in pkgs if os.path.realpath(p["manifest_path"]) == manifest]
+                  named = [p for p in members if p["name"] == repo]
+                  if roots:
+                      if has_lib(roots[0]):
+                          out = "--lib"
+                      elif len(members) > 1:
+                          out = "--workspace"
+                      elif named and has_lib(named[0]):
+                          out = "-p " + repo + " --lib"
+                      else:
+                          out = ""
+                  elif not roots:
+                      # virtual workspace: no root package. Base ran `--lib` over every default member.
+                      out = "--workspace --lib" if all(has_lib(p) for p in members) else "--workspace"
+              print(out)
+          except Exception as e:
+              sys.stderr.write("cargo metadata parse failed: %s\n" % e)
+              sys.exit(1)
+          '
+          scope="$(printf '%s' "$meta" | PWD_MANIFEST="$PWD/Cargo.toml" python3 -c "$scope_py")" \
+            || { echo "::error::cannot choose coverage scope from cargo metadata"; exit 1; }
+          echo "coverage scope: ${scope:-<root package, all targets>}"
+          rc=0; cargo llvm-cov test $scope --no-cfg-coverage --no-cfg-coverage-nightly --lcov --output-path lcov.info $TEST_ARGS || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Coverage failed (exit $rc) — the scope is chosen from cargo metadata; a test failure is never retried"
+            exit 1
+          fi
       - name: Enforce coverage floor (OPT-IN ratchet — PMAT build-system audit gap #1)
         # ZERO BEHAVIOR CHANGE GUARANTEE:
         #   When inputs.coverage_min is empty (the default for EVERY repo that
