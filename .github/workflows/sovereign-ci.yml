@@ -1115,7 +1115,14 @@ jobs:
             if [ "$_rc" -ne 0 ]; then
               _plain="$(mktemp)" || { echo "::error::mktemp failed"; rm -f "${_log:?}"; return 1; }
               # CR ends a line for the purpose of matching: a bare CR must not hide an error line.
-              sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r/\n/g' "$_log" > "$_plain"
+              sed -E 's/\x1b\[[0-9;:?]*[A-Za-z]//g; s/\r/\n/g' "$_log" > "$_plain"
+              # Any escape left after the CSI strip (OSC, charset, save-cursor) can split a token:
+              # the log is then untrustworthy, so no retry. A signal exit (>=128) is never a retry.
+              if grep -aq "$(printf '\033')" "$_plain" || [ "$_rc" -ge 128 ]; then
+                _rc=1
+                rm -f "${_plain:?}" "${_log:?}"
+                return "$_rc"
+              fi
               case "$_allow" in
                 lib) _re='no library targets found in packages?' ;;
                 pkg) _re='no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage' ;;
@@ -1124,8 +1131,8 @@ jobs:
               # Count error TOKENS, not lines: two errors on one line must count twice. _sel counts
               # line-initial selection errors only, so any selection error that is not at a line
               # start (or shares a line with another error) leaves _total above _sel: no retry.
-              _total="$(grep -oE 'error(\[E[0-9]+\])?:' "$_plain" | wc -l || true)"
-              _sel="$(grep -cE "^error: ($_re)" "$_plain" || true)"
+              _total="$(grep -aoE 'error(\[E[0-9]+\])?:' "$_plain" | wc -l || true)"
+              _sel="$(grep -acE "^error: ($_re)" "$_plain" || true)"
               if [ "$_total" -gt 0 ] && [ "$_total" -eq "$_sel" ] \
                  && ! grep -qE 'Running (unittests|tests/|benches/|examples/|doc)|Doc-tests|running [0-9]+ tests?|test result:' "$_plain"; then
                 _rc=75
