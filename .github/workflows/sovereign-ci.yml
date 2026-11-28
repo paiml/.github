@@ -1121,9 +1121,10 @@ jobs:
                 pkg) _re='no library targets found in packages?|package ID specification .* did not match any packages|no crates to be measured for coverage' ;;
                 *)   _re='__no_sentinel_allowed__' ;;
               esac
-              # Count error tokens ANYWHERE in a line (not only at line start): an unanchored error
-              # counts toward _total and so blocks the retry. Fail-closed.
-              _total="$(grep -cE 'error(\[E[0-9]+\])?:' "$_plain" || true)"
+              # Count error TOKENS, not lines: two errors on one line must count twice. _sel counts
+              # line-initial selection errors only, so any selection error that is not at a line
+              # start (or shares a line with another error) leaves _total above _sel: no retry.
+              _total="$(grep -oE 'error(\[E[0-9]+\])?:' "$_plain" | wc -l || true)"
               _sel="$(grep -cE "^error: ($_re)" "$_plain" || true)"
               if [ "$_total" -gt 0 ] && [ "$_total" -eq "$_sel" ] \
                  && ! grep -qE 'Running (unittests|tests/|benches/|examples/|doc)|Doc-tests|running [0-9]+ tests?|test result:' "$_plain"; then
