@@ -1,6 +1,10 @@
+![Pragmatic AI Labs: 5M+ reach, 2M+ learners, 20+ specializations, 100+ courses](paiml-org-banner.png)
+
 # Pragmatic AI Labs
 
 **We build a pure-Rust AI stack and teach how to use it.** 2M+ learners across Coursera and edX.
+
+
 
 ## What we build
 
