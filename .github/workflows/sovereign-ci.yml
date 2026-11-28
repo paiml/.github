@@ -1121,7 +1121,8 @@ jobs:
               sed -E 's/\x1b\[[0-9;:]*m//g; s/\r/\n/g' "$_log" > "$_plain"
               # Any escape left after the CSI strip (OSC, charset, save-cursor) can split a token:
               # the log is then untrustworthy, so no retry. A signal exit (>=128) is never a retry.
-              if grep -aq "$(printf '\033')" "$_plain" || [ "$_rc" -ge 128 ]; then
+              # A NUL byte can split a token (e<NUL>rror:) so grep -o cannot count it: refuse.
+              if grep -aq "$(printf '\033')" "$_plain" || [ "$(tr -cd '\000' < "$_plain" | wc -c)" -ne 0 ] || [ "$_rc" -ge 128 ]; then
                 _rc=1
                 rm -f "${_plain:?}" "${_log:?}"
                 return "$_rc"
