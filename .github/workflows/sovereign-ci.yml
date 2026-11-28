@@ -1115,7 +1115,10 @@ jobs:
             if [ "$_rc" -ne 0 ]; then
               _plain="$(mktemp)" || { echo "::error::mktemp failed"; rm -f "${_log:?}"; return 1; }
               # CR ends a line for the purpose of matching: a bare CR must not hide an error line.
-              sed -E 's/\x1b\[[0-9;:?]*[A-Za-z]//g; s/\r/\n/g' "$_log" > "$_plain"
+              # Strip only complete SGR (colour, ESC [ ... m) sequences. Any other ESC, including an
+              # unterminated ESC [ that would otherwise swallow the next letter, is left in place
+              # and refuses the retry below.
+              sed -E 's/\x1b\[[0-9;:]*m//g; s/\r/\n/g' "$_log" > "$_plain"
               # Any escape left after the CSI strip (OSC, charset, save-cursor) can split a token:
               # the log is then untrustworthy, so no retry. A signal exit (>=128) is never a retry.
               if grep -aq "$(printf '\033')" "$_plain" || [ "$_rc" -ge 128 ]; then
