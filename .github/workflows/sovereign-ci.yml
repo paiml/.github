@@ -1102,8 +1102,9 @@ jobs:
           #     a lib-like target (lib, rlib or proc-macro); otherwise `--workspace` (all targets).
           #   - a root package (Cargo.toml at $PWD): `--lib` when it has a lib-like target; otherwise
           #     no lib flag, so every target of the root package is measured (bin, tests, doctests).
-          #   - virtual workspace (no root package): the member named REPO_NAME, with `--lib` when it
-          #     has a lib-like target; `--workspace` when no member has that name.
+          #   - virtual workspace (no root package): `--workspace --lib` when every member has a
+          #     lib-like target, otherwise `--workspace`. Base ran `--lib` over every default member,
+          #     so no member is picked by name (REPO_NAME is not used for scope).
           # Metadata that cannot be read or parsed stops the step: no scope is ever defaulted.
           # The chosen scope runs ONCE. A failing test exits 1 and is never retried on another scope.
           meta="$(cargo metadata --no-deps --format-version 1)" || { echo "::error::cargo metadata failed"; exit 1; }
@@ -1118,21 +1119,16 @@ jobs:
                   raise ValueError("no workspace members in cargo metadata")
               def has_lib(p):
                   return any(set(t["kind"]) & {"lib", "rlib", "proc-macro"} for t in p["targets"])
-              repo = os.environ["REPO_NAME"]
               manifest = os.path.realpath(os.environ["PWD_MANIFEST"])
               if "--workspace" in os.environ["TEST_SCOPE"].split():
                   out = "--workspace --lib" if all(has_lib(p) for p in members) else "--workspace"
               else:
                   roots = [p for p in pkgs if os.path.realpath(p["manifest_path"]) == manifest]
-                  named = [p for p in members if p["name"] == repo]
                   if roots:
                       out = "--lib" if has_lib(roots[0]) else ""
-                  elif not named:
-                      out = "--workspace"
-                  elif has_lib(named[0]):
-                      out = "-p " + repo + " --lib"
                   else:
-                      out = "-p " + repo
+                      # virtual workspace: no root package. Base ran `--lib` over every default member.
+                      out = "--workspace --lib" if all(has_lib(p) for p in members) else "--workspace"
               print(out)
           except Exception as e:
               sys.stderr.write("cargo metadata parse failed: %s\n" % e)
